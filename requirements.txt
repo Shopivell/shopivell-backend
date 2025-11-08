@@ -1,0 +1,15 @@
+fastapi==0.116.1
+pydantic==2.11.7
+bcrypt== 4.2.0
+SQLAlchemy==2.0.29
+uvicorn==0.35.0
+email-validator
+python-multipart
+uuid
+boto3
+psycopg2-binary
+python-dotenv
+openai
+pydantic-settings
+PyJWT
+scipy
