@@ -1,18 +1,29 @@
-from io import BytesIO
-import uuid
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from sqlalchemy.orm import Session
-from fastapi.responses import JSONResponse, StreamingResponse
-from database import get_db
-from models import User # Ensure your SQLAlchemy User model is imported correctly
-from schemas.auth_schema import AuthResponse, UploadImageResponse
-from schemas.user_schema import ImagePathResponse, SuccessMessage, UserBase, UserCreate, UserResponse, UserUpdate # Import updated schemas
-from uuid import UUID
-from typing import List, Optional
+import logging
 import os
-from dotenv import load_dotenv
+import uuid
+from typing import List, Optional
+from uuid import UUID
+
 import boto3
 from botocore.exceptions import NoCredentialsError
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User  # Ensure your SQLAlchemy User model is imported correctly
+from schemas.auth_schema import AuthResponse, UploadImageResponse
+from schemas.user_schema import (
+    ImagePathResponse,
+    SuccessMessage,
+    UserBase,
+    UserCreate,
+    UserResponse,
+    UserUpdate,
+)  # Import updated schemas
+
+logger = logging.getLogger(__name__)
 
 user_router = APIRouter(prefix="/users", tags=["Users"])
 # Load environment variables
@@ -25,46 +36,54 @@ ACCESS_KEY = os.getenv("ACCESS_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
-# --- Validate Configuration ---
-required_vars = ["SPACES_REGION", "SPACES_ENDPOINT", "ACCESS_KEY", "SECRET_KEY", "BUCKET_NAME"]
-for var in required_vars:
-    if os.getenv(var) is None:
-        # It's better to raise an exception at startup than to have silent failures later
-        raise ValueError(f"Environment variable {var} not set. Please check your .env file.")
+SPACES_ENABLED = all([SPACES_REGION, SPACES_ENDPOINT, ACCESS_KEY, SECRET_KEY, BUCKET_NAME])
 
 # Initialize S3 client (DigitalOcean Spaces is S3-compatible)
-s3_client = None
-try:
-    session = boto3.session.Session()
-    s3_client = session.client(
-        's3',
-        region_name=SPACES_REGION,
-        endpoint_url=SPACES_ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY
-    )
-except Exception as e:
-    print(f"Error initializing S3 client: {e}")
-    # In a real application, you might want to log this error and potentially exit if S3 is critical
+if SPACES_ENABLED:
+    try:
+        session = boto3.session.Session()
+        s3_client = session.client(
+            "s3",
+            region_name=SPACES_REGION,
+            endpoint_url=SPACES_ENDPOINT,
+            aws_access_key_id=ACCESS_KEY,
+            aws_secret_access_key=SECRET_KEY,
+        )
+    except Exception as exc:  # pragma: no cover - startup guard
+        logger.exception("Failed to initialize DigitalOcean Spaces client: %s", exc)
+        s3_client = None
+else:
+    logger.warning("DigitalOcean Spaces credentials are not fully configured; user media uploads disabled.")
+    s3_client = None
+
 
 # --- Helper Functions ---
 def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
     """Uploads a file to DigitalOcean Spaces and returns its public URL."""
     if s3_client is None:
-        raise HTTPException(status_code=500, detail="S3 client not initialized. Cannot upload file.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage service is not configured.",
+        )
     try:
         s3_client.put_object(
             Bucket=BUCKET_NAME,
             Key=filename,
             Body=file_data,
-            ACL='public-read',  # Makes the file publicly accessible
-            ContentType=content_type
+            ACL="public-read",  # Makes the file publicly accessible
+            ContentType=content_type,
         )
         return f"{SPACES_ENDPOINT}/{BUCKET_NAME}/{filename}"
-    except NoCredentialsError:
-        raise HTTPException(status_code=500, detail="Credentials not available for S3. Check ACCESS_KEY and SECRET_KEY.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error uploading file to Spaces: {e}")
+    except NoCredentialsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Credentials not available for file storage; please check ACCESS_KEY and SECRET_KEY.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading file to Spaces: {exc}",
+        ) from exc
 
 def create_username(name: str, surname: str) -> str:
     """Generates a username from first name and surname."""
@@ -173,6 +192,23 @@ def get_all_users(db: Session = Depends(get_db)):
     """
     users = db.query(User).all()
     return users
+
+
+@user_router.get("/customers", response_model=List[UserResponse])
+def get_customers(
+    role: Optional[str] = Query(default=None, description="Filter by role; defaults to customer-facing roles."),
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieves all customer-facing users. Optionally filter by a specific role.
+    """
+    query = db.query(User)
+    if role:
+        query = query.filter(User.role == role)
+    else:
+        query = query.filter(User.role.in_(["customer", "both"]))
+
+    return query.order_by(User.created_at.desc()).all()
 
 @user_router.delete("/{user_id}", response_model=SuccessMessage, status_code=status.HTTP_200_OK)
 def delete_user(user_id: UUID, db: Session = Depends(get_db)):

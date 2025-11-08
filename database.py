@@ -45,13 +45,16 @@
 #     finally:
 #         db.close()
 
+
+
+
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # Define the path for the SQLite database file
 # It will be created in the current working directory
-DATABASE_FILE = "boneka.db"
+DATABASE_FILE = "shopivell.db"
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DATABASE_FILE}"
 
 # Create the SQLAlchemy engine for SQLite
