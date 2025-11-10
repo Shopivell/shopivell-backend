@@ -1,14 +1,30 @@
 from fastapi import FastAPI
-from database import engine
-import models
-from routers import analytics, auth, content, dashboard, marketing, offer, orders, products, request, supplier, user
+from database import engine, init_db
+from modules.customers.models import *
+from modules.customers.router import customer_router
+from modules.orders.router import order_router  # Assuming 'o' is your orders router
 
-models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
-
-# add cors middleware 
 from fastapi.middleware.cors import CORSMiddleware
+
+# Initialize the database
+init_db()
+
+# Create FastAPI app
+app = FastAPI(
+    title="Shopivell Platform API",
+    description="A comprehensive ecommerce platform with product management, orders, inventory, and customer management capabilities",
+    version="1.0.0",
+    contact={
+        "name": "API Support",
+        "email": "support@company.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
@@ -17,20 +33,11 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# add routers
-app.include_router(user.user_router)
-app.include_router(supplier.supplier_router)
-app.include_router(products.product_router)
-app.include_router(request.request_router)
-app.include_router(offer.offer_router)
-app.include_router(auth.auth_router)
-app.include_router(orders.orders_router)
-app.include_router(analytics.analytics_router)
-app.include_router(content.content_router)
-app.include_router(marketing.marketing_router)
-app.include_router(dashboard.dashboard_router)
+# ✅ Include routers with a version prefix
+app.include_router(customer_router, prefix="/v1")
+app.include_router(order_router, prefix="/v1")
 
+# Run server
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-    
