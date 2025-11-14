@@ -59,9 +59,16 @@ async def get_comprehensive_user_stats(db: Session = Depends(get_db)):
                 users_by_role.append({"role": role, "count": count, "percentage": round(percentage, 2)})
 
         # 5. Get monthly registration count (using func.to_char for PostgreSQL)
+        dialect_name = db.get_bind().dialect.name
+        month_expression = (
+            func.strftime("%Y-%m", User.created_at)
+            if dialect_name == "sqlite"
+            else func.to_char(User.created_at, 'YYYY-MM')
+        )
+
         monthly_data = (
             db.query(
-                func.to_char(User.created_at, 'YYYY-MM').label('month'),
+                month_expression.label('month'),
                 func.count().label('count')
             )
             .group_by('month')
@@ -148,9 +155,16 @@ async def get_comprehensive_request_stats(db: Session = Depends(get_db)):
                 )
 
         # 4. Get monthly request count (using func.to_char for PostgreSQL)
+        dialect_name = db.get_bind().dialect.name
+        month_expression = (
+            func.strftime("%Y-%m", RequestPost.created_at)
+            if dialect_name == "sqlite"
+            else func.to_char(RequestPost.created_at, 'YYYY-MM')
+        )
+
         monthly_data = (
             db.query(
-                func.to_char(RequestPost.created_at, 'YYYY-MM').label('month'),
+                month_expression.label('month'),
                 func.count().label('count')
             )
             .group_by('month')
@@ -253,9 +267,16 @@ async def get_comprehensive_offer_stats(db: Session = Depends(get_db)):
                 )
 
         # 3. Get monthly offer count (using func.to_char for PostgreSQL)
+        dialect_name = db.get_bind().dialect.name
+        month_expression = (
+            func.strftime("%Y-%m", Offer.created_at)
+            if dialect_name == "sqlite"
+            else func.to_char(Offer.created_at, 'YYYY-MM')
+        )
+
         monthly_data = (
             db.query(
-                func.to_char(Offer.created_at, 'YYYY-MM').label('month'),
+                month_expression.label('month'),
                 func.count().label('count')
             )
             .group_by('month')
@@ -363,9 +384,16 @@ async def get_comprehensive_order_stats(db: Session = Depends(get_db)):
                 )
 
         # 3. Get monthly order count (using func.to_char for PostgreSQL)
+        dialect_name = db.get_bind().dialect.name
+        month_expression = (
+            func.strftime("%Y-%m", Order.created_at)
+            if dialect_name == "sqlite"
+            else func.to_char(Order.created_at, 'YYYY-MM')
+        )
+
         monthly_data = (
             db.query(
-                func.to_char(Order.created_at, 'YYYY-MM').label('month'),
+                month_expression.label('month'),
                 func.count().label('count')
             )
             .group_by('month')

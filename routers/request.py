@@ -1,23 +1,44 @@
-# routers/requests.py
-from datetime import datetime, timedelta, timezone
+import logging
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Set
 from uuid import UUID
-import uuid
 
-from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status, Query
-from openai import OpenAI
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
 import boto3
 from botocore.exceptions import NoCredentialsError
+from dotenv import load_dotenv
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
+from openai import OpenAI
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+
 from database import get_db
-from models import Product, RequestPost, User, Offer, Order # Import Offer and Order
-from schemas.request_schema import RequestCreate, RequestOut, RequestResponse, RequestUpdate, SupplierRequestAction, MessageResponse # Import new schemas
-from schemas.offer_schema import OfferCreate # For creating counter-offer
-from schemas.orders_schema import OrderOut # Assuming you have this schema for order creation response
+from models import Offer, Order, Product, RequestPost, User  # Import Offer and Order
+from schemas.offer_schema import OfferCreate  # For creating counter-offer
+from schemas.orders_schema import OrderOut  # Assuming you have this schema for order creation response
+from schemas.request_schema import (
+    MessageResponse,
+    RequestCreate,
+    RequestOut,
+    RequestResponse,
+    RequestUpdate,
+    SupplierRequestAction,
+)  # Import new schemas
+
 # Load environment variables
+
+logger = logging.getLogger(__name__)
 
 request_router = APIRouter(prefix="/requests", tags=["Requests"])
 
@@ -30,26 +51,26 @@ ACCESS_KEY = os.getenv("ACCESS_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
-# --- Validate Configuration (Optional but Recommended) ---
-required_vars = ["SPACES_REGION", "SPACES_ENDPOINT", "ACCESS_KEY", "SECRET_KEY", "BUCKET_NAME"]
-for var in required_vars:
-    if os.getenv(var) is None:
-        raise ValueError(f"Environment variable {var} not set. Please check your .env file.")
+SPACES_ENABLED = all([SPACES_REGION, SPACES_ENDPOINT, ACCESS_KEY, SECRET_KEY, BUCKET_NAME])
 
 # Initialize S3 client globally. This should ideally be handled with FastAPI's dependency injection
 # or application startup events for more robust error handling and resource management.
-try:
-    session = boto3.session.Session()
-    s3_client = session.client(
-        's3',
-        region_name=SPACES_REGION,
-        endpoint_url=SPACES_ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY
-    )
-except Exception as e:
-    print(f"Error initializing S3 client: {e}")
-    s3_client = None # Set to None if initialization fails, and handle this in functions
+if SPACES_ENABLED:
+    try:
+        session = boto3.session.Session()
+        s3_client = session.client(
+            "s3",
+            region_name=SPACES_REGION,
+            endpoint_url=SPACES_ENDPOINT,
+            aws_access_key_id=ACCESS_KEY,
+            aws_secret_access_key=SECRET_KEY,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to initialize DigitalOcean Spaces client: %s", exc)
+        s3_client = None
+else:
+    logger.warning("DigitalOcean Spaces credentials are not fully configured; request media uploads disabled.")
+    s3_client = None
 
 
 def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
@@ -65,8 +86,10 @@ def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
         str: The public URL of the uploaded file, or None if an error occurs.
     """
     if s3_client is None:
-        print("S3 client not initialized. Cannot upload file.")
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage service is not configured.",
+        )
     try:
         s3_client.put_object(
             Bucket=BUCKET_NAME,
@@ -96,7 +119,7 @@ def delete_file_from_spaces(filename: str):
         bool: True if deletion was successful, False otherwise.
     """
     if s3_client is None:
-        print("S3 client not initialized. Cannot delete file.")
+        logger.warning("Attempted to delete request media but storage client is not configured.")
         return False
     try:
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=filename)
@@ -108,7 +131,7 @@ def delete_file_from_spaces(filename: str):
 # from auth import get_current_user # To get the authenticated user - COMMENTED OUT
 
 OPENAI_APK_KEY = os.getenv("OPENAI_API_KEY")
-openai_client =  OpenAI(api_key=OPENAI_APK_KEY)
+openai_client = OpenAI(api_key=OPENAI_APK_KEY) if OPENAI_APK_KEY else None
 
 def get_user(user_id: UUID, db: Session = Depends(get_db)):
     """
@@ -236,6 +259,18 @@ def list_request_posts(
     )
 
     return query.all()
+
+
+@request_router.get("/all", response_model=List[RequestResponse])
+def list_all_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    db: Session = Depends(get_db),
+):
+    query = db.query(RequestPost).options(joinedload(RequestPost.customer))
+    if status_filter:
+        query = query.filter(RequestPost.status == status_filter)
+
+    return query.order_by(RequestPost.created_at.desc()).all()
 
 
 @request_router.get("/{request_id}", response_model=RequestOut, status_code=status.HTTP_200_OK)

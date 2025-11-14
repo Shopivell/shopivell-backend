@@ -18,6 +18,41 @@ def generate_order_number(order_id: UUID) -> str:
     return str(order_id).split('-')[0].upper()
 
 
+# --- Utility Endpoints ---
+@orders_router.get("/", response_model=List[DetailedOrderOut])
+def list_orders(db: Session = Depends(get_db)) -> List[DetailedOrderOut]:
+    orders = (
+        db.query(Order)
+        .join(Order.request_post)
+        .join(Order.customer)
+        .join(Order.supplier)
+        .all()
+    )
+
+    response = []
+    for order in orders:
+        response.append({
+            "order_id": order.id,
+            "order_number": generate_order_number(order.id),
+            "request_description": order.request_post.description,
+            "agreed_price": float(order.total_price),
+            "quantity": order.quantity,
+            "date_ordered": order.created_at,
+            "image_path": order.request_post.image_path,
+            "status": order.status,
+            "customer_name": getattr(order.customer, "name", None),
+            "customer_profile_pic_path": getattr(order.customer, "personal_image_path", None),
+            "customer_phone_number": getattr(order.customer, "phone_number", None),
+            "supplier_name": getattr(order.supplier, "name", None),
+            "supplier_phone_number": getattr(order.supplier, "phone_number", None),
+            "supplier_rating": getattr(order.supplier, "rating", None) if hasattr(order.supplier, "rating") else None,
+            "supplier_profile_pic_path": getattr(order.supplier, "personal_image_path", None),
+            "delivery_date": getattr(order.offer, "delivery_date", None),
+            "delivery_address": order.delivery_address,
+        })
+
+    return response
+
 # --- New Endpoint: Create an Order from an Accepted Offer (Customer Confirms) ---
 @orders_router.post("/confirm-offer", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
 def confirm_offer_and_create_order(
@@ -337,7 +372,7 @@ def get_orders_by_customer(
     return response
 
 
-@orders_router.get("/delete-order/{user_id}", response_model=MessageResponse)
+@orders_router.delete("/{order_id}", response_model=MessageResponse)
 def delete_order_by(order_id: UUID, db: Session = Depends(get_db)):
     """
     Deletes an order by its ID.

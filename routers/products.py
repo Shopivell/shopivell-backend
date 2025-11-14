@@ -1,25 +1,36 @@
-from io import BytesIO
-from typing import Optional, List
+import logging
+import os
 import uuid
-from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.orm import Session
-from database import get_db
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form, status, Request
-from models import Product, User # Ensure your Product and User models are correctly imported
-from schemas.products_schema import ProductResponse, ProductCreate, ProductUpdate # Use the updated schemas
-from schemas.user_schema import SuccessMessage # Assuming SuccessMessage is in user_schema
-from uuid import UUID
+from typing import List, Optional
 
-from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import NoCredentialsError
-import os
+from dotenv import load_dotenv
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.orm import Session
 
+from database import get_db
+from models import Product, User  # Ensure your Product and User models are correctly imported
+from schemas.products_schema import ProductCreate, ProductResponse, ProductUpdate  # Use the updated schemas
+from schemas.user_schema import SuccessMessage  # Assuming SuccessMessage is in user_schema
+from uuid import UUID
+
+
+logger = logging.getLogger(__name__)
 
 # Create a new router for products
-product_router = APIRouter(prefix="/products", tags=["Products"]) # Changed tag to plural
-# Load environment variables (ensure this is at the very top of your file or in main.py)
+product_router = APIRouter(prefix="/products", tags=["Products"])  # Changed tag to plural
 
+# Load environment variables (ensure this is at the very top of your file or in main.py)
 load_dotenv()
 
 # Configuration from environment variables
@@ -29,26 +40,26 @@ ACCESS_KEY = os.getenv("ACCESS_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 BUCKET_NAME = os.getenv("BUCKET_NAME")
 
-# --- Validate Configuration (Optional but Recommended) ---
-required_vars = ["SPACES_REGION", "SPACES_ENDPOINT", "ACCESS_KEY", "SECRET_KEY", "BUCKET_NAME"]
-for var in required_vars:
-    if os.getenv(var) is None:
-        raise ValueError(f"Environment variable {var} not set. Please check your .env file.")
+SPACES_ENABLED = all([SPACES_REGION, SPACES_ENDPOINT, ACCESS_KEY, SECRET_KEY, BUCKET_NAME])
 
 # Initialize S3 client globally. This should ideally be handled with FastAPI's dependency injection
 # or application startup events for more robust error handling and resource management.
-try:
-    session = boto3.session.Session()
-    s3_client = session.client(
-        's3',
-        region_name=SPACES_REGION,
-        endpoint_url=SPACES_ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY
-    )
-except Exception as e:
-    print(f"Error initializing S3 client: {e}")
-    s3_client = None # Set to None if initialization fails, and handle this in functions
+if SPACES_ENABLED:
+    try:
+        session = boto3.session.Session()
+        s3_client = session.client(
+            "s3",
+            region_name=SPACES_REGION,
+            endpoint_url=SPACES_ENDPOINT,
+            aws_access_key_id=ACCESS_KEY,
+            aws_secret_access_key=SECRET_KEY,
+        )
+    except Exception as exc:  # pragma: no cover - protective logging
+        logger.exception("Failed to initialize DigitalOcean Spaces client: %s", exc)
+        s3_client = None
+else:
+    logger.warning("DigitalOcean Spaces credentials are not fully configured; product media uploads disabled.")
+    s3_client = None
 
 
 def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
@@ -64,8 +75,10 @@ def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
         str: The public URL of the uploaded file, or None if an error occurs.
     """
     if s3_client is None:
-        print("S3 client not initialized. Cannot upload file.")
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="File storage service is not configured.",
+        )
     try:
         s3_client.put_object(
             Bucket=BUCKET_NAME,
@@ -95,7 +108,7 @@ def delete_file_from_spaces(filename: str):
         bool: True if deletion was successful, False otherwise.
     """
     if s3_client is None:
-        print("S3 client not initialized. Cannot delete file.")
+        logger.warning("Attempted to delete file from Spaces but client is not configured.")
         return False
     try:
         s3_client.delete_object(Bucket=BUCKET_NAME, Key=filename)

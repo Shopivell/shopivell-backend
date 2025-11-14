@@ -32,9 +32,14 @@ class UserResponse(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     business_created_at: Optional[datetime] = None  # <-- make it optional
+    email: EmailStr
+    name: str
+    surname: Optional[str] = None
+    phone_number: Optional[str] = None
+    personal_image_path: Optional[str] = None
+    business_name: Optional[str] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 # --- Schema for User Creation (Input) ---
 # This should only include fields necessary for initial creation.
 class UserCreate(BaseModel):

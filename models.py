@@ -1,14 +1,24 @@
 from datetime import date, datetime, timezone # Import timezone
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, Integer, Numeric, String, Text, Date, Float,
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    Date,
+    Float,
     ForeignKey,
-    func
+    func,
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from database import Base # Assuming 'database' module provides Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from typing import Optional, List
+from typing import Dict, List, Optional
 
 
 class VerificationCode(Base):
@@ -243,3 +253,42 @@ class Notification(Base):
 
     sender: Mapped[Optional["User"]] = relationship("User", foreign_keys=[sender_id], back_populates="sent_notifications")
     recipient: Mapped["User"] = relationship("User", foreign_keys=[recipient_id], back_populates="received_notifications")
+
+
+# --- Content Management Models ---
+class ContentItem(Base):
+    __tablename__ = "content_items"
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    content_type: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    author: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    file_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    file_size: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    engagement: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    scheduled_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True)
+    date_posted: Mapped[Optional[Date]] = mapped_column(Date, nullable=True)
+    thumbnail_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    attachments: Mapped[List[dict]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
+class MarketingCampaign(Base):
+    __tablename__ = "marketing_campaigns"
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    objective: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    budget: Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    start_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True)
+    end_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True)
+    channels: Mapped[List[str]] = mapped_column(JSON, default=list)
+    metrics: Mapped[Dict[str, float]] = mapped_column(JSON, default=dict)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
