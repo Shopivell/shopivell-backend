@@ -1,198 +1,184 @@
-
-# Re-use from previous response
-from datetime import date, datetime
-from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
 import uuid
-from pydantic import BaseModel, ConfigDict, Field
 
-
-class MonthlyUserCountSchema(BaseModel):
-    month: str  # Format: "YYYY-MM"
-    count: int
-
-# Schema for role-based counts as a percentage of total users
-class RoleCountSchema(BaseModel):
-    role: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total users")
-
-# Schema for a single user's detailed profile
-class UserProfileSchema(BaseModel):
-    id: uuid.UUID
-    username: Optional[str]
-    role: str
-    name: str
-    surname: Optional[str]
-    phone_number: Optional[str]
-    email: str
-    date_of_birth: Optional[date]
-    gender: Optional[str]
-    created_at: datetime
-    status: str
-    business_name: Optional[str]
-    business_type: Optional[str]
-    personal_image_path: Optional[str]
-
+# Platform Schemas
+class PlatformBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
-# Final comprehensive schema for the API response
-class ComprehensiveUserStatsResponseSchema(BaseModel):
-    total_users: int
-    active_users: int
-    pending_users: int
-    disabled_users: int
-    business_accounts: int
-    users_by_role: List[RoleCountSchema]
-    monthly_registrations: List[MonthlyUserCountSchema]
-    recent_users: List[UserProfileSchema]
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class MonthlyRequestCountSchema(BaseModel):
-    """Represents the count of requests created in a specific month."""
-    month: str
-    count: int
-
-class RequestStatusCountSchema(BaseModel):
-    """Represents request counts by status, including percentage."""
-    status: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total requests")
-
-class RequestDetailSchema(BaseModel):
-    """Represents a single request with customer details."""
-    title: str
-    description: Optional[str]
-    category: str
-    quantity: int
-    status: str
-    created_at: datetime
-    updated_at: Optional[datetime]
-    image_path: Optional[str]
-    customer_name: str
-    customer_id: uuid.UUID
-
-    model_config = ConfigDict(from_attributes=True)
-
-class ComprehensiveRequestStatsResponseSchema(BaseModel):
-    """The complete response schema for request statistics."""
-    total_requests: int
-    active_requests: int
-    requests_by_status: List[RequestStatusCountSchema]
-    monthly_requests: List[MonthlyRequestCountSchema]
-    recent_requests: List[RequestDetailSchema]
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-
-class OfferStatusCountSchema(BaseModel):
-    """Represents offer counts by status, including percentage."""
-    status: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total offers")
-
-class MonthlyOfferCountSchema(BaseModel):
-    """Represents the count of offers created in a specific month."""
-    month: str
-    count: int
-
-class OfferDetailSchema(BaseModel):
-    """Represents a single offer with related request and supplier details."""
-    id: uuid.UUID
-    request_id: uuid.UUID
-    supplier_id: uuid.UUID
-    proposed_price: float
-    message: Optional[str]
-    delivery_date: Optional[datetime]
-    status: str
-    created_at: datetime
-    updated_at: Optional[datetime]
-    request_title: str
-    supplier_name: Optional[str]
-
-    model_config = ConfigDict(from_attributes=True)
-
-class ComprehensiveOfferStatsResponseSchema(BaseModel):
-    """The complete response schema for offer statistics."""
-    total_offers: int
-    offers_by_status: List[OfferStatusCountSchema]
-    monthly_offers: List[MonthlyOfferCountSchema]
-    recent_offers: List[OfferDetailSchema]
-
-    model_config = ConfigDict(from_attributes=True)
-
-   
-class OrderStatusCountSchema(BaseModel):
-    """Represents order counts by status, including percentage."""
-    status: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total orders")
-
-class MonthlyOrderCountSchema(BaseModel):
-    """Represents the count of orders created in a specific month."""
-    month: str
-    count: int
-
-class OrderDetailSchema(BaseModel):
-    """Represents a single order with related request, customer, and supplier details."""
-    id: uuid.UUID
-    request_id: uuid.UUID
-    offer_id: uuid.UUID
-    customer_id: uuid.UUID
-    supplier_id: uuid.UUID
-    total_price: float
-    status: str
-    created_at: datetime
-    updated_at: Optional[datetime]
-    delivered_at: Optional[datetime]
-    request_title: str
-    customer_name: Optional[str]
-    supplier_name: Optional[str]
-
-    model_config = ConfigDict(from_attributes=True)
-
-class ComprehensiveOrderStatsResponseSchema(BaseModel):
-    """The complete response schema for order statistics."""
-    total_orders: int
-    orders_by_status: List[OrderStatusCountSchema]
-    monthly_orders: List[MonthlyOrderCountSchema]
-    recent_orders: List[OrderDetailSchema]
-
-    model_config = ConfigDict(from_attributes=True)
-
-   
-class CategoryDistributionSchema(BaseModel):
-    """Represents category counts by status, including percentage."""
-    category: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total products")
     
-class PriceDistributionSchema(BaseModel):
-    """Represents price counts by ranges, including percentage."""
-    price_range: str
-    count: int
-    percentage: float = Field(..., description="Percentage of total products")
-
-class ProductDetailSchema(BaseModel):
-    """Represents a single product with related supplier details."""
-    id: uuid.UUID
     name: str
-    price: float
-    category: str
-    created_at: datetime
-    supplier_name: Optional[str]
+    platform_type: str
+    is_active: bool = False
+    sync_status: str = 'inactive'
 
+class PlatformCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
-class ComprehensiveProductStatsResponseSchema(BaseModel):
-    """The complete response schema for product statistics."""
-    total_products: int
-    average_price: float
-    unique_categories: List[str]
-    category_distribution: List[CategoryDistributionSchema]
-    price_distribution: List[PriceDistributionSchema]
-    recent_products: List[ProductDetailSchema]
     
+    name: str
+    platform_type: str
+    api_config: Dict[str, Any]
+
+class PlatformResponse(PlatformBase):
+    id: uuid.UUID
+    last_sync: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+class PlatformListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    
+    platforms: List[PlatformResponse]
+    total: int
+
+# Platform Data Schemas
+class PlatformDataBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    platform_id: uuid.UUID
+    data_type: str
+    date: date
+    metrics: Dict[str, Any]
+    dimensions: Optional[Dict[str, Any]] = None
+
+class PlatformDataCreate(PlatformDataBase):
+    pass
+
+class PlatformDataResponse(PlatformDataBase):
+    id: uuid.UUID
+    created_at: datetime
+
+class PlatformDataListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    data: List[PlatformDataResponse]
+    total: int
+    page: int
+    size: int
+
+# Analytics Report Schemas
+class ReportBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    name: str
+    category: str
+    description: Optional[str] = None
+    created_by: str = 'Shopify'
+    report_type: str = 'standard'
+    data_source: str = 'internal'
+    has_info: bool = False
+    is_active: bool = True
+    is_favorite: bool = False
+
+class ReportCreate(ReportBase):
+    configuration: Optional[Dict[str, Any]] = None
+
+class ReportUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    name: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    configuration: Optional[Dict[str, Any]] = None
+    has_info: Optional[bool] = None
+    is_active: Optional[bool] = None
+    is_favorite: Optional[bool] = None
+
+class ReportResponse(ReportBase):
+    id: uuid.UUID
+    configuration: Optional[Dict[str, Any]] = None
+    last_viewed: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+class ReportListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    reports: List[ReportResponse]
+    total: int
+    page: int
+    size: int
+
+# Data Sync Log Schemas
+class SyncLogBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    platform_id: uuid.UUID
+    sync_type: str
+    status: str
+    records_processed: int = 0
+
+class SyncLogResponse(SyncLogBase):
+    id: uuid.UUID
+    error_message: Optional[str] = None
+    started_at: datetime
+    completed_at: Optional[datetime]
+
+class SyncLogListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    logs: List[SyncLogResponse]
+    total: int
+    page: int
+    size: int
+
+# Data Ingestion Schemas
+class DataIngestionRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    platform: str  # google_analytics, facebook, instagram, etc.
+    data_type: str  # sessions, conversions, impressions, etc.
+    date: date
+    metrics: Dict[str, Any]
+    dimensions: Optional[Dict[str, Any]] = None
+    api_key: Optional[str] = None  # For authentication
+
+class BulkDataIngestionRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    platform: str
+    data: List[Dict[str, Any]]  # List of data points
+
+class DataIngestionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    success: bool
+    records_processed: int
+    message: str
+
+# Report View Schemas
+class ReportViewBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    report_id: uuid.UUID
+    viewed_by: Optional[str] = None
+
+class ReportViewResponse(ReportViewBase):
+    id: uuid.UUID
+    viewed_at: datetime
+
+# Search and Filter Schemas
+class ReportFilter(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    search: Optional[str] = None
+    category: Optional[str] = None
+    created_by: Optional[str] = None
+    data_source: Optional[str] = None
+    is_favorite: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+# Add this to your schemas.py file
+
+class ExplorationCreate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    name: str
+    description: Optional[str] = None
+    category: str = "Exploration"
+    metrics: List[str] = []
+    dimensions: List[str] = []
+    filters: Dict[str, Any] = {}
+    visualization_type: str = "line"  # line, bar, pie, table, etc.
+    date_range: Dict[str, Any] = {}
+    created_by: str = "user"

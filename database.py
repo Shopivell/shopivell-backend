@@ -50,6 +50,9 @@ def init_db():
     # Import models here so SQLAlchemy is aware of them
     from modules.customers import models as customer_models
     from modules.orders import models as order_models
+    from modules.products import models as products_models
+    from modules.analytics import models as analytics_models
+    # from modules.Markets import models as markets_models
 
     Base.metadata.create_all(bind=engine)
 

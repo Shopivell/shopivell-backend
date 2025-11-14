@@ -3,7 +3,9 @@ from database import engine, init_db
 from modules.customers.models import *
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
-
+from modules.products.router import products_router
+from modules.analytics.router import analytics_router
+# from modules.markets.router import markets_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -36,6 +38,9 @@ app.add_middleware(
 # ✅ Include routers with a version prefix
 app.include_router(customer_router, prefix="/v1")
 app.include_router(order_router, prefix="/v1")
+app.include_router(products_router, prefix="/v1")
+app.include_router(analytics_router, prefix="/v1")
+# app.include_router(markets_router, prefix="/v1")
 
 # Run server
 if __name__ == "__main__":

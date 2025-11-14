@@ -1,551 +1,636 @@
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Header
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_
+from typing import Optional, List
+from datetime import datetime, date, timedelta
+import uuid
+import json
 
-
-from fastapi import APIRouter, Depends, HTTPException
-from scipy import stats
-from sqlalchemy import func, or_
-from sqlalchemy.orm import aliased, Session
 from database import get_db
-from models import Offer, Order, Product, RequestPost, User
-from schemas.analytics_schema import ComprehensiveOfferStatsResponseSchema, ComprehensiveOrderStatsResponseSchema, ComprehensiveProductStatsResponseSchema, ComprehensiveRequestStatsResponseSchema, ComprehensiveUserStatsResponseSchema, OfferDetailSchema, OrderDetailSchema, ProductDetailSchema, RequestDetailSchema
-
-
-analytics_router = APIRouter(prefix="/analytics", tags=["analytics"]) # Changed tag to plural
-@analytics_router.get(
-    "/users-stats",
-    response_model=ComprehensiveUserStatsResponseSchema,
-    summary="Get comprehensive user statistics and a list of users",
-    description="""
-    Returns a full dashboard of user statistics, including:
-    - Total, active, pending, and disabled user counts.
-    - Business account count.
-    - User counts by role (with percentages).
-    - Monthly registration trends.
-    - A list of the most recently registered users.
-    """
+from modules.analytics.models import (
+    AnalyticsPlatform, PlatformData, AnalyticsReport, 
+    ReportView, DataSyncLog
 )
-async def get_comprehensive_user_stats(db: Session = Depends(get_db)):
-    """
-    Asynchronously retrieves and returns comprehensive user statistics.
+from modules.analytics.schemas import (
+    # Platform schemas
+    ExplorationCreate, PlatformCreate, PlatformResponse, PlatformListResponse,
+    # Platform Data schemas
+    PlatformDataCreate, PlatformDataResponse, PlatformDataListResponse,
+    # Report schemas
+    ReportCreate, ReportResponse, ReportListResponse, ReportUpdate,
+    # Sync Log schemas
+    SyncLogResponse, SyncLogListResponse,
+    # Data Ingestion schemas
+    DataIngestionRequest, BulkDataIngestionRequest, DataIngestionResponse,
+    # Report View schemas
+    ReportViewResponse,
+    # Filter schemas
+    ReportFilter
+)
 
-    Args:
-        db (Session): The SQLAlchemy database session, provided via dependency injection.
+analytics_router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
-    Returns:
-        ComprehensiveUserStatsResponseSchema: An object containing all requested user data.
-    """
+# =============================================================================
+# PLATFORM MANAGEMENT ENDPOINTS
+# =============================================================================
+
+# GET all analytics platforms
+@analytics_router.get("/platforms", response_model=PlatformListResponse)
+async def get_platforms(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
     try:
-        # 1. Get total user count
-        total_users = db.query(User).count()
-
-        # 2. Get status-based counts
-        status_counts = dict(
-            db.query(User.status, func.count())
-            .group_by(User.status)
-            .all()
+        query = db.query(AnalyticsPlatform)
+        
+        if is_active is not None:
+            query = query.filter(AnalyticsPlatform.is_active == is_active)
+        
+        total = query.count()
+        platforms = query.offset(skip).limit(limit).all()
+        
+        return PlatformListResponse(
+            platforms=platforms,
+            total=total
         )
-        active_users = status_counts.get("active", 0)
-        pending_users = status_counts.get("pending", 0)
-        disabled_users = status_counts.get("disabled", 0)
-
-        # 3. Get business account count
-        business_accounts_count = db.query(User).filter(User.role.in_(['supplier', 'both'])).count()
-
-        # 4. Get users by role count and percentage
-        role_counts = db.query(User.role, func.count()).group_by(User.role).all()
-        users_by_role = []
-        if total_users > 0:
-            for role, count in role_counts:
-                percentage = (count / total_users) * 100
-                users_by_role.append({"role": role, "count": count, "percentage": round(percentage, 2)})
-
-        # 5. Get monthly registration count (using func.to_char for PostgreSQL)
-        monthly_data = (
-            db.query(
-                func.to_char(User.created_at, 'YYYY-MM').label('month'),
-                func.count().label('count')
-            )
-            .group_by('month')
-            .order_by('month')
-            .all()
-        )
-        monthly_registrations = [{"month": row.month, "count": row.count} for row in monthly_data]
-
-        # 6. Get a list of recent users
-        recent_users_query = db.query(User).order_by(User.created_at.desc()).all()
-
-        # 7. Assemble and return the final comprehensive response
-        response_data = {
-            "total_users": total_users,
-            "active_users": active_users,
-            "pending_users": pending_users,
-            "disabled_users": disabled_users,
-            "business_accounts": business_accounts_count,
-            "users_by_role": users_by_role,
-            "monthly_registrations": monthly_registrations,
-            "recent_users": recent_users_query
-        }
-
-        return ComprehensiveUserStatsResponseSchema(**response_data)
-
+        
     except Exception as e:
-        # Re-introducing the try-except block, as the root cause is now identified
-        print(f"An error occurred while fetching user stats: {e}")
         raise HTTPException(
-            status_code=stats.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred."
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching platforms: {str(e)}"
+        )
+
+# CREATE analytics platform
+@analytics_router.post("/platforms", response_model=PlatformResponse, status_code=status.HTTP_201_CREATED)
+async def create_platform(platform_data: PlatformCreate, db: Session = Depends(get_db)):
+    try:
+        # Check if platform already exists
+        existing_platform = db.query(AnalyticsPlatform).filter(
+            AnalyticsPlatform.name == platform_data.name
+        ).first()
+        
+        if existing_platform:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Platform with this name already exists"
+            )
+        
+        db_platform = AnalyticsPlatform(**platform_data.model_dump())
+        db.add(db_platform)
+        db.commit()
+        db.refresh(db_platform)
+        
+        return db_platform
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating platform: {str(e)}"
+        )
+
+# UPDATE platform activation
+@analytics_router.patch("/platforms/{platform_id}/activate")
+async def activate_platform(platform_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        platform = db.query(AnalyticsPlatform).filter(AnalyticsPlatform.id == platform_id).first()
+        
+        if not platform:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Platform not found"
+            )
+        
+        platform.is_active = True
+        platform.sync_status = 'active'
+        platform.updated_at = datetime.utcnow()
+        
+        db.commit()
+        
+        return {"message": "Platform activated successfully"}
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error activating platform: {str(e)}"
+        )
+
+# =============================================================================
+# DATA INGESTION ENDPOINTS (For external platforms)
+# =============================================================================
+
+# POST data from external platforms (Google Analytics, Facebook, etc.)
+@analytics_router.post("/data/ingest", response_model=DataIngestionResponse)
+async def ingest_platform_data(
+    data_request: DataIngestionRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Find the platform
+        platform = db.query(AnalyticsPlatform).filter(
+            AnalyticsPlatform.name == data_request.platform,
+            AnalyticsPlatform.is_active == True
+        ).first()
+        
+        if not platform:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Platform '{data_request.platform}' not found or not active"
+            )
+        
+        # Validate API key if required (simplified validation)
+        if authorization and platform.api_config:
+            # In real implementation, validate the API key/token
+            pass
+        
+        # Create platform data record
+        platform_data = PlatformData(
+            platform_id=platform.id,
+            data_type=data_request.data_type,
+            date=data_request.date,
+            metrics=data_request.metrics,
+            dimensions=data_request.dimensions or {}
+        )
+        
+        db.add(platform_data)
+        
+        # Update platform sync info
+        platform.last_sync = datetime.utcnow()
+        platform.sync_status = 'synced'
+        
+        # Create sync log
+        sync_log = DataSyncLog(
+            platform_id=platform.id,
+            sync_type='incremental',
+            status='success',
+            records_processed=1,
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow()
+        )
+        db.add(sync_log)
+        
+        db.commit()
+        
+        return DataIngestionResponse(
+            success=True,
+            records_processed=1,
+            message=f"Data ingested successfully for {data_request.platform}"
+        )
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error ingesting data: {str(e)}"
+        )
+
+# POST bulk data ingestion
+@analytics_router.post("/data/ingest/bulk", response_model=DataIngestionResponse)
+async def bulk_ingest_platform_data(
+    bulk_request: BulkDataIngestionRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    try:
+        platform = db.query(AnalyticsPlatform).filter(
+            AnalyticsPlatform.name == bulk_request.platform,
+            AnalyticsPlatform.is_active == True
+        ).first()
+        
+        if not platform:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Platform '{bulk_request.platform}' not found or not active"
+            )
+        
+        records_processed = 0
+        for data_point in bulk_request.data:
+            platform_data = PlatformData(
+                platform_id=platform.id,
+                data_type=data_point.get('data_type', 'unknown'),
+                date=data_point.get('date', datetime.utcnow().date()),
+                metrics=data_point.get('metrics', {}),
+                dimensions=data_point.get('dimensions', {})
+            )
+            db.add(platform_data)
+            records_processed += 1
+        
+        # Update platform sync info
+        platform.last_sync = datetime.utcnow()
+        platform.sync_status = 'synced'
+        
+        # Create sync log
+        sync_log = DataSyncLog(
+            platform_id=platform.id,
+            sync_type='bulk',
+            status='success',
+            records_processed=records_processed,
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow()
+        )
+        db.add(sync_log)
+        
+        db.commit()
+        
+        return DataIngestionResponse(
+            success=True,
+            records_processed=records_processed,
+            message=f"Bulk data ingested successfully for {bulk_request.platform}"
+        )
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error ingesting bulk data: {str(e)}"
+        )
+
+# =============================================================================
+# REPORTS MANAGEMENT ENDPOINTS
+# =============================================================================
+
+# GET all analytics reports with filtering
+@analytics_router.get("/reports", response_model=ReportListResponse)
+async def get_reports(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    created_by: Optional[str] = None,
+    data_source: Optional[str] = None,
+    is_favorite: Optional[bool] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        query = db.query(AnalyticsReport)
+        
+        # Apply filters
+        if search:
+            query = query.filter(AnalyticsReport.name.ilike(f"%{search}%"))
+        if category and category != 'all':
+            query = query.filter(AnalyticsReport.category == category)
+        if created_by and created_by != 'all':
+            query = query.filter(AnalyticsReport.created_by == created_by)
+        if data_source and data_source != 'all':
+            query = query.filter(AnalyticsReport.data_source == data_source)
+        if is_favorite is not None:
+            query = query.filter(AnalyticsReport.is_favorite == is_favorite)
+        if is_active is not None:
+            query = query.filter(AnalyticsReport.is_active == is_active)
+        
+        total = query.count()
+        reports = query.offset(skip).limit(limit).all()
+        
+        return ReportListResponse(
+            reports=reports,
+            total=total,
+            page=skip // limit + 1,
+            size=len(reports)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching reports: {str(e)}"
+        )
+
+# GET single report by ID
+@analytics_router.get("/reports/{report_id}", response_model=ReportResponse)
+async def get_report(report_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        report = db.query(AnalyticsReport).filter(AnalyticsReport.id == report_id).first()
+        
+        if not report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+            
+        return report
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching report: {str(e)}"
+        )
+
+# CREATE analytics report
+@analytics_router.post("/reports", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
+async def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
+    try:
+        # Check if report name already exists
+        existing_report = db.query(AnalyticsReport).filter(
+            AnalyticsReport.name == report_data.name
+        ).first()
+        
+        if existing_report:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Report with this name already exists"
+            )
+        
+        db_report = AnalyticsReport(**report_data.model_dump())
+        db.add(db_report)
+        db.commit()
+        db.refresh(db_report)
+        
+        return db_report
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating report: {str(e)}"
+        )
+
+# UPDATE report
+@analytics_router.put("/reports/{report_id}", response_model=ReportResponse)
+async def update_report(
+    report_id: uuid.UUID, 
+    report_data: ReportUpdate, 
+    db: Session = Depends(get_db)
+):
+    try:
+        report = db.query(AnalyticsReport).filter(AnalyticsReport.id == report_id).first()
+        
+        if not report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+        
+        # Update fields
+        update_data = report_data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(report, field, value)
+        
+        report.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(report)
+        
+        return report
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating report: {str(e)}"
+        )
+
+# DELETE report (soft delete)
+@analytics_router.delete("/reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_report(report_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        report = db.query(AnalyticsReport).filter(AnalyticsReport.id == report_id).first()
+        
+        if not report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+        
+        # Soft delete by setting is_active to False
+        report.is_active = False
+        report.updated_at = datetime.utcnow()
+        
+        db.commit()
+        
+        return None
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting report: {str(e)}"
+        )
+
+# TOGGLE report favorite status
+@analytics_router.patch("/reports/{report_id}/favorite")
+async def toggle_report_favorite(report_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        report = db.query(AnalyticsReport).filter(AnalyticsReport.id == report_id).first()
+        
+        if not report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+        
+        report.is_favorite = not report.is_favorite
+        report.updated_at = datetime.utcnow()
+        
+        db.commit()
+        
+        return {"is_favorite": report.is_favorite}
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error toggling favorite: {str(e)}"
+        )
+
+# RECORD report view
+@analytics_router.post("/reports/{report_id}/view")
+async def record_report_view(
+    report_id: uuid.UUID, 
+    viewed_by: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        report = db.query(AnalyticsReport).filter(AnalyticsReport.id == report_id).first()
+        
+        if not report:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Report not found"
+            )
+        
+        # Create view record
+        view = ReportView(
+            report_id=report_id,
+            viewed_by=viewed_by
+        )
+        db.add(view)
+        
+        # Update report's last_viewed timestamp
+        report.last_viewed = datetime.utcnow()
+        report.updated_at = datetime.utcnow()
+        
+        db.commit()
+        
+        return {"message": "View recorded successfully"}
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error recording view: {str(e)}"
+        )
+
+# =============================================================================
+# DATA QUERY ENDPOINTS
+# =============================================================================
+
+# GET platform data
+@analytics_router.get("/data/platform/{platform_id}", response_model=PlatformDataListResponse)
+async def get_platform_data(
+    platform_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=1000),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    data_type: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        query = db.query(PlatformData).filter(PlatformData.platform_id == platform_id)
+        
+        if start_date:
+            query = query.filter(PlatformData.date >= start_date)
+        if end_date:
+            query = query.filter(PlatformData.date <= end_date)
+        if data_type:
+            query = query.filter(PlatformData.data_type == data_type)
+        
+        total = query.count()
+        data = query.order_by(PlatformData.date.desc()).offset(skip).limit(limit).all()
+        
+        return PlatformDataListResponse(
+            data=data,
+            total=total,
+            page=skip // limit + 1,
+            size=len(data)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching platform data: {str(e)}"
+        )
+
+# GET sync logs
+@analytics_router.get("/sync-logs", response_model=SyncLogListResponse)
+async def get_sync_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    platform_id: Optional[uuid.UUID] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        query = db.query(DataSyncLog)
+        
+        if platform_id:
+            query = query.filter(DataSyncLog.platform_id == platform_id)
+        if status:
+            query = query.filter(DataSyncLog.status == status)
+        
+        total = query.count()
+        logs = query.order_by(DataSyncLog.started_at.desc()).offset(skip).limit(limit).all()
+        
+        return SyncLogListResponse(
+            logs=logs,
+            total=total,
+            page=skip // limit + 1,
+            size=len(logs)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching sync logs: {str(e)}"
         )
     
-# THIS ENDPOINT MUST BE DEFINED FIRST
-@analytics_router.get(
-    "/requests-stats",
-    response_model=ComprehensiveRequestStatsResponseSchema,
-    summary="Get comprehensive request statistics and a list of requests",
-    description="""
-    Returns a full dashboard of request statistics, including:
-    - Total, active request counts.
-    - Request counts by status (with percentages).
-    - Monthly creation trends.
-    - A list of the most recently created requests with customer details.
-    """
-)
-async def get_comprehensive_request_stats(db: Session = Depends(get_db)):
-    """
-    Asynchronously retrieves and returns comprehensive request statistics.
-    
-    This function no longer takes 'user_id' as a parameter.
-    
-    Args:
-        db (Session): The SQLAlchemy database session, provided via dependency injection.
+# Add this to your analytics_router in the REPORTS MANAGEMENT ENDPOINTS section
 
-    Returns:
-        ComprehensiveRequestStatsResponseSchema: An object containing all requested request data.
-    """
+# CREATE exploration report
+@analytics_router.post("/explorations", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
+async def create_exploration(
+    exploration_data: ExplorationCreate,
+    db: Session = Depends(get_db)
+):
     try:
-        # 1. Get total requests
-        total_requests = db.query(RequestPost).count()
-
-        # 2. Get active requests (status is 'open', 'supplier_accepted', or 'counter_offered')
-        active_requests = db.query(RequestPost).filter(
-            or_(
-                RequestPost.status == 'open',
-                RequestPost.status == 'supplier_accepted',
-                RequestPost.status == 'counter_offered'
+        # Check if exploration name already exists
+        existing_report = db.query(AnalyticsReport).filter(
+            AnalyticsReport.name == exploration_data.name
+        ).first()
+        
+        if existing_report:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Exploration with this name already exists"
             )
-        ).count()
-
-        # 3. Get requests by status count and percentage
-        status_counts = db.query(
-            RequestPost.status,
-            func.count()
-        ).group_by(RequestPost.status).all()
-
-        requests_by_status = []
-        if total_requests > 0:
-            for status_name, count in status_counts:
-                percentage = (count / total_requests) * 100
-                requests_by_status.append(
-                    {"status": status_name, "count": count, "percentage": round(percentage, 2)}
-                )
-
-        # 4. Get monthly request count (using func.to_char for PostgreSQL)
-        monthly_data = (
-            db.query(
-                func.to_char(RequestPost.created_at, 'YYYY-MM').label('month'),
-                func.count().label('count')
-            )
-            .group_by('month')
-            .order_by('month')
-            .all()
-        )
-        monthly_requests = [{"month": row.month, "count": row.count} for row in monthly_data]
-
-        # 5. Get a list of recent requests with customer details
-        recent_requests_query = (
-            db.query(
-                RequestPost.id,
-                RequestPost.title,
-                RequestPost.description,
-                RequestPost.category,
-                RequestPost.quantity,
-                RequestPost.status,
-                RequestPost.created_at,
-                RequestPost.updated_at,
-                RequestPost.image_path,
-                User.name.label("customer_name"),
-                User.id.label("customer_id")
-            )
-            .join(User, RequestPost.customer_id == User.id)
-            .order_by(RequestPost.created_at.desc())
-            .all()
-        )
-
-        # 6. Assemble and return the final comprehensive response
-        response_data = {
-            "total_requests": total_requests,
-            "active_requests": active_requests,
-            "requests_by_status": requests_by_status,
-            "monthly_requests": monthly_requests,
-            "recent_requests": [
-                RequestDetailSchema(
-                    id=row.id,
-                    title=row.title,
-                    description=row.description,
-                    category=row.category,
-                    quantity=row.quantity,
-                    status=row.status,
-                    created_at=row.created_at,
-                    updated_at=row.updated_at,
-                    image_path=row.image_path,
-                    customer_name=row.customer_name,
-                    customer_id=row.customer_id
-                ) for row in recent_requests_query
-            ]
+        
+        # Prepare configuration for the exploration
+        configuration = {
+            "metrics": exploration_data.metrics,
+            "dimensions": exploration_data.dimensions,
+            "filters": exploration_data.filters,
+            "visualization_type": exploration_data.visualization_type,
+            "date_range": exploration_data.date_range,
+            "is_exploration": True
         }
         
-        return ComprehensiveRequestStatsResponseSchema(**response_data)
-
+        # Create the exploration report
+        db_report = AnalyticsReport(
+            name=exploration_data.name,
+            description=exploration_data.description,
+            category=exploration_data.category,
+            created_by=exploration_data.created_by,
+            report_type="exploration",
+            data_source="internal",
+            configuration=configuration,
+            is_active=True,
+            is_favorite=False
+        )
+        
+        db.add(db_report)
+        db.commit()
+        db.refresh(db_report)
+        
+        return db_report
+        
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
-        print(f"An error occurred while fetching request stats: {e}")
+        db.rollback()
         raise HTTPException(
-            status_code=stats.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred."
-        )
-    
-
-@analytics_router.get(
-    "/offers-stats",
-    response_model=ComprehensiveOfferStatsResponseSchema,
-    summary="Get comprehensive offer statistics and a list of offers",
-    description="""
-    Returns a full dashboard of offer statistics, including:
-    - Total offer count.
-    - Offer counts by status (with percentages).
-    - Monthly creation trends.
-    - A list of the most recently created offers with related request and supplier details.
-    """
-)
-async def get_comprehensive_offer_stats(db: Session = Depends(get_db)):
-    """
-    Asynchronously retrieves and returns comprehensive offer statistics.
-
-    Args:
-        db (Session): The SQLAlchemy database session, provided via dependency injection.
-
-    Returns:
-        ComprehensiveOfferStatsResponseSchema: An object containing all requested offer data.
-    """
-    try:
-        # 1. Get total offer count
-        total_offers = db.query(Offer).count()
-
-        # 2. Get offers by status count and percentage
-        status_counts = db.query(
-            Offer.status,
-            func.count()
-        ).group_by(Offer.status).all()
-
-        offers_by_status = []
-        if total_offers > 0:
-            for status_name, count in status_counts:
-                percentage = (count / total_offers) * 100
-                offers_by_status.append(
-                    {"status": status_name, "count": count, "percentage": round(percentage, 2)}
-                )
-
-        # 3. Get monthly offer count (using func.to_char for PostgreSQL)
-        monthly_data = (
-            db.query(
-                func.to_char(Offer.created_at, 'YYYY-MM').label('month'),
-                func.count().label('count')
-            )
-            .group_by('month')
-            .order_by('month')
-            .all()
-        )
-        monthly_offers = [{"month": row.month, "count": row.count} for row in monthly_data]
-
-        # 4. Get a list of recent offers with related request and supplier details
-        recent_offers_query = (
-            db.query(
-                Offer.id,
-                Offer.request_id,
-                Offer.supplier_id,
-                Offer.proposed_price,
-                Offer.message,
-                Offer.delivery_date,
-                Offer.status,
-                Offer.created_at,
-                Offer.updated_at,
-                RequestPost.title.label("request_title"),
-                User.business_name.label("supplier_name")
-            )
-            .join(RequestPost, Offer.request_id == RequestPost.id)
-            .join(User, Offer.supplier_id == User.id)
-            .order_by(Offer.created_at.desc())
-            .all()
-        )
-
-        # 5. Assemble and return the final comprehensive response
-        response_data = {
-            "total_offers": total_offers,
-            "offers_by_status": offers_by_status,
-            "monthly_offers": monthly_offers,
-            "recent_offers": [
-                OfferDetailSchema(
-                    id=row.id,
-                    request_id=row.request_id,
-                    supplier_id=row.supplier_id,
-                    proposed_price=float(row.proposed_price),
-                    message=row.message,
-                    delivery_date=row.delivery_date,
-                    status=row.status,
-                    created_at=row.created_at,
-                    updated_at=row.updated_at,
-                    request_title=row.request_title,
-                    supplier_name=row.supplier_name
-                ) for row in recent_offers_query
-            ]
-        }
-        
-        return ComprehensiveOfferStatsResponseSchema(**response_data)
-
-    except Exception as e:
-        print(f"An error occurred while fetching offer stats: {e}")
-        raise HTTPException(
-            status_code=stats.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred."
-        )
-    
-
-
-@analytics_router.get(
-    "/orders-stats",
-    response_model=ComprehensiveOrderStatsResponseSchema,
-    summary="Get comprehensive order statistics and a list of orders",
-    description="""
-    Returns a full dashboard of order statistics, including:
-    - Total order count.
-    - Order counts by status (with percentages).
-    - Monthly creation trends.
-    - A list of the most recently created orders with related request, customer, and supplier details.
-    """
-)
-async def get_comprehensive_order_stats(db: Session = Depends(get_db)):
-    """
-    Asynchronously retrieves and returns comprehensive order statistics.
-
-    Args:
-        db (Session): The SQLAlchemy database session, provided via dependency injection.
-
-    Returns:
-        ComprehensiveOrderStatsResponseSchema: An object containing all requested order data.
-    """
-    try:
-        # Define aliases for the User table to perform multiple joins
-        Customer = aliased(User)
-        Supplier = aliased(User)
-
-        # 1. Get total order count
-        total_orders = db.query(Order).count()
-
-        # 2. Get orders by status count and percentage
-        status_counts = db.query(
-            Order.status,
-            func.count()
-        ).group_by(Order.status).all()
-
-        orders_by_status = []
-        if total_orders > 0:
-            for status_name, count in status_counts:
-                percentage = (count / total_orders) * 100
-                orders_by_status.append(
-                    {"status": status_name, "count": count, "percentage": round(percentage, 2)}
-                )
-
-        # 3. Get monthly order count (using func.to_char for PostgreSQL)
-        monthly_data = (
-            db.query(
-                func.to_char(Order.created_at, 'YYYY-MM').label('month'),
-                func.count().label('count')
-            )
-            .group_by('month')
-            .order_by('month')
-            .all()
-        )
-        monthly_orders = [{"month": row.month, "count": row.count} for row in monthly_data]
-
-        # 4. Get a list of recent orders with related request, customer, and supplier details
-        recent_orders_query = (
-            db.query(
-                Order.id,
-                Order.request_id,
-                Order.offer_id,
-                Order.customer_id,
-                Order.supplier_id,
-                Order.total_price,
-                Order.status,
-                Order.created_at,
-                Order.updated_at,
-                Order.delivered_at,
-                RequestPost.title.label("request_title"),
-                Customer.name.label("customer_name"),
-                Supplier.business_name.label("supplier_name")
-            )
-            .join(RequestPost, Order.request_id == RequestPost.id)
-            .join(Customer, Order.customer_id == Customer.id)
-            .join(Supplier, Order.supplier_id == Supplier.id)
-            .order_by(Order.created_at.desc())
-            .all()
-        )
-
-        # 5. Assemble and return the final comprehensive response
-        response_data = {
-            "total_orders": total_orders,
-            "orders_by_status": orders_by_status,
-            "monthly_orders": monthly_orders,
-            "recent_orders": [
-                OrderDetailSchema(
-                    id=row.id,
-                    request_id=row.request_id,
-                    offer_id=row.offer_id,
-                    customer_id=row.customer_id,
-                    supplier_id=row.supplier_id,
-                    total_price=float(row.total_price),
-                    status=row.status,
-                    created_at=row.created_at,
-                    updated_at=row.updated_at,
-                    delivered_at=row.delivered_at,
-                    request_title=row.request_title,
-                    customer_name=row.customer_name,
-                    supplier_name=row.supplier_name
-                ) for row in recent_orders_query
-            ]
-        }
-        
-        return ComprehensiveOrderStatsResponseSchema(**response_data)
-
-    except Exception as e:
-        print(f"An error occurred while fetching order stats: {e}")
-        raise HTTPException(
-            status_code=stats.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred."
-        )
-
-
-@analytics_router.get(
-    "/products-stats",
-    response_model=ComprehensiveProductStatsResponseSchema,
-    summary="Get comprehensive product statistics and a list of products",
-    description="""
-    Returns a full dashboard of product statistics, including:
-    - Total product count.
-    - Average product price.
-    - Unique product categories.
-    - Product category distribution by percentage.
-    - Product price distribution by range.
-    - A list of the most recently created products with related supplier details.
-    """
-)
-async def get_comprehensive_product_stats(db: Session = Depends(get_db)):
-    """
-    Asynchronously retrieves and returns comprehensive product statistics.
-
-    Args:
-        db (Session): The SQLAlchemy database session, provided via dependency injection.
-
-    Returns:
-        ComprehensiveProductStatsResponseSchema: An object containing all requested product data.
-    """
-    try:
-        # 1. Get total product count
-        total_products = db.query(Product).count()
-
-        # 2. Get average product price
-        avg_price_result = db.query(func.avg(Product.price)).scalar()
-        average_price = round(float(avg_price_result), 2) if avg_price_result else 0.0
-
-        # 3. Get unique categories and their distribution
-        category_counts = db.query(
-            Product.category,
-            func.count()
-        ).group_by(Product.category).all()
-
-        unique_categories = [cat for cat, count in category_counts]
-        category_distribution = []
-        if total_products > 0:
-            for category_name, count in category_counts:
-                percentage = (count / total_products) * 100
-                category_distribution.append(
-                    {"category": category_name, "count": count, "percentage": round(percentage, 2)}
-                )
-
-        # 4. Get product price distribution
-        all_prices = db.query(Product.price).all()
-        price_bins = {
-            "$0 - $100": 0,
-            "$101 - $500": 0,
-            "$501 - $1000": 0,
-            "$1001+": 0
-        }
-        
-        for price_tuple in all_prices:
-            price = float(price_tuple[0])
-            if price <= 100:
-                price_bins["$0 - $100"] += 1
-            elif price <= 500:
-                price_bins["$101 - $500"] += 1
-            elif price <= 1000:
-                price_bins["$501 - $1000"] += 1
-            else:
-                price_bins["$1001+"] += 1
-        
-        price_distribution = []
-        if total_products > 0:
-            for price_range, count in price_bins.items():
-                percentage = (count / total_products) * 100
-                price_distribution.append(
-                    {"price_range": price_range, "count": count, "percentage": round(percentage, 2)}
-                )
-
-        # 5. Get a list of recent products with related supplier details
-        recent_products_query = (
-            db.query(
-                Product.id,
-                Product.name,
-                Product.price,
-                Product.category,
-                Product.created_at,
-                User.business_name.label("supplier_name")
-            )
-            .join(User, Product.supplier_id == User.id)
-            .order_by(Product.created_at.desc())
-            .all()
-        )
-
-        # 6. Assemble and return the final comprehensive response
-        response_data = {
-            "total_products": total_products,
-            "average_price": average_price,
-            "unique_categories": unique_categories,
-            "category_distribution": category_distribution,
-            "price_distribution": price_distribution,
-            "recent_products": [
-                ProductDetailSchema(
-                    id=row.id,
-                    name=row.name,
-                    price=float(row.price),
-                    category=row.category,
-                    created_at=row.created_at,
-                    supplier_name=row.supplier_name
-                ) for row in recent_products_query
-            ]
-        }
-        
-        return ComprehensiveProductStatsResponseSchema(**response_data)
-
-    except Exception as e:
-        print(f"An error occurred while fetching product stats: {e}")
-        raise HTTPException(
-            status_code=stats.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred."
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating exploration: {str(e)}"
         )

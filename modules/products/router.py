@@ -1,364 +1,991 @@
-from io import BytesIO
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session
 from typing import Optional, List
 import uuid
-from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.orm import Session
+import shutil
+from pathlib import Path
+
 from database import get_db
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, Form, status, Request
-from models import Product, User # Ensure your Product and User models are correctly imported
-from schemas.products_schema import ProductResponse, ProductCreate, ProductUpdate # Use the updated schemas
-from schemas.user_schema import SuccessMessage # Assuming SuccessMessage is in user_schema
-from uuid import UUID
+from modules.products.models import Product, Collection, CollectionProduct
+from modules.products.schemas import (
+    ProductCreate, ProductResponse, ProductUpdate, ProductListResponse,
+    CollectionCreate, CollectionResponse, CollectionUpdate, CollectionListResponse,
+    InventoryListResponse, InventoryItemResponse, InventoryUpdate
+)
 
-from dotenv import load_dotenv
-import boto3
-from botocore.exceptions import NoCredentialsError
-import os
+products_router = APIRouter(prefix="/api/products", tags=["products"])
 
+# Image upload configuration
+UPLOAD_DIR = Path("uploads")
+PRODUCT_IMAGE_DIR = UPLOAD_DIR / "products"
+COLLECTION_IMAGE_DIR = UPLOAD_DIR / "collections"
 
-# Create a new router for products
-product_router = APIRouter(prefix="/products", tags=["Products"]) # Changed tag to plural
-# Load environment variables (ensure this is at the very top of your file or in main.py)
+# Create upload directories if they don't exist
+PRODUCT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+COLLECTION_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-load_dotenv()
+# =============================================================================
+# INVENTORY ENDPOINTS
+# =============================================================================
 
-# Configuration from environment variables
-SPACES_REGION = os.getenv("SPACES_REGION")
-SPACES_ENDPOINT = os.getenv("SPACES_ENDPOINT")
-ACCESS_KEY = os.getenv("ACCESS_KEY")
-SECRET_KEY = os.getenv("SECRET_KEY")
-BUCKET_NAME = os.getenv("BUCKET_NAME")
-
-# --- Validate Configuration (Optional but Recommended) ---
-required_vars = ["SPACES_REGION", "SPACES_ENDPOINT", "ACCESS_KEY", "SECRET_KEY", "BUCKET_NAME"]
-for var in required_vars:
-    if os.getenv(var) is None:
-        raise ValueError(f"Environment variable {var} not set. Please check your .env file.")
-
-# Initialize S3 client globally. This should ideally be handled with FastAPI's dependency injection
-# or application startup events for more robust error handling and resource management.
-try:
-    session = boto3.session.Session()
-    s3_client = session.client(
-        's3',
-        region_name=SPACES_REGION,
-        endpoint_url=SPACES_ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY
-    )
-except Exception as e:
-    print(f"Error initializing S3 client: {e}")
-    s3_client = None # Set to None if initialization fails, and handle this in functions
-
-
-def upload_file_to_spaces(file_data: bytes, filename: str, content_type: str):
-    """
-    Uploads a file to DigitalOcean Spaces.
-
-    Args:
-        file_data (bytes): The content of the file to upload.
-        filename (str): The desired filename in Spaces.
-        content_type (str): The MIME type of the file (e.g., "image/jpeg").
-
-    Returns:
-        str: The public URL of the uploaded file, or None if an error occurs.
-    """
-    if s3_client is None:
-        print("S3 client not initialized. Cannot upload file.")
-        return None
+# GET all inventory items (all products with inventory data)
+@products_router.get("/inventory/items", response_model=InventoryListResponse)
+async def get_inventory_items(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    product_id: Optional[uuid.UUID] = None,
+    sku: Optional[str] = None,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     try:
-        s3_client.put_object(
-            Bucket=BUCKET_NAME,
-            Key=filename,
-            Body=file_data,
-            ACL='public-read',  # Makes the file publicly accessible
-            ContentType=content_type
+        # Build query with filters
+        query = db.query(Product)
+        
+        if product_id:
+            query = query.filter(Product.id == product_id)
+        if sku:
+            query = query.filter(Product.sku.ilike(f"%{sku}%"))
+        if status:
+            query = query.filter(Product.status == status)
+        if search:
+            query = query.filter(
+                Product.title.ilike(f"%{search}%") | 
+                Product.sku.ilike(f"%{search}%")
+            )
+        
+        # Get total count
+        total = query.count()
+        
+        # Apply pagination
+        products = query.offset(skip).limit(limit).all()
+        
+        # Convert to inventory items format
+        inventory_items = []
+        for product in products:
+            inventory_items.append(InventoryItemResponse(
+                id=product.id,
+                name=product.title,
+                sku=product.sku,
+                quantity=product.quantity,  # Add quantity
+                unavailable=product.unavailable,
+                committed=product.committed,
+                available=product.available,
+                on_hand=product.on_hand,
+                status=product.status,
+                inventory_tracked=product.inventory_tracked
+            ))
+        
+        return InventoryListResponse(
+            inventory_items=inventory_items,
+            total=total,
+            page=skip // limit + 1,
+            size=len(inventory_items)
         )
-        # Construct the public URL for the uploaded file
-        return f"{SPACES_ENDPOINT}/{BUCKET_NAME}/{filename}"
-    
-    except NoCredentialsError:
-        print("Credentials not available. Check ACCESS_KEY and SECRET_KEY in .env.")
-        return None
+        
     except Exception as e:
-        print(f"Error uploading file to Spaces: {e}")
-        return None
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching inventory items: {str(e)}"
+        )
 
-def delete_file_from_spaces(filename: str):
-    """
-    Deletes a file from DigitalOcean Spaces.
-
-    Args:
-        filename (str): The filename (Key) of the file to delete in Spaces.
-
-    Returns:
-        bool: True if deletion was successful, False otherwise.
-    """
-    if s3_client is None:
-        print("S3 client not initialized. Cannot delete file.")
-        return False
+# GET single product inventory
+@products_router.get("/inventory/items/{product_id}", response_model=InventoryItemResponse)
+async def get_inventory_item(product_id: uuid.UUID, db: Session = Depends(get_db)):
     try:
-        s3_client.delete_object(Bucket=BUCKET_NAME, Key=filename)
-        return True
+        product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+            
+        return InventoryItemResponse(
+            id=product.id,
+            name=product.title,
+            sku=product.sku,
+            unavailable=product.unavailable,
+            committed=product.committed,
+            available=product.available,
+            on_hand=product.on_hand,
+            status=product.status,
+            inventory_tracked=product.inventory_tracked
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error deleting file from Spaces: {e}")
-        return False
-    
-# --- Removed _get_image_url and any /image/{image_id} routes ---
-# These are no longer needed because image_path directly stores the DO Spaces URL
-# The client will fetch images directly from DO Spaces.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching inventory item: {str(e)}"
+        )
 
-
-@product_router.post("/product", response_model=SuccessMessage, status_code=status.HTTP_201_CREATED) # Changed response_model
-async def create_product(
-    name: str = Form(...),
-    description: Optional[str] = Form(None),
-    price: float = Form(...),
-    category: str = Form(...),
-    supplier_id: UUID = Form(...),
-    image: UploadFile = File(None),  # Single file
+# UPDATE product inventory quantities
+@products_router.put("/inventory/items/{product_id}", response_model=InventoryItemResponse)
+async def update_inventory_item(
+    product_id: uuid.UUID, 
+    inventory_data: InventoryUpdate, 
     db: Session = Depends(get_db)
 ):
-    """
-    Creates a new product with an associated image uploaded to DigitalOcean Spaces.
-    """
-    image_url = None
-    supplier = db.query(User).filter(User.id == supplier_id).first()
-    if not supplier:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
-    
-    # Optional: Check if supplier has the 'supplier' role
-    if supplier.role != "both":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not authorized to create products (not a supplier).")
-
-    # Validate image file type
-    # if not image.content_type or not image.content_type.startswith("image/"):
-    #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"File '{image.filename}' is not a valid image. Content type: {image.content_type}")
-    if image is not None:
-        contents = await image.read()
-        file_extension = image.filename.split(".")[-1] if "." in image.filename else "jpg" # Default to jpg
-        spaces_filename = f"products/{supplier_id}/{uuid.uuid4()}.{file_extension}" # Organized by supplier ID
-
-        image_url = upload_file_to_spaces(contents, spaces_filename, image.content_type)
-        # The upload_file_to_spaces function now raises HTTPException on error, so no explicit check here needed.
-
-    db_product = Product(
-        name=name,
-        description=description,
-        price=price,
-        category=category,
-        supplier_id=supplier_id,
-        image_path=image_url # Store the DO Spaces URL directly
-    )
-
     try:
+        # Get existing product
+        product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Update inventory fields
+        update_data = inventory_data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(product, field, value)
+        
+        db.commit()
+        db.refresh(product)
+        
+        return InventoryItemResponse(
+            id=product.id,
+            name=product.title,
+            sku=product.sku,
+            quantity=product.quantity,  # Add quantity
+            unavailable=product.unavailable,
+            committed=product.committed,
+            available=product.available,
+            on_hand=product.on_hand,
+            status=product.status,
+            inventory_tracked=product.inventory_tracked
+        )
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating inventory item: {str(e)}"
+        )
+
+# BULK UPDATE inventory quantities
+@products_router.put("/inventory/bulk-update", response_model=List[InventoryItemResponse])
+async def bulk_update_inventory(
+    updates: List[dict],
+    db: Session = Depends(get_db)
+):
+    try:
+        results = []
+        for update in updates:
+            product_id = update.get('product_id')
+            if not product_id:
+                continue
+                
+            product = db.query(Product).filter(Product.id == product_id).first()
+            if not product:
+                continue
+                
+            # Update inventory fields
+            if 'unavailable' in update:
+                product.unavailable = update['unavailable']
+            if 'committed' in update:
+                product.committed = update['committed']
+            if 'available' in update:
+                product.available = update['available']
+            if 'on_hand' in update:
+                product.on_hand = update['on_hand']
+            
+            results.append(InventoryItemResponse(
+                id=product.id,
+                name=product.title,
+                sku=product.sku,
+                unavailable=product.unavailable,
+                committed=product.committed,
+                available=product.available,
+                on_hand=product.on_hand,
+                status=product.status,
+                inventory_tracked=product.inventory_tracked
+            ))
+        
+        db.commit()
+        return results
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error bulk updating inventory: {str(e)}"
+        )
+
+# UPDATE inventory quantities (quick update)
+@products_router.patch("/inventory/items/{product_id}/quantities", response_model=InventoryItemResponse)
+async def update_inventory_quantities(
+    product_id: uuid.UUID,
+    unavailable: Optional[int] = None,
+    committed: Optional[int] = None,
+    available: Optional[int] = None,
+    on_hand: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Get existing product
+        product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Update quantities if provided
+        if unavailable is not None:
+            product.unavailable = unavailable
+        if committed is not None:
+            product.committed = committed
+        if available is not None:
+            product.available = available
+        if on_hand is not None:
+            product.on_hand = on_hand
+        
+        db.commit()
+        db.refresh(product)
+        
+        return InventoryItemResponse(
+            id=product.id,
+            name=product.title,
+            sku=product.sku,
+            unavailable=product.unavailable,
+            committed=product.committed,
+            available=product.available,
+            on_hand=product.on_hand,
+            status=product.status,
+            inventory_tracked=product.inventory_tracked
+        )
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating inventory quantities: {str(e)}"
+        )
+
+# =============================================================================
+# IMAGE UPLOAD ENDPOINTS
+# =============================================================================
+
+@products_router.post("/upload/product-image/{product_id}")
+async def upload_product_image(
+    product_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify product exists
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Validate file type
+        allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+        file_extension = Path(file.filename).suffix.lower()
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file type. Allowed types: jpg, jpeg, png, gif, webp"
+            )
+        
+        # Generate unique filename
+        unique_filename = f"{product_id}_{uuid.uuid4()}{file_extension}"
+        file_path = PRODUCT_IMAGE_DIR / unique_filename
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Update product with image paths
+        product.image_path = str(file_path)
+        product.image_url = f"/api/products/images/products/{unique_filename}"
+        
+        db.commit()
+        db.refresh(product)
+        
+        return {
+            "message": "Image uploaded successfully",
+            "image_url": product.image_url,
+            "image_path": product.image_path
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading image: {str(e)}"
+        )
+
+@products_router.post("/upload/collection-image/{collection_id}")
+async def upload_collection_image(
+    collection_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify collection exists
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Validate file type
+        allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+        file_extension = Path(file.filename).suffix.lower()
+        if file_extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid file type. Allowed types: jpg, jpeg, png, gif, webp"
+            )
+        
+        # Generate unique filename
+        unique_filename = f"{collection_id}_{uuid.uuid4()}{file_extension}"
+        file_path = COLLECTION_IMAGE_DIR / unique_filename
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Update collection with image paths
+        collection.image_path = str(file_path)
+        collection.image_url = f"/api/products/images/collections/{unique_filename}"
+        
+        db.commit()
+        db.refresh(collection)
+        
+        return {
+            "message": "Image uploaded successfully",
+            "image_url": collection.image_url,
+            "image_path": collection.image_path
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading image: {str(e)}"
+        )
+
+# Serve uploaded images
+@products_router.get("/images/products/{filename}")
+async def get_product_image(filename: str):
+    file_path = PRODUCT_IMAGE_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+    return FileResponse(file_path)
+
+@products_router.get("/images/collections/{filename}")
+async def get_collection_image(filename: str):
+    file_path = COLLECTION_IMAGE_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found"
+        )
+    return FileResponse(file_path)
+
+# =============================================================================
+# PRODUCT ENDPOINTS
+# =============================================================================
+
+# GET all products with pagination and filtering
+@products_router.get("/", response_model=ProductListResponse)
+async def get_products(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    vendor: Optional[str] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Build query with filters
+        query = db.query(Product)
+        
+        if category:
+            query = query.filter(Product.category == category)
+        if status:
+            query = query.filter(Product.status == status)
+        if vendor:
+            query = query.filter(Product.vendor == vendor)
+        if search:
+            query = query.filter(
+                Product.title.ilike(f"%{search}%") | 
+                Product.description.ilike(f"%{search}%") |
+                Product.sku.ilike(f"%{search}%")
+            )
+        
+        # Get total count
+        total = query.count()
+        
+        # Apply pagination
+        products = query.offset(skip).limit(limit).all()
+        
+        return ProductListResponse(
+            products=products,
+            total=total,
+            page=skip // limit + 1,
+            size=len(products)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching products: {str(e)}"
+        )
+
+# GET single product by ID
+@products_router.get("/{product_id}", response_model=ProductResponse)
+async def get_product(product_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+            
+        return product
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching product: {str(e)}"
+        )
+
+# GET product by SKU
+@products_router.get("/sku/{sku}", response_model=ProductResponse)
+async def get_product_by_sku(sku: str, db: Session = Depends(get_db)):
+    try:
+        product = db.query(Product).filter(Product.sku == sku).first()
+        
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+            
+        return product
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching product: {str(e)}"
+        )
+
+# CREATE product
+# CREATE product
+@products_router.post("/", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
+async def create_product(product_data: ProductCreate, db: Session = Depends(get_db)):
+    try:
+        # Prepare product data - handle empty strings by converting to None
+        product_dict = product_data.model_dump(exclude={'collections'})
+        
+        # Convert all empty strings to None for database compatibility
+        for key, value in product_dict.items():
+            if isinstance(value, str) and value.strip() == '':
+                product_dict[key] = None
+        
+        # Special handling for SKU
+        if not product_dict.get('sku'):
+            product_dict['sku'] = 'No SKU'
+        
+        # Check if SKU already exists (only if not using default)
+        if product_dict['sku'] != 'No SKU':
+            existing_product = db.query(Product).filter(
+                Product.sku == product_dict['sku']
+            ).first()
+            
+            if existing_product:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="SKU already exists"
+                )
+        
+        # Create new product
+        db_product = Product(**product_dict)
         db.add(db_product)
+        db.flush()
+        
+        # Handle collections if provided
+        if product_data.collections:
+            for collection_id in product_data.collections:
+                collection_product = CollectionProduct(
+                    product_id=db_product.id,
+                    collection_id=collection_id
+                )
+                db.add(collection_product)
+        
         db.commit()
         db.refresh(db_product)
-    except Exception as e:
-        db.rollback()
-        # Attempt to delete the uploaded file if database commit fails
-        delete_file_from_spaces(spaces_filename)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to create product in database: {e}")
-
-    # Return the created product including its ID and image_path
-    return {"message": "Product created successfully"}
-
-
-@product_router.get("/{product_id}", response_model=ProductResponse) # Changed response_model
-def get_product(
-    product_id: UUID, 
-    db: Session = Depends(get_db)
-):
-    """
-    Retrieves a single product by its ID.
-    """
-    db_product = db.query(Product).filter(Product.id == product_id).first()
-    if not db_product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-    
-    # Pydantic will automatically map the SQLAlchemy model to ProductResponse
-    # which includes the image_path
-    return db_product
-
-@product_router.get("/", response_model=List[ProductResponse]) # Changed response_model
-def get_all_products(
-    db: Session = Depends(get_db)
-):
-    """
-    Retrieves all products.
-    """
-    products = db.query(Product).all()
-    # Pydantic will automatically convert the list of SQLAlchemy Product objects
-    # into a List of ProductResponse objects, including image_path.
-    return products
-
-@product_router.put("/{product_id}", response_model=ProductResponse) # Changed response_model
-def update_product(
-    product_id: UUID, 
-    product_update: ProductUpdate, # Use ProductUpdate schema for partial updates
-    db: Session = Depends(get_db)
-):
-    """
-    Updates an existing product's details (excluding image).
-    """
-    db_product = db.query(Product).filter(Product.id == product_id).first()
-    if not db_product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-    
-    # Apply updates from the Pydantic model to the SQLAlchemy model
-    # Use model_dump(exclude_unset=True) to only update fields that are provided
-    for key, value in product_update.model_dump(exclude_unset=True).items():
-        setattr(db_product, key, value)
-    
-    try:
-        db.commit()
-        db.refresh(db_product)
+        
         return db_product
+        
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update product in database: {e}")
-
-@product_router.post("/{product_id}/image", response_model=SuccessMessage)
-async def update_product_image(
-    product_id: UUID,
-    image: UploadFile = File(...),
+        print(f"Detailed error: {str(e)}")  # Add this for debugging
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating product: {str(e)}"
+        )
+    
+# UPDATE product
+# UPDATE product
+@products_router.put("/{product_id}", response_model=ProductResponse)
+async def update_product(
+    product_id: uuid.UUID, 
+    product_data: ProductUpdate, 
     db: Session = Depends(get_db)
 ):
-    """
-    Updates the image for an existing product. Deletes the old image from DigitalOcean Spaces.
-    """
-    db_product = db.query(Product).filter(Product.id == product_id).first()
-    if not db_product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
-
-    if not image.content_type or not image.content_type.startswith("image/"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"File '{image.filename}' is not a valid image.")
-
-    # Delete old image from Spaces if it exists
-    if db_product.image_path:
-        # Extract filename from the URL for deletion (assuming URL format is SPACES_ENDPOINT/BUCKET_NAME/path/to/filename)
-        old_filename_in_spaces = db_product.image_path.replace(f"{SPACES_ENDPOINT}/{BUCKET_NAME}/", "")
-        if old_filename_in_spaces:
-            if not delete_file_from_spaces(old_filename_in_spaces):
-                print(f"Warning: Failed to delete old image {old_filename_in_spaces} from Spaces.")
-
-    # Upload new image
-    contents = await image.read()
-    file_extension = image.filename.split(".")[-1] if "." in image.filename else "jpg"
-    new_spaces_filename = f"products/{db_product.supplier_id}/{uuid.uuid4()}.{file_extension}" # Organize by supplier ID
-
-    new_image_url = upload_file_to_spaces(contents, new_spaces_filename, image.content_type)
-    
-    db_product.image_path = new_image_url
-
     try:
+        # Get existing product
+        db_product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not db_product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Prepare update data - handle empty strings
+        update_data = product_data.model_dump(exclude_unset=True)
+        
+        # Convert empty strings to None for nullable fields
+        nullable_fields = ['description', 'category', 'type', 'vendor', 'tags', 'barcode', 'image_url', 'image_path']
+        for field in nullable_fields:
+            if field in update_data and update_data[field] == '':
+                update_data[field] = None
+        
+        # Handle SKU specifically
+        if 'sku' in update_data and (not update_data['sku'] or update_data['sku'].strip() == ''):
+            update_data['sku'] = 'No SKU'
+        
+        # Check if SKU already exists (if being updated and not using default)
+        if 'sku' in update_data and update_data['sku'] != 'No SKU' and update_data['sku'] != db_product.sku:
+            existing_product = db.query(Product).filter(
+                Product.sku == update_data['sku']
+            ).first()
+            
+            if existing_product:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="SKU already exists"
+                )
+        
+        # Update fields
+        for field, value in update_data.items():
+            setattr(db_product, field, value)
+        
         db.commit()
         db.refresh(db_product)
+        
+        return db_product
+        
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        # If DB update fails, attempt to delete the newly uploaded image
-        delete_file_from_spaces(new_spaces_filename)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update product image path in database: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating product: {str(e)}"
+        )
 
-    return SuccessMessage(message="Product image updated successfully", image_url=new_image_url)
-
-
-@product_router.delete("/{product_id}", response_model=SuccessMessage, status_code=status.HTTP_200_OK) # Changed response_model
-def delete_product(product_id: UUID, db: Session = Depends(get_db)):
-    """
-    Deletes a product and its associated image from DigitalOcean Spaces.
-    """
-    db_product = db.query(Product).filter(Product.id == product_id).first()
-    if not db_product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-
-    # Delete associated image from DigitalOcean Spaces
-    if db_product.image_path:
-        filename_in_spaces = db_product.image_path.replace(f"{SPACES_ENDPOINT}/{BUCKET_NAME}/", "")
-        if filename_in_spaces:
-            if not delete_file_from_spaces(filename_in_spaces):
-                print(f"Warning: Failed to delete image {filename_in_spaces} from Spaces.")
-                # You might choose to raise an HTTPException here if image deletion is critical
-
+# DELETE product
+@products_router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_product(product_id: uuid.UUID, db: Session = Depends(get_db)):
     try:
+        # Get existing product
+        db_product = db.query(Product).filter(Product.id == product_id).first()
+        
+        if not db_product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Delete associated collection relationships first
+        db.query(CollectionProduct).filter(
+            CollectionProduct.product_id == product_id
+        ).delete()
+        
         db.delete(db_product)
         db.commit()
+        
+        return None
+        
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to delete product from database: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting product: {str(e)}"
+        )
 
-    return SuccessMessage(message="Product and associated image deleted successfully")
+# =============================================================================
+# COLLECTION ENDPOINTS
+# =============================================================================
 
-
-@product_router.get("/by-supplier/{supplier_id}", response_model=List[ProductResponse]) # Changed path for clarity
-def get_products_by_supplier(
-    supplier_id: UUID, 
+# GET all collections with pagination and filtering
+@products_router.get("/collections/", response_model=CollectionListResponse)
+async def get_collections(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    collection_type: Optional[str] = None,
+    search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    Retrieves all products for a given supplier.
-    """
-    db_supplier = db.query(User).filter(User.id == supplier_id).first()
-    if not db_supplier:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
-    
-    # Optional: Check if the user is actually a supplier
-    if db_supplier.role != "both":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a supplier.")
+    try:
+        # Build query with filters
+        query = db.query(Collection)
+        
+        if collection_type:
+            query = query.filter(Collection.collection_type == collection_type)
+        if search:
+            query = query.filter(Collection.title.ilike(f"%{search}%"))
+        
+        # Get total count
+        total = query.count()
+        
+        # Apply pagination
+        collections = query.offset(skip).limit(limit).all()
+        
+        return CollectionListResponse(
+            collections=collections,
+            total=total,
+            page=skip // limit + 1,
+            size=len(collections)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching collections: {str(e)}"
+        )
 
-    products = db.query(Product).filter(Product.supplier_id == supplier_id).all()
-    # Pydantic will handle the mapping to ProductResponse
-    return products
+# GET single collection by ID
+@products_router.get("/collections/{collection_id}", response_model=CollectionResponse)
+async def get_collection(collection_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+            
+        return collection
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching collection: {str(e)}"
+        )
 
-@product_router.get("/by-category/{category}", response_model=List[ProductResponse]) # Changed path for clarity
-def get_products_by_category(
-    category: str, 
+# CREATE collection
+@products_router.post("/collections/", response_model=CollectionResponse, status_code=status.HTTP_201_CREATED)
+async def create_collection(collection_data: CollectionCreate, db: Session = Depends(get_db)):
+    try:
+        # Check if collection title already exists
+        existing_collection = db.query(Collection).filter(
+            Collection.title == collection_data.title
+        ).first()
+        
+        if existing_collection:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Collection title already exists"
+            )
+        
+        # Create new collection
+        collection_dict = collection_data.model_dump(exclude={'product_ids'})
+        db_collection = Collection(**collection_dict)
+        db.add(db_collection)
+        db.flush()  # Flush to get the collection ID
+        
+        # Handle products if provided
+        if collection_data.product_ids:
+            for product_id in collection_data.product_ids:
+                # Verify product exists
+                product = db.query(Product).filter(Product.id == product_id).first()
+                if not product:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Product with ID {product_id} not found"
+                    )
+                
+                collection_product = CollectionProduct(
+                    collection_id=db_collection.id,
+                    product_id=product_id
+                )
+                db.add(collection_product)
+        
+        db.commit()
+        db.refresh(db_collection)
+        
+        return db_collection
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating collection: {str(e)}"
+        )
+
+# UPDATE collection
+@products_router.put("/collections/{collection_id}", response_model=CollectionResponse)
+async def update_collection(
+    collection_id: uuid.UUID, 
+    collection_data: CollectionUpdate, 
     db: Session = Depends(get_db)
 ):
-    """
-    Retrieves all products belonging to a specific category.
-    """
-    products = db.query(Product).filter(Product.category.ilike(category)).all() # Use ilike for case-insensitive
-    if not products:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No products found in category: {category}")
-    
-    return products
+    try:
+        # Get existing collection
+        db_collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        
+        if not db_collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Check if title already exists (if being updated)
+        if collection_data.title and collection_data.title != db_collection.title:
+            existing_collection = db.query(Collection).filter(
+                Collection.title == collection_data.title
+            ).first()
+            
+            if existing_collection:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Collection title already exists"
+                )
+        
+        # Update fields
+        update_data = collection_data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(db_collection, field, value)
+        
+        db.commit()
+        db.refresh(db_collection)
+        
+        return db_collection
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating collection: {str(e)}"
+        )
 
-@product_router.get("/search-products/{query}", response_model=List[ProductResponse]) # Changed path for clarity
-def search_products(
-    query: str, 
+# DELETE collection
+@products_router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_collection(collection_id: uuid.UUID, db: Session = Depends(get_db)):
+    try:
+        # Get existing collection
+        db_collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        
+        if not db_collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Delete associated collection relationships first
+        db.query(CollectionProduct).filter(
+            CollectionProduct.collection_id == collection_id
+        ).delete()
+        
+        db.delete(db_collection)
+        db.commit()
+        
+        return None
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting collection: {str(e)}"
+        )
+
+# ADD product to collection
+@products_router.post("/collections/{collection_id}/products/{product_id}", response_model=CollectionResponse)
+async def add_product_to_collection(
+    collection_id: uuid.UUID,
+    product_id: uuid.UUID,
     db: Session = Depends(get_db)
 ):
-    """
-    Searches for products by name (case-insensitive partial match).
-    """
-    # Use .ilike for case-insensitive search
-    products = db.query(Product).filter(Product.name.ilike(f"%{query}%")).all()
-    if not products:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No products found matching query: '{query}'")
-    
-    return products
+    try:
+        # Verify collection exists
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Verify product exists
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        # Check if product already in collection
+        existing_relation = db.query(CollectionProduct).filter(
+            CollectionProduct.collection_id == collection_id,
+            CollectionProduct.product_id == product_id
+        ).first()
+        
+        if existing_relation:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Product already in collection"
+            )
+        
+        # Add product to collection
+        collection_product = CollectionProduct(
+            collection_id=collection_id,
+            product_id=product_id
+        )
+        db.add(collection_product)
+        db.commit()
+        db.refresh(collection)
+        
+        return collection
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding product to collection: {str(e)}"
+        )
 
-@product_router.get("/supplier-count/{supplier_id}", response_model=dict) # Changed path for clarity
-def count_products_by_supplier(supplier_id: UUID, db: Session = Depends(get_db)):
-    """
-    Counts the number of products for a given supplier.
-    """
-    supplier = db.query(User).filter(User.id == supplier_id).first()
-    if not supplier:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found")
-    
-    if supplier.role != "supplier":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a supplier.")
+# REMOVE product from collection
+@products_router.delete("/collections/{collection_id}/products/{product_id}", response_model=CollectionResponse)
+async def remove_product_from_collection(
+    collection_id: uuid.UUID,
+    product_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify collection exists
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Remove product from collection
+        db.query(CollectionProduct).filter(
+            CollectionProduct.collection_id == collection_id,
+            CollectionProduct.product_id == product_id
+        ).delete()
+        
+        db.commit()
+        db.refresh(collection)
+        
+        return collection
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error removing product from collection: {str(e)}"
+        )
 
-    count = db.query(Product).filter(Product.supplier_id == supplier_id).count()
-    return {"count": count}
-
-@product_router.get("/total-count", response_model=dict) # Changed path for clarity
-def count_all_products(db: Session = Depends(get_db)):
-    """
-    Counts the total number of products in the database.
-    """
-    count = db.query(Product).count()
-    return {"count": count}
+# GET collection products
+@products_router.get("/collections/{collection_id}/products", response_model=ProductListResponse)
+async def get_collection_products(
+    collection_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Verify collection exists
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Collection not found"
+            )
+        
+        # Get products in collection
+        query = db.query(Product).join(
+            CollectionProduct, 
+            Product.id == CollectionProduct.product_id
+        ).filter(CollectionProduct.collection_id == collection_id)
+        
+        total = query.count()
+        products = query.offset(skip).limit(limit).all()
+        
+        return ProductListResponse(
+            products=products,
+            total=total,
+            page=skip // limit + 1,
+            size=len(products)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching collection products: {str(e)}"
+        )
