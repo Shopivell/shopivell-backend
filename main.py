@@ -6,6 +6,9 @@ from modules.orders.router import order_router  # Assuming 'o' is your orders ro
 from modules.products.router import products_router
 from modules.analytics.router import analytics_router
 # from modules.markets.router import markets_router
+from modules.users.user_router import user_router
+from modules.users.auth_router import auth_router
+from modules.stores.router import store_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -41,6 +44,9 @@ app.include_router(order_router, prefix="/v1")
 app.include_router(products_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")
 # app.include_router(markets_router, prefix="/v1")
+app.include_router(user_router, prefix="/v1")
+app.include_router(auth_router, prefix="/v1")
+app.include_router(store_router, prefix="/v1")
 
 # Run server
 if __name__ == "__main__":

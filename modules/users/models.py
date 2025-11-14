@@ -1,41 +1,53 @@
-# --- User Model ---
+# modules/users/models.py
+from typing import Optional, List
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from datetime import datetime
+import uuid
+from database import Base
+import enum
+
+# NO import from stores module!
+
+class UserRole(str, enum.Enum):
+    OWNER = "owner"
+    ADMIN = "admin"
+    STAFF = "staff"
+    CUSTOMER = "customer"
+
 class User(Base):
     __tablename__ = "users"
+    
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    phone_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    gender: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    age: Mapped[Optional[int]] = mapped_column(nullable=True)
+    marital_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole), default=UserRole.OWNER, nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships using string references - NO imports needed
+    stores = relationship("Store", back_populates="owner", cascade="all, delete-orphan")
+    verification_codes = relationship("VerificationCode", back_populates="user", cascade="all, delete-orphan")
+    setup_sessions = relationship("StoreSetupSession", back_populates="user", cascade="all, delete-orphan")
+
+class VerificationCode(Base):
+    __tablename__ = "verification_codes"
 
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
-    role: Mapped[str] = mapped_column(Enum("customer", "supplier", "admin", "both", name="user_roles", create_type=True), nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    surname: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    phone_number: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
-    email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
-    password_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    gender: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # Using `func.now()` for `onupdate` timestamp.
-    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-    status: Mapped[str] = mapped_column(Enum("active", "disabled", "pending", name="user_statuses", create_type=True), server_default="active", nullable=False)
-    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-
-    # Business specific fields (for suppliers)
-    business_phone_number: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
-    business_email: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    business_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    business_category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    business_description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    business_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    personal_image_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    business_image_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-
-    # Relationships
-    requests: Mapped[List["RequestPost"]] = relationship("RequestPost", back_populates="customer", cascade="all, delete-orphan")
-    offers: Mapped[List["Offer"]] = relationship("Offer", back_populates="supplier", cascade="all, delete-orphan")
-    products: Mapped[List["Product"]] = relationship("Product", back_populates="supplier", cascade="all, delete-orphan")
-    customer_orders: Mapped[List["Order"]] = relationship("Order", foreign_keys="[Order.customer_id]", back_populates="customer", cascade="all, delete-orphan")
-    supplier_orders: Mapped[List["Order"]] = relationship("Order", foreign_keys="[Order.supplier_id]", back_populates="supplier", cascade="all, delete-orphan")
-    device_tokens: Mapped[List["DeviceToken"]] = relationship("DeviceToken", back_populates="user", cascade="all, delete-orphan")
-    sent_notifications: Mapped[List["Notification"]] = relationship("Notification", foreign_keys="[Notification.sender_id]", back_populates="sender", cascade="all, delete-orphan")
-    received_notifications: Mapped[List["Notification"]] = relationship("Notification", foreign_keys="[Notification.recipient_id]", back_populates="recipient", cascade="all, delete-orphan")
-    verification_codes: Mapped[List["VerificationCode"]] = relationship("VerificationCode", back_populates="user", cascade="all, delete-orphan")
+    user_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    type: Mapped[str] = mapped_column(SQLEnum("email_verification", "password_reset", "phone_verification", name="verification_types"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    
+    # String reference
+    user = relationship("User", back_populates="verification_codes")
