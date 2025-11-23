@@ -1,7 +1,7 @@
 # modules/stores/api.py
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Any, Dict, Optional
 import uuid
 from datetime import datetime
 
@@ -9,7 +9,7 @@ from database import get_db
 from modules.users.models import User
 from modules.stores.models import Store, StoreSetupStep, StoreSetupSession
 from modules.stores.schemas import (
-    StoreCreate, StoreResponse, StoreUpdate, StoreListResponse,
+    MessageSend, SimpleMessage, StoreCreate, StoreResponse, StoreUpdate, StoreListResponse,
     StoreSetupStepData, StoreSetupSessionResponse, StoreSetupStart
 )
 
@@ -214,12 +214,6 @@ async def complete_store_setup(
                     detail=f"Missing required field: {field}"
                 )
         
-        # Handle enabled_features - convert from list to dictionary if needed
-        enabled_features = session_data.get('enabled_features', {})
-        if isinstance(enabled_features, list):
-            # Convert list to dictionary with True values
-            enabled_features = {feature: True for feature in enabled_features}
-        
         # CREATE the actual store with all collected data
         store_data = {
             'owner_id': user.id,
@@ -234,10 +228,7 @@ async def complete_store_setup(
             'delivery_fee': session_data.get('delivery_fee', '0'),
             'free_delivery_minimum': session_data.get('free_delivery_minimum', False),
             'domain': session_data.get('domain'),
-            
-            # FIX: Ensure enabled_features is always a dictionary
-            'enabled_features': enabled_features,
-            
+            'enabled_features': session_data.get('enabled_features', {}),
             'business_goals': session_data.get('business_goals', []),
             'payment_methods': session_data.get('payment_methods', {}),
             'current_step': StoreSetupStep.COMPLETED,
@@ -264,6 +255,7 @@ async def complete_store_setup(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error completing store setup: {str(e)}"
         )
+
 # CANCEL setup - no store created, session deactivated
 @store_router.post("/setup/{session_id}/cancel", status_code=status.HTTP_200_OK)
 async def cancel_store_setup(
@@ -557,3 +549,84 @@ async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting store: {str(e)}"
         )
+    
+def send_message_externally(message_body: str) -> Dict[str, Any]:
+    """
+    Simulates sending a message using an external service API.
+    In a real app, this would involve HTTP requests to a provider (Twilio, etc.).
+    """
+    try:
+
+        return {
+            "success": True,
+            "message": f"Message successfully sent."
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": "Failed to connect to external messaging service.",
+            "task_id": None
+        }
+    
+@store_router.post(
+    "/business/send-message",
+    status_code=status.HTTP_202_ACCEPTED  # 202 Accepted indicates processing has begun
+)
+def send_message_endpoint(
+    message_data: MessageSend,
+):
+    """
+    Send a message to a recipient using a specified platform.
+    This simulates triggering an external message service.
+    """
+    try:
+        send_result = send_message_externally(
+            message_body=message_data.message_body,
+        )
+
+        # Return a structured dictionary response
+        return {
+            "status": "success",
+            "message": "Message processing has started successfully",
+            "data": {
+                "message_id": send_result.get("message_id"),
+                "status": "queued",
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            "code": "MESSAGE_ACCEPTED"
+        }
+
+    except HTTPException:
+        # Reraise FastAPI's HTTP exceptions
+        raise
+    except Exception as e:
+        # Log an error in your database if necessary
+        # create_error_log(...)
+        
+        # Return error as dictionary
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "status": "error",
+                "message": "Internal server error during message sending process",
+                "error": str(e),
+                "code": "INTERNAL_SERVER_ERROR",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+
+@store_router.post(
+    "/n8n/webhook/message",
+    status_code=status.HTTP_200_OK
+)
+def n8n_simple_message_receive(
+    message_data: SimpleMessage
+):
+    """
+    Ultra-simple webhook for n8n - just receives a message
+    """
+    return {
+        "received": True,
+        "message": message_data.message,
+        "timestamp": datetime.utcnow().isoformat()
+    }

@@ -10,7 +10,10 @@ import enum
 
 # NO import from users module!
 
+# modules/stores/models.py
+# modules/stores/models.py
 class StoreSetupStep(str, enum.Enum):
+    CREATE_STORE = "create_store"  # Add the new one
     BASIC_INFO = "basic_info"
     BUSINESS_TYPE = "business_type"
     DELIVERY_SETTINGS = "delivery_settings"
@@ -49,8 +52,8 @@ class Store(Base):
     business_goals: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list)
     payment_methods: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, default=dict)
     
-    # Setup Progress
-    current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), default=StoreSetupStep.BASIC_INFO)
+    # Setup Progress - UPDATED DEFAULT
+    current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), default=StoreSetupStep.CREATE_STORE)
     is_setup_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     
     # Timestamps
@@ -67,10 +70,11 @@ class StoreSetupSession(Base):
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     
-    # CHANGE THIS LINE - remove nullable=False or add default=dict
-    session_data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)  # REMOVE nullable=False
+    # FIXED: Remove nullable=False and add default=dict
+    session_data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     
-    current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), nullable=False)
+    # UPDATED: Remove nullable=False and add default
+    current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), default=StoreSetupStep.CREATE_STORE)
     completed_steps: Mapped[List[str]] = mapped_column(JSON, default=list)
     setup_progress: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -53,8 +53,9 @@ def init_db():
     from modules.products import models as products_models
     from modules.analytics import models as analytics_models
     # from modules.Markets import models as markets_models
-    from modules.stores import models as user_models
+    from modules.stores import models as store_models
     from modules.users import models as user_models
+    from modules.content.template import models as template_models
 
     Base.metadata.create_all(bind=engine)
 

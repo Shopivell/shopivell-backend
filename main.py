@@ -9,6 +9,8 @@ from modules.analytics.router import analytics_router
 from modules.users.user_router import user_router
 from modules.users.auth_router import auth_router
 from modules.stores.router import store_router
+#from modules.automation.router import automation_router
+from modules.content.template.router import image_generation_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -47,6 +49,8 @@ app.include_router(analytics_router, prefix="/v1")
 app.include_router(user_router, prefix="/v1")
 app.include_router(auth_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
+app.include_router(image_generation_router, prefix="/v1")
+# app.include_router(automation_router, prefix="/v1")
 
 # Run server
 if __name__ == "__main__":

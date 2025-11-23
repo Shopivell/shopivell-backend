@@ -1,6 +1,6 @@
 # modules/users/models.py
 from typing import Optional, List
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
@@ -30,6 +30,11 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(SQLEnum(UserRole), default=UserRole.OWNER, nullable=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Google OAuth fields
+    google_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    profile_picture: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

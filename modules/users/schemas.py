@@ -34,6 +34,8 @@ class UserResponse(UserBase):
     role: UserRole
     is_verified: bool
     is_active: bool
+    google_id: Optional[str] = None
+    profile_picture: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -44,7 +46,9 @@ class LoginVerifyRequest(BaseModel):
     email: EmailStr
     code: str
 
-# modules/users/schemas.py
+class GoogleSignupRequest(BaseModel):
+    access_token: str
+    
 class LoginResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     
@@ -52,11 +56,11 @@ class LoginResponse(BaseModel):
     store_id: Optional[uuid.UUID] = None
     has_active_setup_session: bool = False
     setup_session_id: Optional[uuid.UUID] = None
-    setup_progress: Optional[int] = None
+    setup_progress: int = 0  # Changed to non-optional with default
     current_setup_step: Optional[str] = None
     has_store: bool = False
     user_status: str  # "no_store", "has_incomplete_setup", "has_store"
-    redirect_to: str  # NEW: Explicit redirect path
+    redirect_to: str  # Explicit redirect path
     access_token: Optional[str] = None
     token_type: str = "bearer"
 
@@ -67,3 +71,7 @@ class UserListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+# Remove GoogleAuthRequest since it's duplicate, or keep only one
+class GoogleAuthRequest(BaseModel):
+    access_token: str

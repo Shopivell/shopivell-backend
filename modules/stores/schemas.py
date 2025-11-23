@@ -83,3 +83,10 @@ class StoreSetupSessionResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+class MessageSend(BaseModel):
+    """Schema for incoming message data."""
+    message_body: str
+
+class SimpleMessage(BaseModel):
+    message: str
