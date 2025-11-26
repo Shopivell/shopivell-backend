@@ -1,26 +1,17 @@
-import requests
-import json
+from apify_client import ApifyClient
 
-# Webhook URL
-webhook_url = "http://localhost:5678/webhook/prompt"
+# Initialize the ApifyClient with your API token
+client = ApifyClient("apify_api_q6zLdffUws1w5FInc1bUElmU1SPcYg3jI0Gd")
 
-# Data to send
-data = {
-    "prompt": "create an image of a futuristic cityscape at sunset",
-}
+# Prepare the Actor input
+run_input = { "startUrls": [
+        { "url": "https://www.facebook.com/copperkettleyqr/" },
+        { "url": "https://www.facebook.com/HiltonGardenInnMontrealAirport/" },
+    ] }
 
-# Send POST request
-try:
-    response = requests.post(webhook_url, json=data)
-    
-    # Check if the request was successful
-    if response.status_code == 200:
-        print("✅ POST request sent successfully!")
-        print(f"Status Code: {response.status_code}")
-        print(f"Response: {response.text}")
-    else:
-        print(f"❌ Request failed with status code: {response.status_code}")
-        print(f"Response: {response.text}")
-        
-except requests.exceptions.RequestException as e:
-    print(f"❌ Error sending request: {e}")
+# Run the Actor and wait for it to finish
+run = client.actor("4Hv5RhChiaDk6iwad").call(run_input=run_input)
+
+# Fetch and print Actor results from the run's dataset (if there are any)
+for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    print(item)

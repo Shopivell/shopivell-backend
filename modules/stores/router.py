@@ -630,3 +630,168 @@ def n8n_simple_message_receive(
         "message": message_data.message,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+# Add this import at the top if not already present
+from typing import List
+
+# Add these schemas to your existing schemas.py
+
+# Add this endpoint to your store_router in api.py
+@store_router.get("/{store_id}/hashtag-info", response_model=Dict[str, Any])
+async def get_store_hashtag_info(
+    store_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get store name and business type for generating social media hashtags
+    """
+    try:
+        store = db.query(Store).filter(Store.id == store_id).first()
+        
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Store not found"
+            )
+        
+        # Generate hashtag suggestions
+        hashtag_suggestions = generate_hashtag_suggestions(store.store_name, store.business_type)
+        
+        return {
+            "store_id": str(store.id),
+            "store_name": store.store_name,
+            "business_type": store.business_type,
+            "hashtag_suggestions": hashtag_suggestions,
+            "primary_hashtag": f"#{store.store_name.replace(' ', '').lower()}",
+            "business_hashtag": f"#{store.business_type.replace(' ', '').lower() if store.business_type else 'business'}"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching store hashtag info: {str(e)}"
+        )
+
+@store_router.get("/owner/{owner_id}/hashtag-info", response_model=List[Dict[str, Any]])
+async def get_all_stores_hashtag_info(
+    owner_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get hashtag info for all stores owned by a user
+    """
+    try:
+        # Verify owner exists
+        owner = db.query(User).filter(User.id == owner_id).first()
+        if not owner:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Owner not found"
+            )
+        
+        # Get all stores for owner
+        stores = db.query(Store).filter(Store.owner_id == owner_id).all()
+        
+        result = []
+        for store in stores:
+            hashtag_suggestions = generate_hashtag_suggestions(store.store_name, store.business_type)
+            
+            result.append({
+                "store_id": str(store.id),
+                "store_name": store.store_name,
+                "business_type": store.business_type,
+                "hashtag_suggestions": hashtag_suggestions,
+                "primary_hashtag": f"#{store.store_name.replace(' ', '').lower()}",
+                "business_hashtag": f"#{store.business_type.replace(' ', '').lower() if store.business_type else 'business'}"
+            })
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching stores hashtag info: {str(e)}"
+        )
+
+# Helper function for generating hashtag suggestions
+def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] = None) -> Dict[str, List[str]]:
+    """
+    Generate relevant hashtag suggestions based on store name and business type
+    """
+    # Clean store name for hashtag
+    clean_store_name = store_name.replace(' ', '').lower()
+    
+    # Common business type mappings to hashtags
+    business_hashtags = {
+        "restaurant": ["food", "restaurant", "dining", "eatlocal", "foodie"],
+        "cafe": ["coffee", "cafe", "barista", "coffeelover", "cafeculture"],
+        "clothing": ["fashion", "style", "clothing", "outfit", "shoplocal"],
+        "electronics": ["tech", "electronics", "gadgets", "innovation", "technology"],
+        "beauty": ["beauty", "skincare", "makeup", "selfcare", "glam"],
+        "fitness": ["fitness", "workout", "health", "gym", "wellness"],
+        "home decor": ["homedecor", "interiordesign", "decor", "home", "design"],
+        "jewelry": ["jewelry", "accessories", "bling", "style", "fashion"],
+        "bookstore": ["books", "reading", "literature", "bookstore", "booklover"],
+        "art gallery": ["art", "gallery", "creative", "artist", "exhibition"],
+        "bakery": ["bakery", "bread", "pastry", "baking", "sweet"],
+        "pharmacy": ["pharmacy", "health", "wellness", "medicine", "care"],
+        "grocery": ["grocery", "food", "fresh", "market", "shoplocal"],
+        "flower shop": ["flowers", "florist", "bouquet", "blooms", "nature"]
+    }
+    
+    # General business hashtags
+    general_hashtags = [
+        "smallbusiness",
+        "supportlocal",
+        "shoplocal",
+        "entrepreneur",
+        "business",
+        "localbusiness",
+        "smallbiz"
+    ]
+    
+    # Platform-specific hashtags
+    platform_hashtags = {
+        "instagram": ["instagood", "instagram", "ig"],
+        "facebook": ["facebook", "fb"],
+        "twitter": ["twitter", "tweet"],
+        "tiktok": ["tiktok", "fyp", "viral"]
+    }
+    
+    # Get business-specific hashtags
+    business_specific = []
+    if business_type and business_type.lower() in business_hashtags:
+        business_specific = business_hashtags[business_type.lower()]
+    elif business_type:
+        # If business type not in mapping, create basic ones
+        business_keyword = business_type.replace(' ', '').lower()
+        business_specific = [business_keyword, f"{business_keyword}life", business_type.lower().replace(' ', '')]
+    
+    # Generate store-specific hashtags
+    store_specific = [
+        f"{clean_store_name}",
+        f"shop{clean_store_name}",
+        f"visit{clean_store_name}",
+        f"{clean_store_name}official"
+    ]
+    
+    return {
+        "store_specific": store_specific,
+        "business_related": business_specific,
+        "general_business": general_hashtags,
+        "platform_specific": platform_hashtags,
+        "combined_sets": {
+            "minimal": store_specific[:2] + business_specific[:2] + general_hashtags[:2],
+            "comprehensive": store_specific + business_specific + general_hashtags,
+            "platform_optimized": {
+                "instagram": store_specific[:3] + business_specific[:3] + ["instagood", "photooftheday"],
+                "facebook": store_specific[:2] + business_specific[:2] + general_hashtags[:3],
+                "twitter": store_specific[:1] + business_specific[:1] + general_hashtags[:2],
+                "tiktok": store_specific[:2] + business_specific[:2] + ["fyp", "viral", "trending"]
+            }
+        }
+    }

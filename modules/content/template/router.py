@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form
+
+from fastapi import APIRouter, Depends, HTTPException, Path, status, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import uuid
@@ -581,3 +582,255 @@ def get_all_image_requests(
         page_size=limit,
         total_pages=(total_count + limit - 1) // limit
     )
+
+## 📸 Image + Text to Image (I2I) Endpoint (Using Image URLs)
+@image_generation_router.post("/i2i/urls", response_model=ImageGenerationRequestResponse, status_code=status.HTTP_201_CREATED)
+async def create_i2i_request_with_urls(
+   prompt_text: str = Form(..., description="The text prompt for generation"),
+    output_image_url: str = Form(None, description="Optional pre-generated output image URL"),  
+    db: Session = Depends(get_db)
+):
+    """Handles Direct Text to Image (T2I) generation with optional output image URL"""
+    
+    # Validate output image URL if provided
+    if output_image_url and not output_image_url.startswith(('http://', 'https://')):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid output_image_url format: must be a valid HTTP/HTTPS URL"
+        )
+    
+    request_data = {
+        'prompt_text': prompt_text,
+        'input_image_urls': [], 
+        'output_image_url': output_image_url,
+        'request_type': "prompt_i2i",
+        'template_name': None,
+        'status': "completed" if output_image_url else "pending"
+    }
+    
+    request = ImageGenerationRequest(**request_data)
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    
+    # If output image URL was provided, mark as completed immediately
+    if output_image_url:
+        request.status = "completed"
+        request.completed_at = datetime.utcnow()
+        request.generation_time_ms = 0
+        db.commit()
+        db.refresh(request)
+        return request
+    
+    # Otherwise, process normally
+    return process_generation(request, db)
+
+## ✍️ Text to Image (T2I) Endpoint (Using URLs - for output image)
+@image_generation_router.post("/t2i/urls", response_model=ImageGenerationRequestResponse, status_code=status.HTTP_201_CREATED)
+async def create_t2i_request_with_urls(
+    prompt_text: str = Form(..., description="The text prompt for generation"),
+    output_image_url: str = Form(None, description="Optional pre-generated output image URL"),  
+    db: Session = Depends(get_db)
+):
+    """Handles Direct Text to Image (T2I) generation with optional output image URL"""
+    
+    # Validate output image URL if provided
+    if output_image_url and not output_image_url.startswith(('http://', 'https://')):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid output_image_url format: must be a valid HTTP/HTTPS URL"
+        )
+    
+    request_data = {
+        'prompt_text': prompt_text,
+        'input_image_urls': [], 
+        'output_image_url': output_image_url,
+        'request_type': "prompt_t2i",
+        'template_name': None,
+        'status': "completed" if output_image_url else "pending"
+    }
+    
+    request = ImageGenerationRequest(**request_data)
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+    
+    # If output image URL was provided, mark as completed immediately
+    if output_image_url:
+        request.status = "completed"
+        request.completed_at = datetime.utcnow()
+        request.generation_time_ms = 0
+        db.commit()
+        db.refresh(request)
+        return request
+    
+    # Otherwise, process normally
+    return process_generation(request, db)
+
+## 📋 Get All Prompts and Image URLs
+@image_generation_router.get("/prompts/all", response_model=List[dict])
+def get_all_prompts_and_images(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get all prompts with their input and output image URLs"""
+    requests = db.query(ImageGenerationRequest).offset(skip).limit(limit).all()
+    
+    result = []
+    for request in requests:
+        result.append({
+            "id": str(request.id),
+            "request_type": request.request_type,
+            "template_name": request.template_name,
+            "prompt_text": request.prompt_text,
+            "input_image_urls": request.input_image_urls,  # This uses the property that deserializes JSON
+            "output_image_url": request.output_image_url,
+            "status": request.status,
+            "created_at": request.created_at.isoformat() if request.created_at else None,
+            "completed_at": request.completed_at.isoformat() if request.completed_at else None
+        })
+    
+    return result
+## 📋 Get All Non-Template Prompts and Images (Reverse Chronological Order)
+@image_generation_router.get("/prompts/non-templates", response_model=List[dict])
+def get_non_template_prompts_and_images(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get all prompts excluding templates (only prompt_i2i and prompt_t2i) in reverse chronological order"""
+    requests = db.query(ImageGenerationRequest).filter(
+        ImageGenerationRequest.request_type.in_(["prompt_i2i", "prompt_t2i"])
+    ).order_by(ImageGenerationRequest.created_at.desc()).offset(skip).limit(limit).all()
+    
+    result = []
+    for request in requests:
+        result.append({
+            "id": str(request.id),
+            "request_type": request.request_type,
+            "prompt_text": request.prompt_text,
+            "input_image_urls": request.input_image_urls,
+            "output_image_url": request.output_image_url,
+            "status": request.status,
+            "created_at": request.created_at.isoformat() if request.created_at else None,
+            "completed_at": request.created_at.isoformat() if request.completed_at else None
+        })
+    
+    return result
+
+## 🗑️ Delete Specific Generation by ID
+@image_generation_router.delete("/{request_id}", status_code=status.HTTP_200_OK)
+def delete_generation(
+    request_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a specific image generation request by ID"""
+    request = db.query(ImageGenerationRequest).filter(ImageGenerationRequest.id == request_id).first()
+    
+    if not request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image Generation Request not found"
+        )
+    
+    # Optional: Delete associated images from Cloudinary
+    try:
+        # Delete input images from Cloudinary
+        for image_url in request.input_image_urls:
+            # Extract public_id from Cloudinary URL
+            if "cloudinary.com" in image_url:
+                public_id = image_url.split("/")[-1].split(".")[0]
+                cloudinary.uploader.destroy(public_id)
+        
+        # Delete output image from Cloudinary
+        if request.output_image_url and "cloudinary.com" in request.output_image_url:
+            public_id = request.output_image_url.split("/")[-1].split(".")[0]
+            cloudinary.uploader.destroy(public_id)
+    except Exception as e:
+        print(f"Cloudinary deletion failed: {e}")
+        # Continue with database deletion even if Cloudinary deletion fails
+    
+    # Delete from database
+    db.delete(request)
+    db.commit()
+    
+    return {
+        "message": "Image generation request deleted successfully",
+        "deleted_id": str(request_id)
+    }
+
+## 🗑️ Delete Specific Generation by ID
+@image_generation_router.delete("/{request_id}", status_code=status.HTTP_200_OK)
+def delete_generation_by_id(
+    request_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a specific image generation request by ID"""
+    request = db.query(ImageGenerationRequest).filter(ImageGenerationRequest.id == request_id).first()
+    
+    if not request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image Generation Request not found"
+        )
+    
+    # Store info for response
+    request_info = {
+        "id": str(request.id),
+        "request_type": request.request_type,
+        "template_name": request.template_name
+    }
+    
+    # Optional: Delete associated images from Cloudinary
+    try:
+        # Delete input images from Cloudinary
+        for image_url in request.input_image_urls:
+            # Extract public_id from Cloudinary URL
+            if "cloudinary.com" in image_url and "image_generation_inputs" in image_url:
+                public_id = image_url.split("/")[-1].split(".")[0]
+                # Include folder path in public_id for proper deletion
+                full_public_id = f"image_generation_inputs/{public_id}"
+                cloudinary.uploader.destroy(full_public_id)
+        
+        # Delete output image from Cloudinary
+        if request.output_image_url and "cloudinary.com" in request.output_image_url:
+            public_id = request.output_image_url.split("/")[-1].split(".")[0]
+            cloudinary.uploader.destroy(public_id)
+    except Exception as e:
+        print(f"Cloudinary deletion failed: {e}")
+        # Continue with database deletion even if Cloudinary deletion fails
+    
+    # Delete from database
+    db.delete(request)
+    db.commit()
+    
+    return {
+        "message": "Image generation request deleted successfully",
+        "deleted_request": request_info
+    }
+
+## 🔍 Get Image by Request ID
+@image_generation_router.get("/{request_id}/image")
+def get_image_by_id(
+    request_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Get output image URL for a specific request ID"""
+    request = db.query(ImageGenerationRequest).filter(ImageGenerationRequest.id == request_id).first()
+    
+    if not request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Request not found"
+        )
+    
+    if not request.output_image_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not available for this request"
+        )
+    
+    return {
+        "image_url": request.output_image_url
+    }

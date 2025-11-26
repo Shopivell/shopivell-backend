@@ -68,3 +68,17 @@ class TemplateResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+class ImageToImageWithURLsCreate(BaseModel):
+    """Schema for I2I requests using image URLs."""
+    prompt_text: str
+    input_image_urls: List[str] = Field(..., description="List of input image URLs")
+    
+    model_config = ConfigDict(extra='allow')
+
+class TextToImageWithURLsCreate(BaseModel):
+    """Schema for T2I requests using output image URL."""
+    prompt_text: str
+    output_image_url: Optional[str] = Field(None, description="Pre-generated output image URL")
+    
+    model_config = ConfigDict(extra='allow')

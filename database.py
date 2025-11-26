@@ -56,10 +56,10 @@ def init_db():
     from modules.stores import models as store_models
     from modules.users import models as user_models
     from modules.content.template import models as template_models
+    from modules.content.content import models as content_models  # Example additional model
 
     Base.metadata.create_all(bind=engine)
-
-
+    
 
 # from pathlib import Path
 # from sqlalchemy import create_engine

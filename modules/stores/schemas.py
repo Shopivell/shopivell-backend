@@ -84,6 +84,33 @@ class StoreSetupSessionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+# Add these to your existing schemas.py
+
+class StoreHashtagInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    store_id: uuid.UUID
+    store_name: str
+    business_type: Optional[str]
+    hashtag_suggestions: Dict[str, Any]
+    primary_hashtag: str
+    business_hashtag: str
+
+class StoreHashtagResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    store_id: uuid.UUID
+    store_name: str
+    business_type: Optional[str]
+    hashtag_suggestions: Dict[str, Any]
+    primary_hashtag: str
+    business_hashtag: str
+
+class MultiStoreHashtagResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    stores: List[StoreHashtagResponse]
+
 class MessageSend(BaseModel):
     """Schema for incoming message data."""
     message_body: str
