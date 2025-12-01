@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 import requests
 import os
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 from database import get_db
 from .models import FacebookBusinessAccount, FacebookPage
 from .schemas import (
-    FacebookBusinessAccountResponse, FacebookPageResponse,
+    FacebookBusinessAccountResponse, FacebookCallbackRequest, FacebookOAuthUrlRequest, FacebookOAuthUrlRequest, FacebookPageResponse,
     FacebookBusinessAccountCreate, FacebookPageCreate,
     FacebookBusinessAccountUpdate, FacebookPageUpdate,
     FacebookOAuthRequest, FacebookOAuthResponse,
@@ -43,10 +44,6 @@ FACEBOOK_OAUTH_SCOPE = (
     "pages_manage_posts,"
     "business_management"
 )
-
-# Pydantic model for OAuth URL request
-class FacebookOAuthUrlRequest(BaseModel):
-    redirect_uri: Optional[str] = None
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:
     """Exchange a short-lived access token for a long-lived token (60 days)"""
@@ -163,15 +160,9 @@ def get_facebook_business_oauth_url(request_data: FacebookOAuthUrlRequest):
     auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{urlencode(params)}"
     return JSONResponse({"auth_url": auth_url, "state": state})
 
-# OAuth Callback
-@business_router.get("/facebook/callback", response_model=FacebookOAuthResponse)
-def facebook_business_callback(
-    request: Request,
-    code: str,
-    state: str,
-    db: Session = Depends(get_db),
-):
-    """OAuth callback for Facebook business account connection"""
+# Helper function to process Facebook authentication
+def process_facebook_authentication(code: str, db: Session) -> dict:
+    """Process Facebook authentication and return result"""
     try:
         # Use the FACEBOOK_REDIRECT_URI for token exchange
         redirect_uri = FACEBOOK_REDIRECT_URI
@@ -200,11 +191,48 @@ def facebook_business_callback(
         oauth_data = FacebookOAuthRequest(access_token=user_access_token)
         result = connect_facebook_account(oauth_data, db)
         
-        # 3. Return simple JSON response
         return result
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Facebook authentication failed: {str(e)}"
+        )
+
+# OAuth Callback - GET endpoint (for direct browser redirects)
+@business_router.post("/facebook/callback", response_model=FacebookOAuthResponse)
+def facebook_business_callback_post(
+    request_data: FacebookCallbackRequest,
+    db: Session = Depends(get_db),
+):
+    """OAuth callback for Facebook business account connection (POST from React)"""
+    try:
+        # Use the redirect_uri that was used in the initial OAuth request
+        # This should be your React app URL
+        redirect_uri = request_data.redirect_uri or FACEBOOK_REDIRECT_URI
+        
+        # 1. Exchange code for short-lived user access token
+        token_resp = requests.get(
+            f"{FB_GRAPH_API_BASE}/oauth/access_token",
+            params={
+                "client_id": FACEBOOK_APP_ID,
+                "client_secret": FACEBOOK_APP_SECRET,
+                "redirect_uri": redirect_uri,
+                "code": request_data.code,
+            },
+        )
+        token_resp.raise_for_status()
+        token_data = token_resp.json()
+        user_access_token = token_data["access_token"]
+        
+        # 2. Connect account
+        oauth_data = FacebookOAuthRequest(access_token=user_access_token)
+        result = connect_facebook_account(oauth_data, db)
+        
+        return result
+        
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

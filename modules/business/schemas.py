@@ -150,6 +150,16 @@ class FacebookPostInsightsResponse(BaseModel):
     message: Optional[str] = None
     permalink_url: Optional[str] = None
 
+class FacebookCallbackRequest(BaseModel):
+    code: str
+    state: Optional[str] = None
+    redirect_uri: Optional[str] = None  # Add this
+
+# Pydantic model for OAuth URL request
+class FacebookOAuthUrlRequest(BaseModel):
+    redirect_uri: Optional[str] = None
+
+
 # Update forward references for nested models
 FacebookBusinessAccountResponse.model_rebuild()
 FacebookPageResponse.model_rebuild()
