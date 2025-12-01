@@ -215,13 +215,19 @@ async def complete_store_setup(
                 )
         
         # CREATE the actual store with all collected data
+        # In the complete_store_setup function, update the store_data dictionary:
         store_data = {
             'owner_id': user.id,
             'store_name': session_data['store_name'],
             'store_phone': session_data['store_phone'],
+            'store_email': session_data.get('store_email'),  # ADDED
             'store_link': session_data.get('store_link'),
             'color_theme': session_data.get('color_theme'),
+            'logo_url': session_data.get('logo_url'),  # ADDED
             'business_type': session_data.get('business_type'),
+            'store_voice': session_data.get('store_voice'),  # ADDED
+            'store_tone': session_data.get('store_tone'),  # ADDED
+            'products_or_services': session_data.get('products_or_services', []),  # ADDED
             'delivery_enabled': session_data.get('delivery_enabled', True),
             'pickup_enabled': session_data.get('pickup_enabled', False),
             'dine_in_enabled': session_data.get('dine_in_enabled', False),

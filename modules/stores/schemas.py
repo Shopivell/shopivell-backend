@@ -1,5 +1,5 @@
 # modules/stores/schemas.py
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import uuid
@@ -10,9 +10,13 @@ class StoreBase(BaseModel):
     
     store_name: str
     store_phone: str
+    store_email: Optional[EmailStr] = None  # ADDED
     store_link: Optional[str] = None
     color_theme: Optional[str] = None
+    logo_url: Optional[str] = None  # ADDED
     business_type: Optional[str] = None
+    store_voice: Optional[str] = None  # ADDED
+    products_or_services: Optional[List[str]] = None  # ADDED
     delivery_enabled: bool = True
     pickup_enabled: bool = False
     dine_in_enabled: bool = False
@@ -31,9 +35,14 @@ class StoreUpdate(BaseModel):
     
     store_name: Optional[str] = None
     store_phone: Optional[str] = None
+    store_email: Optional[EmailStr] = None  # ADDED
     store_link: Optional[str] = None
     color_theme: Optional[str] = None
+    logo_url: Optional[str] = None  # ADDED
     business_type: Optional[str] = None
+    store_voice: Optional[str] = None  # ADDED
+    store_tone: Optional[str] = None  # ADDED
+    products_or_services: Optional[List[str]] = None  # ADDED
     delivery_enabled: Optional[bool] = None
     pickup_enabled: Optional[bool] = None
     dine_in_enabled: Optional[bool] = None
@@ -83,8 +92,6 @@ class StoreSetupSessionResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
-
-# Add these to your existing schemas.py
 
 class StoreHashtagInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)

@@ -10,8 +10,6 @@ import enum
 
 # NO import from users module!
 
-# modules/stores/models.py
-# modules/stores/models.py
 class StoreSetupStep(str, enum.Enum):
     CREATE_STORE = "create_store"  # Add the new one
     BASIC_INFO = "basic_info"
@@ -33,11 +31,19 @@ class Store(Base):
     # Basic Info
     store_name: Mapped[str] = mapped_column(String(255), nullable=False)
     store_phone: Mapped[str] = mapped_column(String(50), nullable=False)
+    store_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # ADDED
     store_link: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     color_theme: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # ADDED
     
     # Business Type
     business_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    
+    # Store Voice/Tone
+    store_voice: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # ADDED
+    store_tone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # ADDED
+    # Products or Services
+    products_or_services: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list)  # ADDED
     
     # Delivery Settings
     delivery_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -65,7 +71,6 @@ class Store(Base):
     facebook_connections = relationship("FacebookPageConnection", back_populates="store", cascade="all, delete-orphan")
     social_posts = relationship("SocialPost", back_populates="store", cascade="all, delete-orphan")
 
-# modules/stores/models.py - FIX THIS LINE
 class StoreSetupSession(Base):
     __tablename__ = "store_setup_sessions"
     
