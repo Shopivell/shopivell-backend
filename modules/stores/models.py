@@ -62,6 +62,8 @@ class Store(Base):
     
     # Relationships using string references
     owner = relationship("User", back_populates="stores")
+    facebook_connections = relationship("FacebookPageConnection", back_populates="store", cascade="all, delete-orphan")
+    social_posts = relationship("SocialPost", back_populates="store", cascade="all, delete-orphan")
 
 # modules/stores/models.py - FIX THIS LINE
 class StoreSetupSession(Base):

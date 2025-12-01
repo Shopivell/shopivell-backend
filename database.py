@@ -57,6 +57,8 @@ def init_db():
     from modules.users import models as user_models
     from modules.content.template import models as template_models
     from modules.content.content import models as content_models  # Example additional model
+    from modules.social import models as social_models
+    from modules.business import models as business_models
 
     Base.metadata.create_all(bind=engine)
     

@@ -12,6 +12,8 @@ from modules.stores.router import store_router
 #from modules.automation.router import automation_router
 from modules.content.template.router import image_generation_router
 from modules.content.content.router import content_router
+from modules.social.router import social_router
+from modules.business.router import business_router    
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -53,6 +55,8 @@ app.include_router(store_router, prefix="/v1")
 app.include_router(image_generation_router, prefix="/v1")
 # app.include_router(automation_router, prefix="/v1")
 app.include_router(content_router, prefix="/v1")
+app.include_router(social_router, prefix="/v1")
+app.include_router(business_router, prefix="/v1")
 
 # Run server
 if __name__ == "__main__":
