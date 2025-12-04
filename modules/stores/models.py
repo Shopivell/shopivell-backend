@@ -71,6 +71,9 @@ class Store(Base):
     facebook_connections = relationship("FacebookPageConnection", back_populates="store", cascade="all, delete-orphan")
     social_posts = relationship("SocialPost", back_populates="store", cascade="all, delete-orphan")
 
+    payments = relationship("PaymentTransaction", back_populates="store", cascade="all, delete-orphan")
+    subscription = relationship("StoreSubscription", back_populates="store", cascade="all, delete-orphan", uselist=False)
+
 class StoreSetupSession(Base):
     __tablename__ = "store_setup_sessions"
     

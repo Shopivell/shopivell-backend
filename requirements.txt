@@ -13,3 +13,6 @@ openai
 pydantic-settings
 PyJWT
 scipy
+paynow
+google-auth
+
