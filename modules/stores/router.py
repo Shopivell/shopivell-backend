@@ -9,7 +9,7 @@ from database import get_db
 from modules.users.models import User
 from modules.stores.models import Store, StoreSetupStep, StoreSetupSession
 from modules.stores.schemas import (
-    MessageSend, SimpleMessage, StoreCreate, StoreResponse, StoreUpdate, StoreListResponse,
+    MessageSend, ScrapeRequest, SimpleMessage, StoreCreate, StoreResponse, StoreUpdate, StoreListResponse,
     StoreSetupStepData, StoreSetupSessionResponse, StoreSetupStart
 )
 
@@ -801,3 +801,47 @@ def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] =
             }
         }
     }
+
+@store_router.post("/scrape-website", status_code=status.HTTP_200_OK)
+async def mock_scrape_website(request: ScrapeRequest):
+    """
+    Mock endpoint to simulate website scraping.
+    Returns hardcoded data based on the domain provided.
+    """
+    url = request.url.lower()
+    
+    # Logic to identify the domain for "smart" hardcoding
+    domain = url.replace('https://', '').replace('http://', '').replace('www.', '').split('.')[0]
+    
+    # Hardcoded database of "known" sites for testing
+    if "pizza" in domain:
+        return {
+            "store_name": "Mario's Authentic Pizza",
+            "store_email": "hello@mariospizza.com",
+            "store_phone": "555-0123",
+            "store_voice": "Welcome to Mario's! We've been serving the best wood-fired pizza since 1992. Our secret is in the dough and the family-made tomato sauce.",
+            "services_products": "Margherita Pizza, Pepperoni Special, Garlic Knots, Italian Gelato",
+            "color_theme": "#E53E3E", # Red theme
+            "logo_url": "https://res.cloudinary.com/dw1lnczyk/image/upload/v1/assets/pizza-logo.png"
+        }
+    elif "tech" in domain:
+        return {
+            "store_name": "NextGen Tech Hub",
+            "store_email": "support@nextgentech.io",
+            "store_phone": "555-9876",
+            "store_voice": "NextGen Tech is your one-stop shop for modern electronics and smart home integration. We bridge the gap between innovation and everyday life.",
+            "services_products": "Smart Watches, Wireless Earbuds, IoT Home Sensors, Technical Support",
+            "color_theme": "#3182CE", # Blue theme
+            "logo_url": "https://res.cloudinary.com/dw1lnczyk/image/upload/v1/assets/tech-logo.png"
+        }
+    else:
+        # Default fallback for any other URL
+        return {
+            "store_name": f"{domain.capitalize()} Services",
+            "store_email": f"contact@{domain}.com",
+            "store_phone": "1234567890",
+            "store_voice": f"We are {domain.capitalize()}, providing premium quality solutions tailored to your needs.",
+            "services_products": "General Services, Consulting, Premium Support",
+            "color_theme": "#2D3748",
+            "logo_url": None
+        }

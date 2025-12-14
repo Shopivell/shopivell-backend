@@ -1,0 +1,31 @@
+{
+  "url": "https://securesights-git-main-farairhato-gmailcoms-projects.vercel.app/company/company-profile",
+  "metadata": {
+    "canonicalUrl": "https://securesights-git-main-farairhato-gmailcoms-projects.vercel.app/company/company-profile",
+    "title": "",
+    "description": null,
+    "author": null,
+    "keywords": null,
+    "languageCode": "en",
+    "jsonLd": null,
+    "headers": {
+      "accept-ranges": "bytes",
+      "access-control-allow-origin": "*",
+      "age": "245434",
+      "cache-control": "public, max-age=0, must-revalidate",
+      "content-disposition": "inline; filename=\"index.html\"",
+      "content-type": "text/html; charset=utf-8",
+      "date": "Sun, 07 Dec 2025 09:26:49 GMT",
+      "etag": "\"98be042e1a478175231e1c16c0266b29\"",
+      "last-modified": "Thu, 04 Dec 2025 13:16:14 GMT",
+      "server": "Vercel",
+      "strict-transport-security": "max-age=63072000; includeSubDomains; preload",
+      "x-robots-tag": "noindex",
+      "x-vercel-cache": "HIT",
+      "x-vercel-id": "sfo1::8tvnn-1765099609581-09cbaf4141b4",
+      "content-length": "787",
+      "x-firefox-spdy": "h2"
+    }
+  },
+  "scraped_at": "2025-12-07T11:27:44.471904"
+}

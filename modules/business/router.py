@@ -42,7 +42,12 @@ FACEBOOK_OAUTH_SCOPE = (
     "pages_show_list,"
     "pages_read_engagement,"
     "pages_manage_posts,"
-    "business_management"
+    "business_management,"
+    "ads_management,"
+    "ads_read,"
+    "whatsapp_business_manage_events,"
+    "whatsapp_business_messaging,"
+    "whatsapp_business_management,"
 )
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:

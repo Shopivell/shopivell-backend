@@ -60,6 +60,8 @@ def init_db():
     from modules.social import models as social_models
     from modules.business import models as business_models
     from modules.payment import models as payment_models
+    from modules.marketing import models as marketing_models
+    from modules.whatsapp import models as whatsapp_models
 
     Base.metadata.create_all(bind=engine)
     

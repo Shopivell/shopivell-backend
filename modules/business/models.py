@@ -19,8 +19,14 @@ class FacebookBusinessAccount(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationship with pages
+    # Relationship with Facebook Pages
     pages = relationship("FacebookPage", back_populates="business_account", cascade="all, delete-orphan")
+
+    # ADDED: Relationship with WhatsApp Accounts
+    # This assumes there is a WhatsAppAccount model with a foreign key to this table
+    # and a back_populates='business_account'.
+    whatsapp_accounts = relationship("WhatsAppAccount", back_populates="business_account", cascade="all, delete-orphan")
+
 
 class FacebookPage(Base):
     __tablename__ = "facebook_pages"

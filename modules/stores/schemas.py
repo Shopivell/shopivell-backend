@@ -118,6 +118,11 @@ class MultiStoreHashtagResponse(BaseModel):
     
     stores: List[StoreHashtagResponse]
 
+class ScrapeRequest(BaseModel):
+    url: str
+    sessionId: Optional[str] = None
+    userId: Optional[str] = None
+
 class MessageSend(BaseModel):
     """Schema for incoming message data."""
     message_body: str
