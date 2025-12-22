@@ -540,12 +540,12 @@ async def whatsapp_webhook_receive(
     try:
         payload = await request.json()
         logger.info(f"Received webhook payload: {json.dumps(payload, indent=2)}")
-        
-        # Process webhook in background
-        background_tasks.add_task(process_webhook_payload, payload, db)
-        
+
+        # Process webhook in background with a NEW database session
+        background_tasks.add_task(process_webhook_payload, payload)
+
         return {"status": "ok"}
-        
+
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(
@@ -553,75 +553,90 @@ async def whatsapp_webhook_receive(
             detail="Invalid webhook payload"
         )
 
-def process_webhook_payload(payload: Dict[str, Any], db: Session):
+def process_webhook_payload(payload: Dict[str, Any]):
     """Process webhook payload and update message statuses"""
+    # Create a NEW database session for this background task
+    from database import SessionLocal
+    db = SessionLocal()
+
     try:
         entries = payload.get("entry", [])
-        
+
         for entry in entries:
             changes = entry.get("changes", [])
-            
+
             for change in changes:
                 value = change.get("value", {})
-                
+
                 # Handle incoming messages
                 messages = value.get("messages", [])
                 if messages:
                     process_incoming_messages(value, db)
-                
+
                 # Handle message status updates
                 statuses = value.get("statuses", [])
                 if statuses:
                     process_message_statuses(statuses, db)
-        
+
         logger.info("Webhook processed successfully")
-        
+
     except Exception as e:
         logger.error(f"Error in webhook processing: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        db.close()
 
 def process_incoming_messages(value: Dict[str, Any], db: Session):
-    """Process incoming messages from webhook"""
+    """Process incoming messages from webhook and auto-respond using AI chatbot"""
     # FIX APPLIED: Using 'metadata' to correctly extract the object
-    meta_data = value.get("metadata", {}) 
+    meta_data = value.get("metadata", {})
     phone_number_id = meta_data.get("phone_number_id")
 
     # Optional: Log the ID for debugging the account lookup
     logger.info(f"Attempting to find account with phone_number_id: {phone_number_id}")
-    
+
     contacts = value.get("contacts", [])
     messages = value.get("messages", [])
-    
+
     # Find WhatsApp account by phone_number_id
     whatsapp_account = db.query(WhatsAppAccount).filter(
         WhatsAppAccount.phone_number_id == phone_number_id
     ).first()
-    
+
     if not whatsapp_account:
         logger.warning(f"No WhatsApp account found for phone_number_id: {phone_number_id}")
         return
-    
+
+    # Get access token for sending replies
+    access_token = whatsapp_account.permanent_access_token
+    if not access_token:
+        business_account = whatsapp_account.business_account
+        if business_account:
+            access_token = business_account.access_token
+
     for message in messages:
         from_number_raw = message.get("from")
-        
+
         # CRITICAL FIX (Phone Number Cleaning)
-        from_number_clean = from_number_raw.replace(" ", "").replace("+", "").strip() 
-        
+        from_number_clean = from_number_raw.replace(" ", "").replace("+", "").strip()
+
         message_id = message.get("id")
         message_type = message.get("type")
         timestamp = message.get("timestamp")
-        
+
         # Extract message text
         message_text = None
         if message_type == "text":
             text_data = message.get("text", {})
             message_text = text_data.get("body")
-        
+
         # Save incoming message to database
         new_message_db = save_message_to_db(
             db=db,
             whatsapp_account_id=whatsapp_account.id,
             message_id=message_id,
-            from_number=from_number_clean, 
+            from_number=from_number_clean,
             to_number=whatsapp_account.phone_number,
             message_type=message_type,
             direction="inbound",
@@ -629,8 +644,8 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
             message_text=message_text,
             meta_data=message
         )
-        
-        # 🔔 REAL-TIME PUSH: Broadcast the new message to the frontend
+
+        # REAL-TIME PUSH: Broadcast the new message to the frontend
         if new_message_db:
             # We convert the SQLAlchemy model to the Pydantic response schema for clean data
             message_response = WhatsAppMessageResponse.model_validate(new_message_db)
@@ -638,8 +653,65 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                 str(whatsapp_account.id),
                 message_response.model_dump()
             ))
-        
+
         logger.info(f"Incoming message from {from_number_clean}: {message_text}")
+
+        # AUTO-RESPOND: If it's a text message, use AI chatbot to respond
+        if message_type == "text" and message_text and access_token:
+            try:
+                # Generate AI response using SalesBot with token limit for very short WhatsApp messages
+                bot = SalesBot(max_tokens=100).get_graph()
+                config = {"configurable": {"thread_id": from_number_clean}}
+
+                # Run the bot synchronously (we're already in a background task)
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(
+                        bot.ainvoke(
+                            {"messages": [("user", message_text)]},
+                            config=config
+                        )
+                    )
+                finally:
+                    loop.close()
+
+                ai_response = result["messages"][-1].content
+                logger.info(f"AI Response for {from_number_clean}: {ai_response[:100]}...")
+
+                # Send the AI response back via WhatsApp
+                send_whatsapp_message_request(
+                    phone_number_id=whatsapp_account.phone_number_id,
+                    access_token=access_token,
+                    to=from_number_clean,
+                    message_type="text",
+                    message_data={
+                        "text": {
+                            "body": ai_response,
+                            "preview_url": False
+                        }
+                    }
+                )
+
+                # Save the outgoing AI response to database
+                save_message_to_db(
+                    db=db,
+                    whatsapp_account_id=whatsapp_account.id,
+                    message_id=f"ai_reply_{datetime.utcnow().timestamp()}",
+                    from_number=whatsapp_account.phone_number,
+                    to_number=from_number_clean,
+                    message_type="text",
+                    direction="outbound",
+                    status="sent",
+                    message_text=ai_response
+                )
+
+                logger.info(f"AI response sent to {from_number_clean}")
+
+            except Exception as e:
+                logger.error(f"Failed to generate/send AI response: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
 
 def process_message_statuses(statuses: List[Dict[str, Any]], db: Session):
     """Update message statuses in database"""
@@ -1344,11 +1416,77 @@ def send_whatsapp_direct_text_message(
         )
     
 
+@whatsapp_router.post("/accounts/{account_id}/chat")
+async def chat_and_respond(
+    account_id: uuid.UUID,
+    message_data: WhatsAppTextMessage,
+    db: Session = Depends(get_db)
+):
+    """
+    Process a message with AI and send response via WhatsApp.
+    Use this endpoint to chat with the bot and get response sent to WhatsApp.
+    """
+    try:
+        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+        to_clean = message_data.to.replace(" ", "").replace("+", "").strip()
+
+        # 1. Generate AI response
+        bot = SalesBot(max_tokens=100).get_graph()
+        config = {"configurable": {"thread_id": to_clean}}
+
+        result = await bot.ainvoke(
+            {"messages": [("user", message_data.body)]},
+            config=config
+        )
+
+        ai_response = result["messages"][-1].content
+        logger.info(f"AI Response for {to_clean}: {ai_response}")
+
+        # 2. Send via WhatsApp API
+        send_result = send_whatsapp_message_request(
+            phone_number_id=whatsapp_account.phone_number_id,
+            access_token=access_token,
+            to=to_clean,
+            message_type="text",
+            message_data={
+                "text": {
+                    "body": ai_response,
+                    "preview_url": False
+                }
+            }
+        )
+
+        # 3. Save to database
+        message_id = send_result.get("messages", [{}])[0].get("id")
+        save_message_to_db(
+            db=db,
+            whatsapp_account_id=account_id,
+            message_id=message_id or f"ai_chat_{datetime.utcnow().timestamp()}",
+            from_number=whatsapp_account.phone_number,
+            to_number=to_clean,
+            message_type="text",
+            direction="outbound",
+            status="sent",
+            message_text=ai_response
+        )
+
+        return {
+            "success": True,
+            "question": message_data.body,
+            "response": ai_response,
+            "sent_to": to_clean
+        }
+
+    except Exception as e:
+        logger.error(f"Chat error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @whatsapp_router.post("/ask")
 async def ask_question(request: ChatRequest):
     try:
-        # 1. Initialize the Graph
-        bot = SalesBot().get_graph()
+        # 1. Initialize the Graph with token limit
+        bot = SalesBot(max_tokens=100).get_graph()
         
         # 2. Set the configuration (thread_id enables memory)
         config = {"configurable": {"thread_id": request.user_id}}

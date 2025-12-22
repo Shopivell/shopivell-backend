@@ -17,8 +17,9 @@ class SalesState(TypedDict):
     status: str
 
 class SalesBot:
-    def __init__(self):
-        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+    def __init__(self, max_tokens: int = 300):
+        # Limit response tokens to keep WhatsApp messages concise
+        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3, max_tokens=max_tokens)
         self.embeddings = OpenAIEmbeddings()
 
     def retrieve(self, state: SalesState):
@@ -83,10 +84,9 @@ class SalesBot:
     
     def respond(self, state: SalesState):
         system_instructions = (
-            "You are a Sales Representative at SecureSights. Speak naturally and professionally. "
-            "Use the CONTEXT below to answer customer questions about our products and services. "
-            "If the context contains relevant information, use it to provide helpful answers. "
-            "Only say 'WAITING' if the context is completely irrelevant or says 'No relevant technical info found'."
+            "You are a Sales Rep at SecureSights. Be VERY brief and concise - max 2-3 sentences. "
+            "Answer using CONTEXT below. Give key info only: product name, price, main feature. "
+            "Only say 'WAITING' if context says 'No relevant technical info found'."
         )
 
         full_prompt = f"{system_instructions}\n\nCONTEXT:\n{state['context']}"
