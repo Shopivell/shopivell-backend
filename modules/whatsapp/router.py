@@ -15,8 +15,8 @@ from datetime import datetime, time, timedelta
 import logging 
 from sqlalchemy import text
 from database import get_db
-from modules.whatsapp.chatbot_engine import SalesBot
-from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage
+from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer
+from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead
 from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
@@ -28,6 +28,55 @@ from modules.business.models import FacebookBusinessAccount
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def send_capi_lead_event(
+    pixel_id: str,
+    access_token: str,
+    phone_number: str,
+    lead_score: float,
+    event_id: str = None
+) -> dict:
+    """Send Lead event to Meta Conversions API"""
+    import hashlib
+    import time
+
+    # Hash phone number for privacy
+    phone_hash = hashlib.sha256(phone_number.encode()).hexdigest()
+    event_id = event_id or f"lead_{int(time.time())}_{phone_number[-4:]}"
+
+    url = f"https://graph.facebook.com/v23.0/{pixel_id}/events"
+    headers = {"Content-Type": "application/json"}
+
+    payload = {
+        "data": [{
+            "event_name": "Lead",
+            "event_time": int(time.time()),
+            "event_id": event_id,
+            "event_source_url": "https://wa.me/",
+            "action_source": "chat",
+            "user_data": {
+                "ph": [phone_hash],
+                "client_user_agent": "WhatsApp"
+            },
+            "custom_data": {
+                "lead_score": lead_score,
+                "source": "whatsapp_bot",
+                "currency": "USD",
+                "value": lead_score  # Use score as value for optimization
+            }
+        }],
+        "access_token": access_token
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        result = response.json()
+        logger.info(f"CAPI Lead event sent: {result}")
+        return {"success": True, "event_id": event_id, "response": result}
+    except Exception as e:
+        logger.error(f"CAPI error: {e}")
+        return {"success": False, "error": str(e)}
 
 whatsapp_router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
@@ -1423,14 +1472,43 @@ async def chat_and_respond(
     db: Session = Depends(get_db)
 ):
     """
-    Process a message with AI and send response via WhatsApp.
-    Use this endpoint to chat with the bot and get response sent to WhatsApp.
+    Process a message with AI, score the lead, and send response via WhatsApp.
+    If lead score >= 70, sends conversion event to Meta CAPI.
     """
     try:
         whatsapp_account, access_token = get_whatsapp_client(account_id, db)
         to_clean = message_data.to.replace(" ", "").replace("+", "").strip()
 
-        # 1. Generate AI response
+        # 1. Get or create lead record
+        lead = db.query(WhatsAppLead).filter(
+            WhatsAppLead.whatsapp_account_id == account_id,
+            WhatsAppLead.phone_number == to_clean
+        ).first()
+
+        if not lead:
+            lead = WhatsAppLead(
+                whatsapp_account_id=account_id,
+                phone_number=to_clean,
+                lead_score=0,
+                lead_status="new",
+                total_messages=0
+            )
+            db.add(lead)
+            db.commit()
+            db.refresh(lead)
+
+        # 2. Get conversation history for context
+        recent_messages = db.query(WhatsAppMessage).filter(
+            WhatsAppMessage.whatsapp_account_id == account_id,
+            WhatsAppMessage.from_number.contains(to_clean[-9:])
+        ).order_by(WhatsAppMessage.timestamp.desc()).limit(5).all()
+
+        conversation_history = "\n".join([
+            f"{'Customer' if 'inbound' in m.direction else 'Bot'}: {m.message_text}"
+            for m in reversed(recent_messages) if m.message_text
+        ])
+
+        # 3. Generate AI response
         bot = SalesBot(max_tokens=100).get_graph()
         config = {"configurable": {"thread_id": to_clean}}
 
@@ -1442,7 +1520,52 @@ async def chat_and_respond(
         ai_response = result["messages"][-1].content
         logger.info(f"AI Response for {to_clean}: {ai_response}")
 
-        # 2. Send via WhatsApp API
+        # 4. Score the lead
+        scorer = LeadScorer()
+        lead_result = scorer.score_lead(conversation_history, message_data.body)
+
+        # Force flush to ensure logs appear immediately
+        import sys
+        print(f"\n{'='*50}", flush=True)
+        print(f"LEAD SCORING RESULT for {to_clean}", flush=True)
+        print(f"   Score: {lead_result.get('score')}", flush=True)
+        print(f"   Status: {lead_result.get('status')}", flush=True)
+        print(f"   Hot Lead: {lead_result.get('is_hot_lead')}", flush=True)
+        print(f"   Interests: {lead_result.get('interests')}", flush=True)
+        print(f"   Reason: {lead_result.get('reasoning')}", flush=True)
+        print(f"{'='*50}\n", flush=True)
+        sys.stdout.flush()
+
+        # Also log via logger for backup
+        logger.warning(f"LEAD SCORE: {to_clean} = {lead_result.get('score')} | Hot: {lead_result.get('is_hot_lead')} | Status: {lead_result.get('status')}")
+
+        # 5. Update lead record
+        lead.lead_score = lead_result.get("score", lead.lead_score)
+        lead.lead_status = lead_result.get("status", lead.lead_status)
+        lead.interests = lead_result.get("interests", lead.interests)
+        lead.scoring_reason = lead_result.get("reasoning")
+        lead.total_messages = (lead.total_messages or 0) + 1
+        lead.last_message = message_data.body
+        db.commit()
+
+        # 6. Send to Meta CAPI if hot lead and not already sent
+        capi_result = None
+        if lead_result.get("is_hot_lead") and not lead.conversion_sent:
+            if whatsapp_account.capi_dataset_id and whatsapp_account.capi_access_token:
+                capi_result = send_capi_lead_event(
+                    pixel_id=whatsapp_account.capi_dataset_id,
+                    access_token=whatsapp_account.capi_access_token,
+                    phone_number=to_clean,
+                    lead_score=lead_result.get("score", 70)
+                )
+                if capi_result.get("success"):
+                    lead.conversion_sent = True
+                    lead.conversion_event_id = capi_result.get("event_id")
+                    lead.conversion_sent_at = datetime.utcnow()
+                    db.commit()
+                    logger.info(f"CAPI Lead event sent for {to_clean}")
+
+        # 7. Send via WhatsApp API
         send_result = send_whatsapp_message_request(
             phone_number_id=whatsapp_account.phone_number_id,
             access_token=access_token,
@@ -1456,7 +1579,7 @@ async def chat_and_respond(
             }
         )
 
-        # 3. Save to database
+        # 8. Save to database
         message_id = send_result.get("messages", [{}])[0].get("id")
         save_message_to_db(
             db=db,
@@ -1474,12 +1597,173 @@ async def chat_and_respond(
             "success": True,
             "question": message_data.body,
             "response": ai_response,
-            "sent_to": to_clean
+            "sent_to": to_clean,
+            "lead_score": lead_result.get("score"),
+            "lead_status": lead_result.get("status"),
+            "is_hot_lead": lead_result.get("is_hot_lead"),
+            "interests": lead_result.get("interests"),
+            "reasoning": lead_result.get("reasoning"),
+            "capi_sent": capi_result.get("success") if capi_result else False
         }
 
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@whatsapp_router.get("/leads")
+def get_all_leads(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    min_score: Optional[float] = Query(None, description="Minimum lead score"),
+    status_filter: Optional[str] = Query(None, description="Filter by status: new, engaged, qualified, converted"),
+    hot_leads_only: bool = Query(False, description="Only show hot leads (score >= 70)"),
+    db: Session = Depends(get_db)
+):
+    """Get all leads across all WhatsApp accounts"""
+    query = db.query(WhatsAppLead)
+
+    if min_score is not None:
+        query = query.filter(WhatsAppLead.lead_score >= min_score)
+
+    if status_filter:
+        query = query.filter(WhatsAppLead.lead_status == status_filter)
+
+    if hot_leads_only:
+        query = query.filter(WhatsAppLead.lead_score >= 70)
+
+    total = query.count()
+    leads = query.order_by(WhatsAppLead.lead_score.desc()).offset(skip).limit(limit).all()
+
+    return {
+        "success": True,
+        "total": total,
+        "leads": [
+            {
+                "id": str(lead.id),
+                "whatsapp_account_id": str(lead.whatsapp_account_id),
+                "phone_number": lead.phone_number,
+                "lead_score": lead.lead_score,
+                "lead_status": lead.lead_status,
+                "is_hot_lead": lead.lead_score >= 70 if lead.lead_score else False,
+                "scoring_reason": lead.scoring_reason,
+                "total_messages": lead.total_messages,
+                "last_message": lead.last_message,
+                "interests": lead.interests,
+                "conversion_sent": lead.conversion_sent,
+                "conversion_event_id": lead.conversion_event_id,
+                "conversion_sent_at": lead.conversion_sent_at.isoformat() if lead.conversion_sent_at else None,
+                "created_at": lead.created_at.isoformat() if lead.created_at else None,
+                "updated_at": lead.updated_at.isoformat() if lead.updated_at else None
+            }
+            for lead in leads
+        ],
+        "pagination": {
+            "skip": skip,
+            "limit": limit,
+            "has_more": total > (skip + limit)
+        }
+    }
+
+
+@whatsapp_router.get("/accounts/{account_id}/leads")
+def get_leads(
+    account_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    min_score: Optional[float] = Query(None, description="Minimum lead score"),
+    status_filter: Optional[str] = Query(None, description="Filter by status: new, engaged, qualified, converted"),
+    hot_leads_only: bool = Query(False, description="Only show hot leads (score >= 70)"),
+    db: Session = Depends(get_db)
+):
+    """Get all leads for a WhatsApp account with their scores and details"""
+    query = db.query(WhatsAppLead).filter(
+        WhatsAppLead.whatsapp_account_id == account_id
+    )
+
+    if min_score is not None:
+        query = query.filter(WhatsAppLead.lead_score >= min_score)
+
+    if status_filter:
+        query = query.filter(WhatsAppLead.lead_status == status_filter)
+
+    if hot_leads_only:
+        query = query.filter(WhatsAppLead.lead_score >= 70)
+
+    total = query.count()
+    leads = query.order_by(WhatsAppLead.lead_score.desc()).offset(skip).limit(limit).all()
+
+    return {
+        "success": True,
+        "total": total,
+        "leads": [
+            {
+                "id": str(lead.id),
+                "phone_number": lead.phone_number,
+                "lead_score": lead.lead_score,
+                "lead_status": lead.lead_status,
+                "is_hot_lead": lead.lead_score >= 70 if lead.lead_score else False,
+                "scoring_reason": lead.scoring_reason,
+                "total_messages": lead.total_messages,
+                "last_message": lead.last_message,
+                "interests": lead.interests,
+                "conversion_sent": lead.conversion_sent,
+                "conversion_event_id": lead.conversion_event_id,
+                "conversion_sent_at": lead.conversion_sent_at.isoformat() if lead.conversion_sent_at else None,
+                "created_at": lead.created_at.isoformat() if lead.created_at else None,
+                "updated_at": lead.updated_at.isoformat() if lead.updated_at else None
+            }
+            for lead in leads
+        ],
+        "pagination": {
+            "skip": skip,
+            "limit": limit,
+            "has_more": total > (skip + limit)
+        }
+    }
+
+
+@whatsapp_router.get("/accounts/{account_id}/leads/{phone_number}")
+def get_lead_by_phone(
+    account_id: uuid.UUID,
+    phone_number: str,
+    db: Session = Depends(get_db)
+):
+    """Get a specific lead by phone number"""
+    phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
+
+    lead = db.query(WhatsAppLead).filter(
+        WhatsAppLead.whatsapp_account_id == account_id,
+        WhatsAppLead.phone_number == phone_clean
+    ).first()
+
+    if not lead:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No lead found for phone number: {phone_clean}"
+        )
+
+    return {
+        "success": True,
+        "lead": {
+            "id": str(lead.id),
+            "phone_number": lead.phone_number,
+            "lead_score": lead.lead_score,
+            "lead_status": lead.lead_status,
+            "is_hot_lead": lead.lead_score >= 70 if lead.lead_score else False,
+            "scoring_reason": lead.scoring_reason,
+            "total_messages": lead.total_messages,
+            "last_message": lead.last_message,
+            "interests": lead.interests,
+            "conversion_sent": lead.conversion_sent,
+            "conversion_event_id": lead.conversion_event_id,
+            "conversion_sent_at": lead.conversion_sent_at.isoformat() if lead.conversion_sent_at else None,
+            "created_at": lead.created_at.isoformat() if lead.created_at else None,
+            "updated_at": lead.updated_at.isoformat() if lead.updated_at else None
+        }
+    }
 
 
 @whatsapp_router.post("/ask")

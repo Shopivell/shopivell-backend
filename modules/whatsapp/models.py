@@ -63,11 +63,38 @@ class WhatsAppMessage(Base):
     
     whatsapp_account = relationship("WhatsAppAccount", back_populates="messages")
 
+class WhatsAppLead(Base):
+    """Track lead quality and conversion status for WhatsApp conversations"""
+    __tablename__ = "whatsapp_leads"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    whatsapp_account_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_accounts.id"), nullable=False)
+    phone_number = Column(String(50), nullable=False, index=True)
+
+    # Lead scoring
+    lead_score = Column(Float, default=0.0)  # 0-100 score
+    lead_status = Column(String(50), default="new")  # new, engaged, qualified, converted, lost
+    scoring_reason = Column(Text, nullable=True)  # AI reasoning for the score
+
+    # Conversation context
+    total_messages = Column(Float, default=0)
+    last_message = Column(Text, nullable=True)
+    interests = Column(JSON, nullable=True)  # Products/services they asked about
+
+    # Conversion tracking
+    conversion_sent = Column(Boolean, default=False)  # Whether CAPI event was sent
+    conversion_event_id = Column(String(255), nullable=True)
+    conversion_sent_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CompanyKnowledge(Base):
     __tablename__ = "company_knowledge"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False)
     content = Column(Text, nullable=False)
-    
+
     embedding = Column(Vector(1536)) 

@@ -1,6 +1,7 @@
 import os
+import json
 from dotenv import load_dotenv
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Optional
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -10,6 +11,54 @@ from sqlalchemy import select
 from langgraph.checkpoint.memory import MemorySaver
 
 load_dotenv()
+
+
+class LeadScorer:
+    """Score leads based on conversation content"""
+
+    def __init__(self):
+        self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+    def score_lead(self, conversation_history: str, last_message: str) -> dict:
+        """
+        Analyze conversation and return lead score with reasoning.
+        Returns: {score: 0-100, status: str, interests: list, is_hot_lead: bool}
+        """
+        prompt = f"""Analyze this customer conversation and score the lead quality.
+
+CONVERSATION:
+{conversation_history}
+
+LATEST MESSAGE FROM CUSTOMER:
+{last_message}
+
+Score the lead from 0-100 based on:
+- 0-20: Just browsing, no real interest
+- 21-40: Asking general questions
+- 41-60: Showing interest, asking about prices/features
+- 61-80: Serious interest, asking for quotes, comparing options
+- 81-100: Ready to buy, scheduling site visit, requesting meeting, confirming purchase
+
+HIGH INTENT SIGNALS (score 70+):
+- Asking for quotation/quote
+- Requesting site visit
+- Wanting to schedule a meeting
+- Asking about payment options
+- Saying "looks good", "interested", "let's proceed"
+- Providing their location/address
+- Asking about installation dates
+
+Return ONLY valid JSON (no markdown):
+{{"score": <number>, "status": "<new|engaged|qualified|converted>", "interests": ["product1", "product2"], "reasoning": "<brief reason>"}}"""
+
+        try:
+            response = self.llm.invoke([("system", "You are a lead scoring assistant. Return only valid JSON."), ("user", prompt)])
+            result = json.loads(response.content)
+            result["is_hot_lead"] = result.get("score", 0) >= 70
+            return result
+        except Exception as e:
+            print(f"Lead scoring error: {e}")
+            return {"score": 30, "status": "engaged", "interests": [], "reasoning": "Default score", "is_hot_lead": False}
 
 class SalesState(TypedDict):
     messages: Annotated[list, add_messages]
