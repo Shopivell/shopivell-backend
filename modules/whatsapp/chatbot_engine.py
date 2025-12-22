@@ -23,7 +23,7 @@ class SalesBot:
 
     def retrieve(self, state: SalesState):
         query = state["messages"][-1].content
-        print(f"🔍 Query: '{query}'")
+        print(f"Query: '{query}'")
         
         q_vector = self.embeddings.embed_query(query)
         
@@ -50,7 +50,7 @@ class SalesBot:
                 results = db.execute(stmt, {"embedding": embedding_str}).all()
                 
                 if results:
-                    print(f"🔍 Found {len(results)} matches")
+                    print(f"Found {len(results)} matches")
                     for content, similarity in results:
                         print(f"   Similarity: {similarity:.4f}")
                     
@@ -58,10 +58,10 @@ class SalesBot:
                     context = "\n".join([content for content, similarity in results])
                     return {"context": context, "status": "active"}
                 else:
-                    print("🔍 No matches above threshold 0.3")
+                    print("No matches above threshold 0.3")
                     
             except Exception as e:
-                print(f"🔍 pgvector error: {e}")
+                print(f"pgvector error: {e}")
                 # Fallback to simpler query without threshold
                 try:
                     stmt = text("""
@@ -84,19 +84,17 @@ class SalesBot:
     def respond(self, state: SalesState):
         system_instructions = (
             "You are a Sales Representative at SecureSights. Speak naturally and professionally. "
-            "Pricing Reference: 4 Channel DVR packages start at $150. 4 Channel NVR packages start at $350. "
-            "We also do boom gates and electric fences. "
-            "CRITICAL: If the CONTEXT below does not contain the specific answer to the user's question, "
-            "DO NOT try to answer. Simply reply with exactly one word: 'WAITING'. "
-            "Do not apologize, do not explain why. Just 'WAITING'."
+            "Use the CONTEXT below to answer customer questions about our products and services. "
+            "If the context contains relevant information, use it to provide helpful answers. "
+            "Only say 'WAITING' if the context is completely irrelevant or says 'No relevant technical info found'."
         )
-        
+
         full_prompt = f"{system_instructions}\n\nCONTEXT:\n{state['context']}"
         response = self.llm.invoke([("system", full_prompt)] + state["messages"])
-        
+
         if "WAITING" in response.content.upper():
             return {"messages": [response], "status": "human_required"}
-        
+
         return {"messages": [response], "status": "active"}
 
     def get_graph(self):

@@ -1372,75 +1372,6 @@ async def ask_question(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
-@whatsapp_router.post("/knowledge/fix-embeddings")
-def fix_all_embeddings(
-    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec", description="Store ID"),
-    db: Session = Depends(get_db)
-):
-    """
-    Fix all placeholder embeddings for a store
-    """
-    try:
-        from langchain_openai import OpenAIEmbeddings
-        from sqlalchemy import text
-        
-        print(f"🔄 Fixing embeddings for store: {store_id}")
-        
-        embeddings = OpenAIEmbeddings()
-        
-        # Get all placeholder embeddings
-        rows = db.execute(text("""
-            SELECT id, content 
-            FROM company_knowledge 
-            WHERE store_id = :store_id AND embedding::text LIKE '[0.%'
-        """), {"store_id": str(store_id)}).fetchall()
-        
-        if not rows:
-            return {"message": "No placeholder embeddings found", "fixed": 0}
-        
-        print(f"Found {len(rows)} placeholder embeddings to fix")
-        
-        fixed = 0
-        for row_id, content in rows:
-            try:
-                # Generate real embedding
-                embedding = embeddings.embed_query(content)
-                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-                
-                # Update
-                db.execute(text("""
-                    UPDATE company_knowledge 
-                    SET embedding = :embedding::vector
-                    WHERE id = :id
-                """), {
-                    "embedding": embedding_str,
-                    "id": row_id
-                })
-                
-                fixed += 1
-                if fixed % 5 == 0:
-                    print(f"Fixed {fixed}/{len(rows)}")
-                    
-            except Exception as e:
-                print(f"Error fixing row {row_id}: {e}")
-        
-        db.commit()
-        
-        return {
-            "message": f"Fixed {fixed} embeddings",
-            "total_found": len(rows),
-            "fixed": fixed,
-            "store_id": str(store_id)
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to fix embeddings: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fix embeddings: {str(e)}"
-        )
-
 # ============ KNOWLEDGE MANAGEMENT ENDPOINTS ============
 
 
@@ -1543,73 +1474,81 @@ def get_knowledge_entries(
 @whatsapp_router.post("/knowledge/fix-embeddings")
 def fix_all_embeddings(
     store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec", description="Store ID"),
-    db: Session = Depends(get_db) 
+    db: Session = Depends(get_db)
 ):
     """
-    Fix all placeholder embeddings for a store
+    Fix all placeholder embeddings for a store.
+    Regenerates embeddings for all entries (not just placeholders).
     """
     try:
         from langchain_openai import OpenAIEmbeddings
         from sqlalchemy import text
-        
-        print(f"🔄 Fixing embeddings for store: {store_id}")
-        
-        # Get all placeholder embeddings
+
+        logger.info(f"Fixing ALL embeddings for store: {store_id}")
+
+        # Get ALL knowledge entries for this store (not just placeholders)
         rows = db.execute(text("""
-            SELECT id, content 
-            FROM company_knowledge 
-            WHERE store_id = :store_id AND embedding::text LIKE '[0.%'
+            SELECT id, content
+            FROM company_knowledge
+            WHERE store_id = :store_id
         """), {"store_id": str(store_id)}).fetchall()
-        
+
         if not rows:
-            return {"message": "No placeholder embeddings found", "fixed": 0}
-        
-        print(f"Found {len(rows)} placeholder embeddings to fix")
-        
+            return {"message": "No knowledge entries found", "fixed": 0, "total_found": 0}
+
+        logger.info(f"Found {len(rows)} knowledge entries to process")
+
         embeddings = OpenAIEmbeddings()
         fixed = 0
-        
-        for row_id, content in rows:
+        errors = []
+
+        for row in rows:
+            row_id = row[0]  # Access by index for SQLAlchemy Row
+            content = row[1]
+
             try:
-                print(f"Processing row {row_id}...")
-                
-                # Generate real embedding
+                logger.info(f"Processing row {row_id}...")
+                logger.info(f"  Content preview: {content[:50]}...")
+
+                # Generate real embedding using OpenAI
                 embedding = embeddings.embed_query(content)
-                
-                # Convert to list of floats
-                embedding_list = [float(x) for x in embedding]
-                print(f"  Generated embedding with {len(embedding_list)} dimensions")
-                
-                # CRITICAL FIX: Use CAST syntax instead of :embedding::vector
+
+                # Convert to PostgreSQL vector string format: "[0.1, 0.2, ...]"
+                embedding_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+                logger.info(f"  Generated embedding with {len(embedding)} dimensions")
+
+                # Update using string format that pgvector expects
                 db.execute(text("""
-                    UPDATE company_knowledge 
+                    UPDATE company_knowledge
                     SET embedding = CAST(:embedding AS vector)
                     WHERE id = :id
                 """), {
-                    "embedding": embedding_list,  # Pass as list, not string
-                    "id": row_id
+                    "embedding": embedding_str,
+                    "id": str(row_id)
                 })
-                
+
                 fixed += 1
-                print(f"  ✅ Fixed row {row_id}")
-                
+                logger.info(f"  Fixed row {row_id}")
+
             except Exception as e:
-                print(f"❌ Error fixing row {row_id}: {type(e).__name__}: {e}")
-        
+                error_msg = f"Row {row_id}: {type(e).__name__}: {e}"
+                logger.error(f"Error: {error_msg}")
+                errors.append(error_msg)
+
         db.commit()
-        print(f"✅ Committed. Total fixed: {fixed}/{len(rows)}")
-        
+        logger.info(f"Committed. Total fixed: {fixed}/{len(rows)}")
+
         return {
             "message": f"Fixed {fixed} embeddings",
             "total_found": len(rows),
             "fixed": fixed,
-            "store_id": str(store_id)
+            "store_id": str(store_id),
+            "errors": errors if errors else None
         }
-        
+
     except Exception as e:
         db.rollback()
-        print(f"❌ Transaction rolled back due to error: {e}")
-        logger.error(f"Failed to fix embeddings: {str(e)}")
+        logger.error(f"Transaction rolled back due to error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fix embeddings: {str(e)}"
