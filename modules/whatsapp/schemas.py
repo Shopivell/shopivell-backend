@@ -4,8 +4,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 import uuid
-
-from enum import Enum  # <--- FIX: Use the standard Python Enum class
+from uuid import UUID
+from enum import Enum
 
 # WhatsApp Account Schemas
 class WhatsAppAccountBase(BaseModel):
@@ -238,4 +238,27 @@ class ConversionsAPISettingsUpdate(BaseModel):
         ...,
         description="The Conversions API Access Token generated in Events Manager. This should be stored securely (encrypted) in your database.",
         min_length=30
+    )
+
+class ChatRequest(BaseModel):
+    user_id: str  # Use this to keep track of different "conversations"
+    question: str
+
+class KnowledgeResponse(BaseModel):
+    """Response for knowledge creation"""
+    id: UUID
+    store_id: UUID
+    content: str
+    embedding_dimensions: int
+    created: bool
+
+    class Config:
+        from_attributes = True
+
+class KnowledgeCreateRequest(BaseModel):
+    """Schema for creating knowledge entries"""
+    content: str = Field(..., min_length=10, description="Knowledge content")
+    store_id: UUID = Field(
+        default=UUID("36689cad-4b73-4fea-802b-d3a4fbfa23ec"),
+        description="Store ID (defaults to SecureSights)"
     )

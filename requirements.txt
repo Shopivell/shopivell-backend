@@ -15,4 +15,5 @@ PyJWT
 scipy
 paynow
 google-auth
-
+langgraph
+pgvector

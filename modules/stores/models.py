@@ -1,12 +1,13 @@
 # modules/stores/models.py
 from typing import Optional, List, Dict, Any
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text, JSON, Enum as SQLEnum, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Text, JSON, Enum as SQLEnum, Integer
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import uuid
 from database import Base
 import enum
+from pgvector.sqlalchemy import Vector
 
 # NO import from users module!
 
@@ -92,3 +93,4 @@ class StoreSetupSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
     user = relationship("User", back_populates="setup_sessions")
+

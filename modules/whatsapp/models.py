@@ -1,6 +1,8 @@
 # models.py
 
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, UUID, JSON
+# ✅ CORRECT: This is the SQLAlchemy column type
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import ARRAY, Column, Float, String, Text, Boolean, DateTime, ForeignKey, UUID, JSON
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
@@ -60,3 +62,12 @@ class WhatsAppMessage(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     whatsapp_account = relationship("WhatsAppAccount", back_populates="messages")
+
+class CompanyKnowledge(Base):
+    __tablename__ = "company_knowledge"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    
+    embedding = Column(Vector(1536)) 

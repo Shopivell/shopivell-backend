@@ -4,6 +4,7 @@ import hashlib
 import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 import uuid
@@ -11,12 +12,13 @@ import requests
 import os
 import json
 from datetime import datetime, time, timedelta
-import logging
-
+import logging 
+from sqlalchemy import text
 from database import get_db
-from .models import WhatsAppAccount, WhatsAppMessage
+from modules.whatsapp.chatbot_engine import SalesBot
+from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage
 from .schemas import (
-    ConversionsAPISettingsUpdate, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
+    ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
     WhatsAppAccountsListResponse, WhatsAppMessagesListResponse,
     WhatsAppWebhookVerification, WhatsAppWebhookPayload
@@ -1339,4 +1341,276 @@ def send_whatsapp_direct_text_message(
             message_id=result.get("message_id"),
             wamid=result.get("wamid"),
             message="24-hour window expired. Sent default template message instead."
+        )
+    
+
+@whatsapp_router.post("/ask")
+async def ask_question(request: ChatRequest):
+    try:
+        # 1. Initialize the Graph
+        bot = SalesBot().get_graph()
+        
+        # 2. Set the configuration (thread_id enables memory)
+        config = {"configurable": {"thread_id": request.user_id}}
+        
+        # 3. Invoke the logic
+        # We use ainvoke (async) for the AI logic
+        result = await bot.ainvoke(
+            {"messages": [("user", request.question)]}, 
+            config=config
+        )
+        
+        # 4. Extract the last message from the AI
+        ai_response = result["messages"][-1].content
+        
+        return {
+            "user_id": request.user_id,
+            "response": ai_response,
+            "history_count": len(result["messages"])
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@whatsapp_router.post("/knowledge/fix-embeddings")
+def fix_all_embeddings(
+    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec", description="Store ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Fix all placeholder embeddings for a store
+    """
+    try:
+        from langchain_openai import OpenAIEmbeddings
+        from sqlalchemy import text
+        
+        print(f"🔄 Fixing embeddings for store: {store_id}")
+        
+        embeddings = OpenAIEmbeddings()
+        
+        # Get all placeholder embeddings
+        rows = db.execute(text("""
+            SELECT id, content 
+            FROM company_knowledge 
+            WHERE store_id = :store_id AND embedding::text LIKE '[0.%'
+        """), {"store_id": str(store_id)}).fetchall()
+        
+        if not rows:
+            return {"message": "No placeholder embeddings found", "fixed": 0}
+        
+        print(f"Found {len(rows)} placeholder embeddings to fix")
+        
+        fixed = 0
+        for row_id, content in rows:
+            try:
+                # Generate real embedding
+                embedding = embeddings.embed_query(content)
+                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                
+                # Update
+                db.execute(text("""
+                    UPDATE company_knowledge 
+                    SET embedding = :embedding::vector
+                    WHERE id = :id
+                """), {
+                    "embedding": embedding_str,
+                    "id": row_id
+                })
+                
+                fixed += 1
+                if fixed % 5 == 0:
+                    print(f"Fixed {fixed}/{len(rows)}")
+                    
+            except Exception as e:
+                print(f"Error fixing row {row_id}: {e}")
+        
+        db.commit()
+        
+        return {
+            "message": f"Fixed {fixed} embeddings",
+            "total_found": len(rows),
+            "fixed": fixed,
+            "store_id": str(store_id)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to fix embeddings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fix embeddings: {str(e)}"
+        )
+
+# ============ KNOWLEDGE MANAGEMENT ENDPOINTS ============
+
+
+@whatsapp_router.post("/knowledge", response_model=KnowledgeResponse)
+def create_knowledge_entry(
+    request: KnowledgeCreateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new knowledge entry with REAL OpenAI embedding
+    """
+    try:
+        from langchain_openai import OpenAIEmbeddings
+        
+        print(f"📝 Creating knowledge: {request.content[:50]}...")
+        
+        # 1. Generate REAL embedding
+        embeddings = OpenAIEmbeddings()
+        embedding = embeddings.embed_query(request.content)
+        print(f"   ✅ Generated {len(embedding)}-dim embedding")
+        
+        # 2. Create knowledge entry
+        from .models import CompanyKnowledge
+        import uuid
+        
+        knowledge = CompanyKnowledge(
+            id=uuid.uuid4(),
+            store_id=request.store_id,
+            content=request.content,
+            embedding=embedding  # REAL embedding
+        )
+        
+        # 3. Save to database
+        db.add(knowledge)
+        db.commit()
+        db.refresh(knowledge)
+        
+        print(f"   ✅ Saved to database (ID: {knowledge.id})")
+        
+        return KnowledgeResponse(
+            id=knowledge.id,
+            store_id=knowledge.store_id,
+            content=knowledge.content,
+            embedding_dimensions=len(embedding),
+            created=True
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create knowledge: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create knowledge: {str(e)}"
+        )
+
+@whatsapp_router.get("/knowledge")
+def get_knowledge_entries(
+    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec"),
+    skip: int = Query(0, ge=0, description="Number of entries to skip"),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get all knowledge entries for a store"""
+    # Get entries
+    query = db.query(CompanyKnowledge).filter(
+        CompanyKnowledge.store_id == store_id
+    )
+    
+    entries = query.order_by(CompanyKnowledge.id).offset(skip).limit(limit).all()
+    total = query.count()
+    
+    # Check if embeddings are real
+    placeholder_count = db.execute(text("""
+        SELECT COUNT(*) 
+        FROM company_knowledge 
+        WHERE store_id = :store_id AND embedding::text LIKE '[0.%'
+    """), {"store_id": str(store_id)}).scalar()
+    
+    return {
+        "entries": [
+            {
+                "id": str(entry.id),
+                "content": entry.content,
+                "content_preview": entry.content[:100] + "..." if len(entry.content) > 100 else entry.content,
+                "has_embedding": entry.embedding is not None,
+                "embedding_real": False if entry.embedding and str(entry.embedding).startswith('[0.') else True
+            }
+            for entry in entries
+        ],
+        "total": total,
+        "placeholder_embeddings": placeholder_count,
+        "store_id": str(store_id),
+        "pagination": {
+            "skip": skip,
+            "limit": limit,
+            "has_more": total > (skip + limit)
+        }
+    }
+
+@whatsapp_router.post("/knowledge/fix-embeddings")
+def fix_all_embeddings(
+    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec", description="Store ID"),
+    db: Session = Depends(get_db) 
+):
+    """
+    Fix all placeholder embeddings for a store
+    """
+    try:
+        from langchain_openai import OpenAIEmbeddings
+        from sqlalchemy import text
+        
+        print(f"🔄 Fixing embeddings for store: {store_id}")
+        
+        # Get all placeholder embeddings
+        rows = db.execute(text("""
+            SELECT id, content 
+            FROM company_knowledge 
+            WHERE store_id = :store_id AND embedding::text LIKE '[0.%'
+        """), {"store_id": str(store_id)}).fetchall()
+        
+        if not rows:
+            return {"message": "No placeholder embeddings found", "fixed": 0}
+        
+        print(f"Found {len(rows)} placeholder embeddings to fix")
+        
+        embeddings = OpenAIEmbeddings()
+        fixed = 0
+        
+        for row_id, content in rows:
+            try:
+                print(f"Processing row {row_id}...")
+                
+                # Generate real embedding
+                embedding = embeddings.embed_query(content)
+                
+                # Convert to list of floats
+                embedding_list = [float(x) for x in embedding]
+                print(f"  Generated embedding with {len(embedding_list)} dimensions")
+                
+                # CRITICAL FIX: Use CAST syntax instead of :embedding::vector
+                db.execute(text("""
+                    UPDATE company_knowledge 
+                    SET embedding = CAST(:embedding AS vector)
+                    WHERE id = :id
+                """), {
+                    "embedding": embedding_list,  # Pass as list, not string
+                    "id": row_id
+                })
+                
+                fixed += 1
+                print(f"  ✅ Fixed row {row_id}")
+                
+            except Exception as e:
+                print(f"❌ Error fixing row {row_id}: {type(e).__name__}: {e}")
+        
+        db.commit()
+        print(f"✅ Committed. Total fixed: {fixed}/{len(rows)}")
+        
+        return {
+            "message": f"Fixed {fixed} embeddings",
+            "total_found": len(rows),
+            "fixed": fixed,
+            "store_id": str(store_id)
+        }
+        
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Transaction rolled back due to error: {e}")
+        logger.error(f"Failed to fix embeddings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fix embeddings: {str(e)}"
         )
