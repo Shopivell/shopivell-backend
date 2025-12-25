@@ -438,6 +438,62 @@ async def force_restart_setup(
             detail=f"Error force restarting store setup: {str(e)}"
         )
 
+# CREATE store directly (without setup wizard)
+@store_router.post("/", response_model=StoreResponse)
+async def create_store(
+    store_data: StoreCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new store directly (for adding additional stores)"""
+    try:
+        # Verify owner exists
+        owner = db.query(User).filter(User.id == store_data.owner_id).first()
+        if not owner:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Owner not found"
+            )
+
+        # Create the store
+        db_store = Store(
+            owner_id=store_data.owner_id,
+            agency_id=store_data.agency_id,
+            store_name=store_data.store_name,
+            store_phone=store_data.store_phone,
+            store_email=store_data.store_email,
+            store_link=store_data.store_link,
+            color_theme=store_data.color_theme,
+            logo_url=store_data.logo_url,
+            business_type=store_data.business_type,
+            store_voice=store_data.store_voice,
+            products_or_services=store_data.products_or_services or [],
+            delivery_enabled=store_data.delivery_enabled,
+            pickup_enabled=store_data.pickup_enabled,
+            dine_in_enabled=store_data.dine_in_enabled,
+            delivery_fee=store_data.delivery_fee,
+            free_delivery_minimum=store_data.free_delivery_minimum,
+            domain=store_data.domain,
+            enabled_features=store_data.enabled_features or {},
+            business_goals=store_data.business_goals or [],
+            payment_methods=store_data.payment_methods or {},
+            current_step=StoreSetupStep.COMPLETED,
+            is_setup_completed=True
+        )
+
+        db.add(db_store)
+        db.commit()
+        db.refresh(db_store)
+        return db_store
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating store: {str(e)}"
+        )
+
 # Existing store management endpoints (only work after store is created)
 @store_router.get("/{store_id}", response_model=StoreResponse)
 async def get_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -803,45 +859,38 @@ def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] =
     }
 
 @store_router.post("/scrape-website", status_code=status.HTTP_200_OK)
-async def mock_scrape_website(request: ScrapeRequest):
+async def scrape_website(request: ScrapeRequest):
     """
-    Mock endpoint to simulate website scraping.
-    Returns hardcoded data based on the domain provided.
+    Scrape a website using Tavily and extract store information using AI.
+
+    Uses:
+    - Tavily for web content extraction
+    - OpenAI for parsing content into structured store data
     """
-    url = request.url.lower()
-    
-    # Logic to identify the domain for "smart" hardcoding
-    domain = url.replace('https://', '').replace('http://', '').replace('www.', '').split('.')[0]
-    
-    # Hardcoded database of "known" sites for testing
-    if "pizza" in domain:
-        return {
-            "store_name": "Mario's Authentic Pizza",
-            "store_email": "hello@mariospizza.com",
-            "store_phone": "555-0123",
-            "store_voice": "Welcome to Mario's! We've been serving the best wood-fired pizza since 1992. Our secret is in the dough and the family-made tomato sauce.",
-            "services_products": "Margherita Pizza, Pepperoni Special, Garlic Knots, Italian Gelato",
-            "color_theme": "#E53E3E", # Red theme
-            "logo_url": "https://res.cloudinary.com/dw1lnczyk/image/upload/v1/assets/pizza-logo.png"
-        }
-    elif "tech" in domain:
-        return {
-            "store_name": "NextGen Tech Hub",
-            "store_email": "support@nextgentech.io",
-            "store_phone": "555-9876",
-            "store_voice": "NextGen Tech is your one-stop shop for modern electronics and smart home integration. We bridge the gap between innovation and everyday life.",
-            "services_products": "Smart Watches, Wireless Earbuds, IoT Home Sensors, Technical Support",
-            "color_theme": "#3182CE", # Blue theme
-            "logo_url": "https://res.cloudinary.com/dw1lnczyk/image/upload/v1/assets/tech-logo.png"
-        }
-    else:
-        # Default fallback for any other URL
-        return {
-            "store_name": f"{domain.capitalize()} Services",
-            "store_email": f"contact@{domain}.com",
-            "store_phone": "1234567890",
-            "store_voice": f"We are {domain.capitalize()}, providing premium quality solutions tailored to your needs.",
-            "services_products": "General Services, Consulting, Premium Support",
-            "color_theme": "#2D3748",
-            "logo_url": None
-        }
+    from modules.stores.scraping_service import extract_store_info_from_website
+
+    url = request.url.strip()
+
+    # Ensure URL has protocol
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+
+    try:
+        # Extract store info using Tavily + AI agent
+        store_data = extract_store_info_from_website(url)
+
+        print(f"[Scrape] Successfully extracted data for: {url}")
+        return store_data
+
+    except ValueError as e:
+        # API key not configured
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"[Scrape] Error scraping {url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to scrape website: {str(e)}"
+        )

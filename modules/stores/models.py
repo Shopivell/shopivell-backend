@@ -25,9 +25,10 @@ class StoreSetupStep(str, enum.Enum):
 
 class Store(Base):
     __tablename__ = "stores"
-    
+
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    agency_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("agencies.id"), nullable=True, index=True)
     
     # Basic Info
     store_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -41,7 +42,7 @@ class Store(Base):
     business_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     
     # Store Voice/Tone
-    store_voice: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # ADDED
+    store_voice: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # ADDED - Use Text for long descriptions
     store_tone: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # ADDED
     # Products or Services
     products_or_services: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list)  # ADDED
@@ -69,6 +70,7 @@ class Store(Base):
     
     # Relationships using string references
     owner = relationship("User", back_populates="stores")
+    agency = relationship("Agency", back_populates="stores")
     facebook_connections = relationship("FacebookPageConnection", back_populates="store", cascade="all, delete-orphan")
     social_posts = relationship("SocialPost", back_populates="store", cascade="all, delete-orphan")
 

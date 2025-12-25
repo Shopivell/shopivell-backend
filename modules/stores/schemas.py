@@ -29,6 +29,7 @@ class StoreBase(BaseModel):
 
 class StoreCreate(StoreBase):
     owner_id: uuid.UUID
+    agency_id: Optional[uuid.UUID] = None
 
 class StoreUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)

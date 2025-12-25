@@ -1,6 +1,7 @@
 # modules/users/auth_api.py
 import os
 import traceback
+import re
 from fastapi import APIRouter, Depends, HTTPException, status
 import uuid
 import os
@@ -16,6 +17,30 @@ from modules.users.schemas import (
 )
 from modules.stores.models import Store, StoreSetupSession
 from utils.Verification_Codes_Services import VerificationCodeService
+
+
+def generate_unique_slug(db: Session, base_name: str) -> str:
+    """Generate a unique slug for agency using raw SQL"""
+    from sqlalchemy import text
+    import uuid as uuid_module
+
+    base_slug = re.sub(r'[^a-z0-9]+', '-', base_name.lower()).strip('-')
+    if not base_slug:
+        base_slug = 'agency'
+
+    slug = base_slug
+    counter = 1
+    max_attempts = 100  # Safety limit
+
+    while counter <= max_attempts:
+        result = db.execute(text("SELECT 1 FROM agencies WHERE slug = :slug"), {"slug": slug}).fetchone()
+        if not result:
+            return slug
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    # Fallback: use UUID suffix if too many attempts
+    return f"{base_slug}-{uuid_module.uuid4().hex[:8]}"
 
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -77,7 +102,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             db.add(user)
             db.commit()
             db.refresh(user)
-            print(f"✅ New user created: {user.email}")
+            print(f"[OK] New user created: {user.email}")
         else:
             # FIX: Update existing user with Google data - always update name and profile if available
             print(f"🔄 Checking updates for existing user: {user.email}")
@@ -113,17 +138,50 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         
         # VERIFY: Query the user again to confirm what's in DB
         verified_user = db.query(User).filter(User.id == user.id).first()
-        print(f"🔍 VERIFICATION - DB contains: Name: '{verified_user.name}', Google ID: '{verified_user.google_id}', Profile Pic: '{verified_user.profile_picture}'")
-        
+        print(f"[OK] VERIFICATION - DB contains: Name: '{verified_user.name}', Google ID: '{verified_user.google_id}', Profile Pic: '{verified_user.profile_picture}'")
+
         # Check store and setup session status
         store = db.query(Store).filter(Store.owner_id == user.id).first()
         has_store = store is not None
-        
+
+        # Get or create user's agency using raw SQL to avoid mapper issues
+        from sqlalchemy import text
+        import uuid as uuid_module
+
+        agency_result = db.execute(
+            text("SELECT id, name FROM agencies WHERE owner_id = :owner_id"),
+            {"owner_id": str(verified_user.id)}
+        ).fetchone()
+
+        if not agency_result:
+            agency_name = f"{verified_user.name}'s Agency" if verified_user.name else "My Agency"
+            agency_slug = generate_unique_slug(db, agency_name)
+            agency_id = str(uuid_module.uuid4())
+
+            db.execute(
+                text("""
+                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "id": agency_id,
+                    "owner_id": str(verified_user.id),
+                    "name": agency_name,
+                    "slug": agency_slug,
+                    "email": verified_user.email
+                }
+            )
+            db.commit()
+            print(f"[OK] Agency created: {agency_name}")
+            agency_result = (agency_id, agency_name)
+
+        agency_id = agency_result[0] if agency_result else None
+
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user.id,
             StoreSetupSession.is_active == True
         ).first()
-        
+
         # Determine detailed user status
         if has_store:
             user_status = "has_store"
@@ -134,7 +192,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         else:
             user_status = "no_store"
             redirect_to = "/setup/start"
-        
+
         # Generate access token
         access_token = f"jwt_{user.id}_{uuid.uuid4()}"
         
@@ -159,6 +217,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         response_data = {
             "user": user_dict,
             "store_id": str(store.id) if store else None,
+            "agency_id": str(agency_id) if agency_id else None,
             "has_active_setup_session": setup_session is not None,
             "setup_session_id": str(setup_session.id) if setup_session else None,
             "setup_progress": setup_session.setup_progress if setup_session else 0,
@@ -169,8 +228,8 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             "access_token": access_token,
             "token_type": "bearer"
         }
-        
-        print(f"🎉 Google auth completed successfully for: {verified_user.email}")
+
+        print(f"[OK] Google auth completed successfully for: {verified_user.email}")
         print(f"📤 Response data: {response_data}")
         
         return LoginResponse(**response_data)
@@ -254,32 +313,69 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         # Check if user has a completed store
         store = db.query(Store).filter(Store.owner_id == user.id).first()
         has_store = store is not None
-        
+
+        # Get or create agency for user using raw SQL
+        from sqlalchemy import text
+        import uuid as uuid_module
+
+        agency_result = db.execute(
+            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+            {"owner_id": str(user.id)}
+        ).fetchone()
+
+        if not agency_result:
+            agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
+            agency_slug = generate_unique_slug(db, agency_name)
+            agency_id = str(uuid_module.uuid4())
+
+            db.execute(
+                text("""
+                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "id": agency_id,
+                    "owner_id": str(user.id),
+                    "name": agency_name,
+                    "slug": agency_slug,
+                    "email": user.email
+                }
+            )
+            db.commit()
+            print(f"[OK] Agency created: {agency_name}")
+        else:
+            agency_id = agency_result[0]
+
         # Check if user has an active setup session
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user.id,
             StoreSetupSession.is_active == True
         ).first()
-        
+
         has_active_session = setup_session is not None
-        
+
         # Determine user status
         if has_store:
             user_status = "has_store"
+            redirect_to = "/dashboard"
         elif has_active_session:
             user_status = "has_incomplete_setup"
+            redirect_to = f"/setup/{setup_session.id}"
         else:
             user_status = "no_store"
-        
+            redirect_to = "/setup/start"
+
         return LoginResponse(
             user=user,
             store_id=store.id if store else None,
+            agency_id=agency_id if agency_id else None,
             has_active_setup_session=has_active_session,
             setup_session_id=setup_session.id if setup_session else None,
             setup_progress=setup_session.setup_progress if setup_session else 0,
             current_setup_step=setup_session.current_step.value if setup_session else None,
             has_store=has_store,
             user_status=user_status,
+            redirect_to=redirect_to,
             access_token="jwt_token_here",
             token_type="bearer"
         )
@@ -324,16 +420,48 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             user.is_verified = True
             db.commit()
             db.refresh(user)
-        
+
         # Check store and setup session status
         store = db.query(Store).filter(Store.owner_id == user.id).first()
         has_store = store is not None
-        
+
+        # Get or create agency for user using raw SQL
+        from sqlalchemy import text
+        import uuid as uuid_module
+
+        agency_result = db.execute(
+            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+            {"owner_id": str(user.id)}
+        ).fetchone()
+
+        if not agency_result:
+            agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
+            agency_slug = generate_unique_slug(db, agency_name)
+            agency_id = str(uuid_module.uuid4())
+
+            db.execute(
+                text("""
+                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """),
+                {
+                    "id": agency_id,
+                    "owner_id": str(user.id),
+                    "name": agency_name,
+                    "slug": agency_slug,
+                    "email": user.email
+                }
+            )
+            db.commit()
+            print(f"[OK] Agency created: {agency_name}")
+        else:
+            agency_id = agency_result[0]
+
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user.id,
             StoreSetupSession.is_active == True
         ).first()
-        
+
         # Determine detailed user status
         if has_store:
             user_status = "has_store"
@@ -344,13 +472,14 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
         else:
             user_status = "no_store"
             redirect_to = "/setup/start"
-        
+
         # Generate token
         access_token = f"jwt_{user.id}"
-        
+
         return LoginResponse(
             user=user,
             store_id=store.id if store else None,
+            agency_id=agency_id if agency_id else None,
             has_active_setup_session=setup_session is not None,
             setup_session_id=setup_session.id if setup_session else None,
             setup_progress=setup_session.setup_progress if setup_session else 0,

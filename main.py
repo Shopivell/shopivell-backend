@@ -18,6 +18,7 @@ from modules.payment.router import payment_router
 from modules.marketing.router import marketing_router
 from modules.whatsapp.router import whatsapp_router
 from modules.agents.router import agents_router
+from modules.agency.router import agency_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -65,6 +66,7 @@ app.include_router(payment_router, prefix="/v1")
 app.include_router(marketing_router, prefix="/v1")
 app.include_router(whatsapp_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
+app.include_router(agency_router, prefix="/v1")
 
 # Run server
 if __name__ == "__main__":

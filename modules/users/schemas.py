@@ -51,9 +51,10 @@ class GoogleSignupRequest(BaseModel):
     
 class LoginResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     user: UserResponse
     store_id: Optional[uuid.UUID] = None
+    agency_id: Optional[uuid.UUID] = None
     has_active_setup_session: bool = False
     setup_session_id: Optional[uuid.UUID] = None
     setup_progress: int = 0  # Changed to non-optional with default

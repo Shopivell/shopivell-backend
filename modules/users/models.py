@@ -44,6 +44,7 @@ class User(Base):
     setup_sessions = relationship("StoreSetupSession", back_populates="user", cascade="all, delete-orphan")
     facebook_connections = relationship("FacebookPageConnection", back_populates="user", cascade="all, delete-orphan")
     social_posts = relationship("SocialPost", back_populates="user", cascade="all, delete-orphan")
+    agencies = relationship("Agency", back_populates="owner", cascade="all, delete-orphan")
 
 class VerificationCode(Base):
     __tablename__ = "verification_codes"
