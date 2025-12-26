@@ -46,7 +46,7 @@ async def get_all_packages(
     except Exception as e:
         logger.error(f"Error getting packages: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching packages: {str(e)}"
         )
 
@@ -69,7 +69,7 @@ async def compare_packages(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error comparing packages: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error comparing packages: {str(e)}"
         )
 
@@ -98,7 +98,7 @@ async def get_package(
     except Exception as e:
         logger.error(f"Error getting package: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching package: {str(e)}"
         )
 
@@ -133,7 +133,7 @@ async def create_package(
         db.rollback()
         logger.error(f"Error creating package: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error creating package: {str(e)}"
         )
 
@@ -169,7 +169,7 @@ async def update_package(
         db.rollback()
         logger.error(f"Error updating package: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error updating package: {str(e)}"
         )
 
@@ -367,7 +367,7 @@ async def initiate_payment(
     except Exception as e:
         logger.error(f"Error initiating payment: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error initiating payment: {str(e)}"
         )
 
@@ -405,7 +405,7 @@ async def initiate_ecocash_payment_direct(
     except Exception as e:
         logger.error(f"Error initiating direct EcoCash payment: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error initiating payment: {str(e)}"
         )
 
@@ -433,7 +433,7 @@ async def get_payment_transaction(
     except Exception as e:
         logger.error(f"Error getting transaction: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching transaction: {str(e)}"
         )
 
@@ -460,7 +460,7 @@ async def get_payment_receipt(
     except Exception as e:
         logger.error(f"Error generating receipt: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error generating receipt: {str(e)}"
         )
 
@@ -491,7 +491,7 @@ async def get_store_transactions(
     except Exception as e:
         logger.error(f"Error getting store transactions: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching transactions: {str(e)}"
         )
 
@@ -509,7 +509,7 @@ async def get_payment_summary(
     except Exception as e:
         logger.error(f"Error getting payment summary: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching payment summary: {str(e)}"
         )
 
@@ -537,19 +537,19 @@ async def paynow_webhook(
             "awaiting funds": PaymentStatus.PROCESSING
         }
         
-        status = status_map.get(webhook_data.status.lower(), PaymentStatus.PENDING)
-        
+        payment_status = status_map.get(webhook_data.status.lower(), PaymentStatus.PENDING)
+
         # Update payment status
         transaction, error = payment_service.update_payment_status(
             reference=webhook_data.reference,
-            status=status,
+            status=payment_status,
             paynow_reference=webhook_data.paynow_reference
         )
-        
+
         if error:
             logger.error(f"Error updating payment status: {error}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=400,
                 detail=error
             )
         
@@ -560,7 +560,7 @@ async def paynow_webhook(
     except Exception as e:
         logger.error(f"Error processing PayNow webhook: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error processing webhook: {str(e)}"
         )
 
@@ -594,7 +594,7 @@ async def update_payment_status(
     except Exception as e:
         logger.error(f"Error updating payment status: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error updating status: {str(e)}"
         )
 
@@ -650,7 +650,7 @@ async def check_payment_status(
     except Exception as e:
         logger.error(f"Error checking payment status: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error checking status: {str(e)}"
         )
 
@@ -699,7 +699,7 @@ async def get_store_subscription(
     except Exception as e:
         logger.error(f"Error getting subscription: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error fetching subscription: {str(e)}"
         )
 
@@ -731,7 +731,7 @@ async def simulate_payment_completion(
     except Exception as e:
         logger.error(f"Error simulating payment: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error simulating payment: {str(e)}"
         )
 
@@ -807,7 +807,7 @@ async def create_stripe_payment_intent(
     except Exception as e:
         logger.error(f"Error creating Stripe intent: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error creating Stripe intent: {str(e)}"
         )
 
@@ -839,7 +839,7 @@ async def confirm_stripe_payment(
     except Exception as e:
         logger.error(f"Error confirming Stripe payment: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error confirming payment: {str(e)}"
         )
 
@@ -944,7 +944,7 @@ async def create_paypal_order(
     except Exception as e:
         logger.error(f"Error creating PayPal order: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error creating PayPal order: {str(e)}"
         )
 
@@ -977,7 +977,7 @@ async def capture_paypal_payment(
     except Exception as e:
         logger.error(f"Error capturing PayPal payment: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error capturing payment: {str(e)}"
         )
 
@@ -1049,6 +1049,6 @@ async def cancel_subscription(
         db.rollback()
         logger.error(f"Error cancelling subscription: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=500,
             detail=f"Error cancelling subscription: {str(e)}"
         )
