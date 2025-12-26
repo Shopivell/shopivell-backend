@@ -66,18 +66,24 @@ class MetaCampaign(Base):
     
     # Optimization
     bid_strategy = Column(String(100), nullable=True)  # LOWEST_COST_WITHOUT_CAP, etc.
-    
+
+    # Draft support fields
+    is_draft = Column(Boolean, default=False, nullable=False)
+    notes = Column(Text, nullable=True)
+    draft_data = Column(JSON, nullable=True)  # Store original request data for drafts
+    published_at = Column(DateTime, nullable=True)  # When draft was published
+
     # Metadata
     created_time = Column(DateTime, nullable=True)
     updated_time = Column(DateTime, nullable=True)
     effective_status = Column(String(50), nullable=True)
-    
+
     # Sync info
     last_synced_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     ad_account = relationship("MetaAdAccount", back_populates="campaigns")
     ad_sets = relationship("MetaAdSet", back_populates="campaign", cascade="all, delete-orphan")
@@ -113,18 +119,24 @@ class MetaAdSet(Base):
     # Placement
     placement = Column(JSON, nullable=True)
     publisher_platforms = Column(JSON, nullable=True)
-    
+
+    # Draft support fields
+    is_draft = Column(Boolean, default=False, nullable=False)
+    notes = Column(Text, nullable=True)
+    draft_data = Column(JSON, nullable=True)  # Store original request data for drafts
+    published_at = Column(DateTime, nullable=True)  # When draft was published
+
     # Metadata
     created_time = Column(DateTime, nullable=True)
     updated_time = Column(DateTime, nullable=True)
     effective_status = Column(String(50), nullable=True)
-    
+
     # Sync info
     last_synced_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     ad_account = relationship("MetaAdAccount", back_populates="ad_sets")
     campaign = relationship("MetaCampaign", back_populates="ad_sets")

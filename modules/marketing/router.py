@@ -31,7 +31,8 @@ from .schemas import (
     MetaCreateAdRequest, MetaCreateCreativeRequest, MetaCreateExperimentRequest,
     MetaBulkUpdateRequest, SuccessMessage, ErrorMessage,
     CampaignObjective, CampaignStatus, AdSetStatus, AdStatus,
-    MetaInsightsSummary, MetaPerformanceMetrics, MetaCampaignPerformance
+    MetaInsightsSummary, MetaPerformanceMetrics, MetaCampaignPerformance,
+    DraftItem, DraftListResponse, PublishDraftRequest, PublishDraftResponse
 )
 
 marketing_router = APIRouter(prefix="/api/marketing", tags=["marketing"])
@@ -708,22 +709,55 @@ def create_campaign(
     campaign_data: MetaCreateCampaignRequest,
     db: Session = Depends(get_db)
 ):
-    """Create a new Meta campaign"""
+    """Create a new Meta campaign or save as draft"""
     # Get the ad account
     ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == account_id).first()
-    
+
     if not ad_account:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Ad account not found"
         )
-    
+
+    # If saving as draft, don't need to check connection
+    if campaign_data.save_as_draft:
+        # Save as draft without publishing to Meta
+        campaign = MetaCampaign(
+            campaign_id=f"DRAFT_{uuid.uuid4().hex[:12].upper()}",
+            ad_account_id=ad_account.id,
+            name=campaign_data.name,
+            objective=campaign_data.objective.value,
+            status="DRAFT",
+            special_ad_categories=campaign_data.special_ad_categories or ["NONE"],
+            buying_type=campaign_data.buying_type,
+            daily_budget=campaign_data.daily_budget,
+            lifetime_budget=campaign_data.lifetime_budget,
+            start_time=campaign_data.start_time,
+            stop_time=campaign_data.stop_time,
+            bid_strategy=None,
+            created_time=datetime.utcnow(),
+            updated_time=datetime.utcnow(),
+            effective_status="DRAFT",
+            is_draft=True,
+            draft_data={
+                "original_request": campaign_data.model_dump(mode='json'),
+                "created_at": datetime.utcnow().isoformat()
+            },
+            is_active=True
+        )
+
+        db.add(campaign)
+        db.commit()
+        db.refresh(campaign)
+
+        return campaign
+
     if not ad_account.is_connected:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ad account is not connected"
         )
-    
+
     try:
         # Prepare campaign data for Meta API in curl -F format
         meta_campaign_data = {
@@ -732,34 +766,34 @@ def create_campaign(
             "status": campaign_data.status.value,
             "buying_type": campaign_data.buying_type,
         }
-        
+
         # Add special_ad_categories - Meta API requires this field
         # If not provided, default to ["NONE"]
         if campaign_data.special_ad_categories:
             meta_campaign_data["special_ad_categories"] = json.dumps(campaign_data.special_ad_categories)
         else:
             meta_campaign_data["special_ad_categories"] = '["NONE"]'
-        
+
         # Add optional fields if they exist
         if campaign_data.daily_budget:
             meta_campaign_data["daily_budget"] = str(campaign_data.daily_budget)
-        
+
         if campaign_data.lifetime_budget:
             meta_campaign_data["lifetime_budget"] = str(campaign_data.lifetime_budget)
-        
+
         if campaign_data.start_time:
             meta_campaign_data["start_time"] = str(int(campaign_data.start_time.timestamp()))
-        
+
         if campaign_data.stop_time:
             meta_campaign_data["stop_time"] = str(int(campaign_data.stop_time.timestamp()))
-        
+
         # Create campaign in Meta using form data
         result = create_meta_campaign(
             ad_account.ad_account_id,
             ad_account.access_token,
             meta_campaign_data
         )
-        
+
         # Save to database
         campaign = MetaCampaign(
             campaign_id=result.get("id"),
@@ -778,9 +812,11 @@ def create_campaign(
             updated_time=datetime.utcnow(),
             effective_status=campaign_data.status.value,
             last_synced_at=datetime.utcnow(),
+            is_draft=False,
+            published_at=datetime.utcnow(),
             is_active=True
         )
-        
+
         db.add(campaign)
         db.commit()
         db.refresh(campaign)
@@ -2551,4 +2587,340 @@ def get_ads_from_library(
     )
 
     return result
+
+
+# ==================== DRAFT ENDPOINTS ====================
+
+@marketing_router.get("/drafts", response_model=DraftListResponse)
+def list_all_drafts(
+    ad_account_id: Optional[uuid.UUID] = None,
+    draft_type: Optional[str] = Query(None, description="Filter by type: campaign, adset, ad"),
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """List all drafts (campaigns, ad sets, and ads)"""
+    drafts = []
+
+    # Get draft campaigns
+    if draft_type is None or draft_type == "campaign":
+        campaign_query = db.query(MetaCampaign).filter(MetaCampaign.is_draft == True)
+        if ad_account_id:
+            campaign_query = campaign_query.filter(MetaCampaign.ad_account_id == ad_account_id)
+
+        for campaign in campaign_query.all():
+            drafts.append(DraftItem(
+                id=campaign.id,
+                type="campaign",
+                name=campaign.name,
+                status=campaign.status or "DRAFT",
+                notes=campaign.notes,
+                draft_data=campaign.draft_data,
+                created_at=campaign.created_at,
+                updated_at=campaign.updated_at,
+                ad_account_id=campaign.ad_account_id
+            ))
+
+    # Get draft ad sets
+    if draft_type is None or draft_type == "adset":
+        adset_query = db.query(MetaAdSet).filter(MetaAdSet.is_draft == True)
+        if ad_account_id:
+            adset_query = adset_query.filter(MetaAdSet.ad_account_id == ad_account_id)
+
+        for adset in adset_query.all():
+            campaign_name = None
+            if adset.campaign:
+                campaign_name = adset.campaign.name
+
+            drafts.append(DraftItem(
+                id=adset.id,
+                type="adset",
+                name=adset.name,
+                status=adset.status or "DRAFT",
+                notes=adset.notes,
+                draft_data=adset.draft_data,
+                created_at=adset.created_at,
+                updated_at=adset.updated_at,
+                ad_account_id=adset.ad_account_id,
+                campaign_id=adset.campaign_id,
+                campaign_name=campaign_name
+            ))
+
+    # Get draft ads
+    if draft_type is None or draft_type == "ad":
+        ad_query = db.query(MetaAd).filter(MetaAd.is_draft == True)
+        if ad_account_id:
+            ad_query = ad_query.filter(MetaAd.ad_account_id == ad_account_id)
+
+        for ad in ad_query.all():
+            campaign_name = None
+            adset_name = None
+            if ad.campaign:
+                campaign_name = ad.campaign.name
+            if ad.ad_set:
+                adset_name = ad.ad_set.name
+
+            drafts.append(DraftItem(
+                id=ad.id,
+                type="ad",
+                name=ad.name,
+                status=ad.status or "DRAFT",
+                notes=ad.notes,
+                draft_data=ad.draft_data,
+                created_at=ad.created_at,
+                updated_at=ad.updated_at,
+                ad_account_id=ad.ad_account_id,
+                campaign_id=ad.campaign_id,
+                campaign_name=campaign_name,
+                adset_id=ad.adset_id,
+                adset_name=adset_name
+            ))
+
+    # Sort by created_at descending
+    drafts.sort(key=lambda x: x.created_at, reverse=True)
+
+    # Apply pagination
+    total_count = len(drafts)
+    drafts = drafts[skip:skip + limit]
+
+    return DraftListResponse(drafts=drafts, total_count=total_count)
+
+
+@marketing_router.post("/campaigns/{campaign_id}/publish-draft", response_model=PublishDraftResponse)
+def publish_campaign_draft(
+    campaign_id: uuid.UUID,
+    request: Optional[PublishDraftRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """Publish a draft campaign to Meta"""
+    campaign = db.query(MetaCampaign).filter(MetaCampaign.id == campaign_id).first()
+
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found"
+        )
+
+    if not campaign.is_draft:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Campaign is not a draft"
+        )
+
+    ad_account = campaign.ad_account
+    if not ad_account or not ad_account.is_connected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ad account is not connected"
+        )
+
+    try:
+        # Get original request from draft_data
+        original_request = campaign.draft_data.get("original_request", {}) if campaign.draft_data else {}
+
+        # Prepare campaign data for Meta API
+        meta_campaign_data = {
+            "name": campaign.name,
+            "objective": campaign.objective,
+            "status": original_request.get("status", "PAUSED"),
+            "buying_type": campaign.buying_type or "AUCTION",
+        }
+
+        if campaign.special_ad_categories:
+            meta_campaign_data["special_ad_categories"] = json.dumps(campaign.special_ad_categories)
+        else:
+            meta_campaign_data["special_ad_categories"] = '["NONE"]'
+
+        if campaign.daily_budget:
+            meta_campaign_data["daily_budget"] = str(campaign.daily_budget)
+
+        if campaign.lifetime_budget:
+            meta_campaign_data["lifetime_budget"] = str(campaign.lifetime_budget)
+
+        if campaign.start_time:
+            meta_campaign_data["start_time"] = str(int(campaign.start_time.timestamp()))
+
+        if campaign.stop_time:
+            meta_campaign_data["stop_time"] = str(int(campaign.stop_time.timestamp()))
+
+        # Create campaign in Meta
+        result = create_meta_campaign(
+            ad_account.ad_account_id,
+            ad_account.access_token,
+            meta_campaign_data
+        )
+
+        # Update campaign with Meta ID
+        campaign.campaign_id = result.get("id")
+        campaign.is_draft = False
+        campaign.published_at = datetime.utcnow()
+        campaign.status = original_request.get("status", "PAUSED")
+        campaign.effective_status = original_request.get("status", "PAUSED")
+        campaign.last_synced_at = datetime.utcnow()
+        if request and request.notes:
+            campaign.notes = request.notes
+
+        db.commit()
+
+        return PublishDraftResponse(
+            success=True,
+            message="Campaign published successfully",
+            meta_id=result.get("id"),
+            published_at=campaign.published_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to publish campaign: {str(e)}"
+        )
+
+
+@marketing_router.post("/adsets/{adset_id}/publish-draft", response_model=PublishDraftResponse)
+def publish_adset_draft(
+    adset_id: uuid.UUID,
+    request: Optional[PublishDraftRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """Publish a draft ad set to Meta"""
+    adset = db.query(MetaAdSet).filter(MetaAdSet.id == adset_id).first()
+
+    if not adset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ad set not found"
+        )
+
+    if not adset.is_draft:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ad set is not a draft"
+        )
+
+    ad_account = adset.ad_account
+    if not ad_account or not ad_account.is_connected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ad account is not connected"
+        )
+
+    campaign = adset.campaign
+    if not campaign or campaign.is_draft:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Parent campaign must be published first"
+        )
+
+    try:
+        # Get original request from draft_data
+        original_request = adset.draft_data.get("original_request", {}) if adset.draft_data else {}
+
+        # Prepare ad set data for Meta API
+        meta_adset_data = {
+            "name": adset.name,
+            "campaign_id": campaign.campaign_id,
+            "status": original_request.get("status", "PAUSED"),
+        }
+
+        if adset.optimization_goal:
+            meta_adset_data["optimization_goal"] = adset.optimization_goal
+
+        if adset.billing_event:
+            meta_adset_data["billing_event"] = adset.billing_event
+
+        if adset.targeting:
+            meta_adset_data["targeting"] = json.dumps(adset.targeting)
+
+        if adset.lifetime_budget:
+            meta_adset_data["lifetime_budget"] = str(adset.lifetime_budget)
+
+        if adset.bid_amount:
+            meta_adset_data["bid_amount"] = str(adset.bid_amount)
+
+        if adset.start_time:
+            meta_adset_data["start_time"] = str(int(adset.start_time.timestamp()))
+
+        if adset.end_time:
+            meta_adset_data["end_time"] = str(int(adset.end_time.timestamp()))
+
+        # Create ad set in Meta
+        result = create_meta_adset(
+            ad_account.ad_account_id,
+            ad_account.access_token,
+            meta_adset_data
+        )
+
+        # Update ad set with Meta ID
+        adset.adset_id = result.get("id")
+        adset.is_draft = False
+        adset.published_at = datetime.utcnow()
+        adset.status = original_request.get("status", "PAUSED")
+        adset.effective_status = original_request.get("status", "PAUSED")
+        adset.last_synced_at = datetime.utcnow()
+        if request and request.notes:
+            adset.notes = request.notes
+
+        db.commit()
+
+        return PublishDraftResponse(
+            success=True,
+            message="Ad set published successfully",
+            meta_id=result.get("id"),
+            published_at=adset.published_at
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to publish ad set: {str(e)}"
+        )
+
+
+@marketing_router.delete("/drafts/{draft_type}/{draft_id}", response_model=SuccessMessage)
+def delete_draft(
+    draft_type: str,
+    draft_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a draft (campaign, adset, or ad)"""
+    if draft_type == "campaign":
+        item = db.query(MetaCampaign).filter(
+            MetaCampaign.id == draft_id,
+            MetaCampaign.is_draft == True
+        ).first()
+    elif draft_type == "adset":
+        item = db.query(MetaAdSet).filter(
+            MetaAdSet.id == draft_id,
+            MetaAdSet.is_draft == True
+        ).first()
+    elif draft_type == "ad":
+        item = db.query(MetaAd).filter(
+            MetaAd.id == draft_id,
+            MetaAd.is_draft == True
+        ).first()
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid draft type. Must be 'campaign', 'adset', or 'ad'"
+        )
+
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Draft {draft_type} not found"
+        )
+
+    db.delete(item)
+    db.commit()
+
+    return SuccessMessage(
+        success=True,
+        message=f"Draft {draft_type} deleted successfully"
+    )
 

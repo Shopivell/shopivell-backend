@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py:*)",
+      "Bash(timeout /t 5 /nobreak)",
+      "Bash(curl:*)",
+      "Bash(ping:*)",
+      "Bash(taskkill:*)",
+      "Bash(python:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(netstat:*)",
+      "Bash(for i in {1..20})",
+      "Bash(do netstat -ano)",
+      "Bash(break)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(cmd //c \"taskkill /PID 28272 /F\")",
+      "Bash(powershell -Command \"Stop-Process -Id 28272 -Force\")",
+      "Bash(find:*)"
+    ]
+  }
+}

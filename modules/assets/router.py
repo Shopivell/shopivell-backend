@@ -1,0 +1,157 @@
+# modules/assets/router.py
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from sqlalchemy.orm import Session
+from typing import Optional, List
+import uuid
+
+from database import get_db
+from .models import Asset, AssetType
+from .schemas import (
+    AssetCreate, AssetUpdate, AssetResponse, AssetListResponse,
+    GenerateAssetRequest
+)
+from .service import AssetService
+
+asset_router = APIRouter(prefix="/api/assets", tags=["assets"])
+
+
+@asset_router.post("/upload", response_model=AssetResponse)
+async def upload_asset(
+    file: UploadFile = File(...),
+    store_id: uuid.UUID = Form(...),
+    name: Optional[str] = Form(None),
+    campaign_id: Optional[uuid.UUID] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """Upload an image or video asset to Cloudinary."""
+    # Validate file type
+    content_type = file.content_type or ""
+    if content_type.startswith("image/"):
+        file_type = AssetType.IMAGE
+    elif content_type.startswith("video/"):
+        file_type = AssetType.VIDEO
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Only images and videos are allowed.")
+
+    # Read file data
+    file_data = await file.read()
+    if len(file_data) > 50 * 1024 * 1024:  # 50MB limit
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
+
+    service = AssetService(db)
+    asset, error = service.create_asset_from_upload(
+        store_id=store_id,
+        filename=file.filename or "unnamed",
+        file_data=file_data,
+        mime_type=content_type,
+        file_type=file_type,
+        name=name,
+        source_campaign_id=campaign_id
+    )
+
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+
+    return AssetResponse.model_validate(asset)
+
+
+@asset_router.post("/generate", response_model=AssetResponse)
+def generate_asset(
+    request: GenerateAssetRequest,
+    db: Session = Depends(get_db)
+):
+    """Generate an ad image using AI (DALL-E)."""
+    service = AssetService(db)
+    asset, error = service.generate_ad_image(
+        store_id=request.store_id,
+        headline=request.headline,
+        description=request.description,
+        features=request.features,
+        call_to_action=request.call_to_action,
+        style=request.style,
+        color_scheme=request.color_scheme,
+        campaign_id=request.campaign_id
+    )
+
+    if error:
+        raise HTTPException(status_code=500, detail=error)
+
+    return AssetResponse.model_validate(asset)
+
+
+@asset_router.get("/store/{store_id}", response_model=AssetListResponse)
+def get_store_assets(
+    store_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    file_type: Optional[AssetType] = None,
+    source: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get all assets for a store."""
+    service = AssetService(db)
+    assets, total = service.get_store_assets(
+        store_id=store_id,
+        file_type=file_type,
+        source=source,
+        page=page,
+        size=size
+    )
+
+    return AssetListResponse(
+        assets=[AssetResponse.model_validate(a) for a in assets],
+        total=total,
+        page=page,
+        size=size
+    )
+
+
+@asset_router.get("/{asset_id}", response_model=AssetResponse)
+def get_asset(asset_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get a specific asset."""
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return AssetResponse.model_validate(asset)
+
+
+@asset_router.put("/{asset_id}", response_model=AssetResponse)
+def update_asset(
+    asset_id: uuid.UUID,
+    update_data: AssetUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update asset metadata."""
+    asset = db.query(Asset).filter(Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+    for field, value in update_dict.items():
+        setattr(asset, field, value)
+
+    db.commit()
+    db.refresh(asset)
+    return AssetResponse.model_validate(asset)
+
+
+@asset_router.delete("/{asset_id}")
+def delete_asset(asset_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Delete an asset from Cloudinary and database."""
+    service = AssetService(db)
+    success, error = service.delete_asset(asset_id)
+
+    if not success:
+        raise HTTPException(status_code=404 if error == "Asset not found" else 500, detail=error)
+
+    return {"message": "Asset deleted successfully"}
+
+
+@asset_router.get("/campaign/{campaign_id}", response_model=List[AssetResponse])
+def get_campaign_assets(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get all assets associated with a campaign."""
+    assets = db.query(Asset).filter(
+        Asset.source_campaign_id == campaign_id,
+        Asset.is_active == True
+    ).all()
+    return [AssetResponse.model_validate(a) for a in assets]

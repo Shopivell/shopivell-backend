@@ -1,5 +1,6 @@
 # modules/payments/api.py
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, status, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 import uuid
@@ -173,7 +174,7 @@ async def update_package(
         )
 
 # Payment Endpoints
-@payment_router.post("/initiate", response_model=Dict[str, Any])
+@payment_router.post("/initiate")
 async def initiate_payment(
     payment_request: PaymentInitiateRequest,
     db: Session = Depends(get_db)
@@ -253,39 +254,107 @@ async def initiate_payment(
                     detail=f"Failed to initiate EcoCash payment: {payment_error}"
                 )
             
-            return {
-                "message": "EcoCash payment initiated",
-                "transaction": PaymentTransactionResponse.model_validate(transaction),
-                "payment_instructions": payment_response
+            # Manually serialize transaction to avoid Pydantic serialization issues
+            tx_dict = {
+                "id": str(transaction.id),
+                "store_id": str(transaction.store_id),
+                "user_id": str(transaction.user_id),
+                "reference": transaction.reference,
+                "amount": float(transaction.amount),
+                "currency": transaction.currency,
+                "payment_method": transaction.payment_method.value if hasattr(transaction.payment_method, 'value') else str(transaction.payment_method),
+                "status": transaction.status.value if hasattr(transaction.status, 'value') else str(transaction.status),
+                "poll_url": transaction.poll_url,
+                "paynow_reference": transaction.paynow_reference,
+                "mobile_number": transaction.mobile_number,
+                "package_name": transaction.package_name.value if hasattr(transaction.package_name, 'value') else str(transaction.package_name),
+                "billing_period": transaction.billing_period,
+                "initiated_at": transaction.initiated_at.isoformat() if transaction.initiated_at else None,
+                "completed_at": transaction.completed_at.isoformat() if transaction.completed_at else None
             }
+
+            return JSONResponse(content={
+                "message": "EcoCash payment initiated",
+                "transaction": tx_dict,
+                "payment_instructions": payment_response
+            })
         
         elif payment_request.payment_method == PaymentMethod.INNBUCKS:
-            # TODO: Implement InnBucks integration
-            return {
-                "message": "InnBucks payment initiated (simulation)",
-                "transaction": PaymentTransactionResponse.model_validate(transaction),
-                "payment_instructions": {
-                    "method": "innbucks",
-                    "reference": transaction.reference,
-                    "amount": amount,
-                    "currency": "USD"
-                }
+            if not payment_request.mobile_number:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Mobile number required for InnBucks payments"
+                )
+
+            email = "farairhato@gmail.com"
+
+            # Initiate InnBucks payment
+            payment_response, payment_error = payment_service.initiate_innbucks_payment(
+                transaction=transaction,
+                mobile_number=payment_request.mobile_number,
+                email=email
+            )
+
+            if payment_error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to initiate InnBucks payment: {payment_error}"
+                )
+
+            # Manually serialize transaction
+            tx_dict = {
+                "id": str(transaction.id),
+                "store_id": str(transaction.store_id),
+                "user_id": str(transaction.user_id),
+                "reference": transaction.reference,
+                "amount": float(transaction.amount),
+                "currency": transaction.currency,
+                "payment_method": transaction.payment_method.value if hasattr(transaction.payment_method, 'value') else str(transaction.payment_method),
+                "status": transaction.status.value if hasattr(transaction.status, 'value') else str(transaction.status),
+                "poll_url": transaction.poll_url,
+                "paynow_reference": transaction.paynow_reference,
+                "mobile_number": transaction.mobile_number,
+                "package_name": transaction.package_name.value if hasattr(transaction.package_name, 'value') else str(transaction.package_name),
+                "billing_period": transaction.billing_period,
+                "initiated_at": transaction.initiated_at.isoformat() if transaction.initiated_at else None,
+                "completed_at": transaction.completed_at.isoformat() if transaction.completed_at else None
             }
+
+            return JSONResponse(content={
+                "message": "InnBucks payment initiated",
+                "transaction": tx_dict,
+                "payment_instructions": payment_response
+            })
         
         elif payment_request.payment_method == PaymentMethod.BANK_TRANSFER:
-            return {
+            # Manually serialize transaction
+            tx_dict = {
+                "id": str(transaction.id),
+                "store_id": str(transaction.store_id),
+                "user_id": str(transaction.user_id),
+                "reference": transaction.reference,
+                "amount": float(transaction.amount),
+                "currency": transaction.currency,
+                "payment_method": transaction.payment_method.value if hasattr(transaction.payment_method, 'value') else str(transaction.payment_method),
+                "status": transaction.status.value if hasattr(transaction.status, 'value') else str(transaction.status),
+                "package_name": transaction.package_name.value if hasattr(transaction.package_name, 'value') else str(transaction.package_name),
+                "billing_period": transaction.billing_period,
+                "initiated_at": transaction.initiated_at.isoformat() if transaction.initiated_at else None
+            }
+
+            return JSONResponse(content={
                 "message": "Bank transfer instructions",
-                "transaction": PaymentTransactionResponse.model_validate(transaction),
+                "transaction": tx_dict,
                 "payment_instructions": {
                     "method": "bank_transfer",
                     "bank_name": "Your Bank Name",
                     "account_number": "1234567890",
                     "account_name": "Your Business Name",
                     "reference": transaction.reference,
-                    "amount": amount,
+                    "amount": float(amount),
                     "currency": "USD"
                 }
-            }
+            })
         
         else:
             raise HTTPException(
@@ -368,6 +437,34 @@ async def get_payment_transaction(
             detail=f"Error fetching transaction: {str(e)}"
         )
 
+@payment_router.get("/receipt/{reference}", response_model=Dict[str, Any])
+async def get_payment_receipt(
+    reference: str,
+    db: Session = Depends(get_db)
+):
+    """Get receipt for a completed payment"""
+    try:
+        payment_service = PaymentService(db)
+        receipt = payment_service.generate_receipt(reference)
+
+        if not receipt:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Transaction not found"
+            )
+
+        return receipt
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating receipt: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating receipt: {str(e)}"
+        )
+
+
 @payment_router.get("/store/{store_id}/transactions", response_model=List[PaymentTransactionResponse])
 async def get_store_transactions(
     store_id: uuid.UUID,
@@ -398,7 +495,7 @@ async def get_store_transactions(
             detail=f"Error fetching transactions: {str(e)}"
         )
 
-@payment_router.get("/store/{store_id}/summary", response_model=PaymentSummaryResponse)
+@payment_router.get("/store/{store_id}/summary", response_model=Dict[str, Any])
 async def get_payment_summary(
     store_id: uuid.UUID,
     db: Session = Depends(get_db)
@@ -506,40 +603,48 @@ async def check_payment_status(
     reference: str,
     db: Session = Depends(get_db)
 ):
-    """Check payment status (polling endpoint for clients)"""
+    """
+    Check payment status (polling endpoint for clients).
+
+    For mobile money payments (EcoCash, InnBucks), this will poll PayNow
+    to check if the payment has been completed and update the transaction accordingly.
+    """
     try:
         transaction = db.query(PaymentTransaction).filter(
             PaymentTransaction.reference == reference
         ).first()
-        
+
         if not transaction:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Transaction not found"
             )
-        
-        # If transaction has poll_url and is still pending, check with PayNow
-        if transaction.status == PaymentStatus.PENDING and transaction.poll_url:
+
+        # If transaction has poll_url and is still pending/processing, check with PayNow
+        if transaction.status in [PaymentStatus.PENDING, PaymentStatus.PROCESSING] and transaction.poll_url:
             payment_service = PaymentService(db)
-            paynow_status = payment_service.check_payment_status(transaction.poll_url)
-            
-            # Update if status changed
-            if paynow_status.get("status") == "paid":
-                transaction, _ = payment_service.update_payment_status(
-                    reference=reference,
-                    status=PaymentStatus.COMPLETED,
-                    paynow_reference=paynow_status.get("paynow_reference")
-                )
-        
+
+            # Use the improved poll_and_update method
+            updated_transaction, poll_error = payment_service.poll_and_update_transaction(reference)
+
+            if updated_transaction:
+                transaction = updated_transaction
+
+            if poll_error:
+                logger.warning(f"Poll error for {reference}: {poll_error}")
+
         return {
             "reference": transaction.reference,
-            "status": transaction.status,
+            "status": transaction.status.value if hasattr(transaction.status, 'value') else transaction.status,
             "amount": transaction.amount,
-            "package_name": transaction.package_name,
-            "initiated_at": transaction.initiated_at,
-            "completed_at": transaction.completed_at
+            "package_name": transaction.package_name.value if hasattr(transaction.package_name, 'value') else transaction.package_name,
+            "payment_method": transaction.payment_method.value if hasattr(transaction.payment_method, 'value') else transaction.payment_method,
+            "initiated_at": transaction.initiated_at.isoformat() if transaction.initiated_at else None,
+            "completed_at": transaction.completed_at.isoformat() if transaction.completed_at else None,
+            "paynow_reference": transaction.paynow_reference,
+            "error_message": transaction.error_message
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -629,6 +734,273 @@ async def simulate_payment_completion(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simulating payment: {str(e)}"
         )
+
+# Stripe Endpoints
+@payment_router.post("/stripe/create-intent", response_model=Dict[str, Any])
+async def create_stripe_payment_intent(
+    payment_request: PaymentInitiateRequest,
+    db: Session = Depends(get_db)
+):
+    """Create Stripe PaymentIntent for card payments"""
+    try:
+        # Verify store exists
+        store = db.query(Store).filter(Store.id == payment_request.store_id).first()
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Store not found"
+            )
+
+        # Get package pricing
+        package = db.query(PackagePricing).filter(
+            PackagePricing.package_name == payment_request.package_name,
+            PackagePricing.is_active == True
+        ).first()
+
+        if not package:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Package not found or inactive"
+            )
+
+        # Determine amount
+        if payment_request.billing_period == "annual" and package.annual_price:
+            amount = package.annual_price
+        else:
+            amount = package.monthly_price
+
+        payment_service = PaymentService(db)
+
+        # Create transaction
+        transaction, error = payment_service.create_payment_transaction(
+            store_id=payment_request.store_id,
+            user_id=store.owner_id,
+            amount=amount,
+            payment_method=PaymentMethod.STRIPE,
+            package_name=payment_request.package_name,
+            billing_period=payment_request.billing_period
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        # Create Stripe PaymentIntent
+        intent_data, intent_error = payment_service.create_stripe_payment_intent(transaction)
+
+        if intent_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to create Stripe intent: {intent_error}"
+            )
+
+        return {
+            "message": "Stripe PaymentIntent created",
+            "transaction": PaymentTransactionResponse.model_validate(transaction),
+            **intent_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating Stripe intent: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating Stripe intent: {str(e)}"
+        )
+
+
+@payment_router.post("/stripe/confirm/{payment_intent_id}", response_model=Dict[str, Any])
+async def confirm_stripe_payment(
+    payment_intent_id: str,
+    db: Session = Depends(get_db)
+):
+    """Confirm Stripe payment after client-side completion"""
+    try:
+        payment_service = PaymentService(db)
+        transaction, error = payment_service.confirm_stripe_payment(payment_intent_id)
+
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {
+            "message": "Payment confirmed successfully",
+            "transaction": PaymentTransactionResponse.model_validate(transaction),
+            "status": transaction.status.value
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming Stripe payment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error confirming payment: {str(e)}"
+        )
+
+
+@payment_router.post("/stripe/webhook", status_code=status.HTTP_200_OK)
+async def stripe_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Handle Stripe webhook events"""
+    import os
+
+    try:
+        payload = await request.body()
+        sig_header = request.headers.get("Stripe-Signature", "")
+        webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+
+        payment_service = PaymentService(db)
+        transaction, error = payment_service.handle_stripe_webhook(
+            payload, sig_header, webhook_secret
+        )
+
+        if error and error != "Stripe not configured":
+            logger.error(f"Stripe webhook error: {error}")
+
+        return {"received": True}
+
+    except Exception as e:
+        logger.error(f"Error processing Stripe webhook: {str(e)}")
+        return {"received": True, "error": str(e)}
+
+
+# PayPal Endpoints
+@payment_router.post("/paypal/create-order", response_model=Dict[str, Any])
+async def create_paypal_order(
+    payment_request: PaymentInitiateRequest,
+    db: Session = Depends(get_db)
+):
+    """Create PayPal order"""
+    try:
+        # Verify store exists
+        store = db.query(Store).filter(Store.id == payment_request.store_id).first()
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Store not found"
+            )
+
+        # Get package pricing
+        package = db.query(PackagePricing).filter(
+            PackagePricing.package_name == payment_request.package_name,
+            PackagePricing.is_active == True
+        ).first()
+
+        if not package:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Package not found or inactive"
+            )
+
+        # Determine amount
+        if payment_request.billing_period == "annual" and package.annual_price:
+            amount = package.annual_price
+        else:
+            amount = package.monthly_price
+
+        payment_service = PaymentService(db)
+
+        # Create transaction
+        transaction, error = payment_service.create_payment_transaction(
+            store_id=payment_request.store_id,
+            user_id=store.owner_id,
+            amount=amount,
+            payment_method=PaymentMethod.PAYPAL,
+            package_name=payment_request.package_name,
+            billing_period=payment_request.billing_period
+        )
+
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        # Create PayPal order
+        order_data, order_error = payment_service.create_paypal_order(transaction)
+
+        if order_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to create PayPal order: {order_error}"
+            )
+
+        return {
+            "message": "PayPal order created",
+            "transaction": PaymentTransactionResponse.model_validate(transaction),
+            **order_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating PayPal order: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating PayPal order: {str(e)}"
+        )
+
+
+@payment_router.post("/paypal/capture/{order_id}", response_model=Dict[str, Any])
+async def capture_paypal_payment(
+    order_id: str,
+    payer_id: str = Query(..., description="PayPal payer ID"),
+    db: Session = Depends(get_db)
+):
+    """Capture PayPal payment after user approval"""
+    try:
+        payment_service = PaymentService(db)
+        transaction, error = payment_service.capture_paypal_payment(order_id, payer_id)
+
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error
+            )
+
+        return {
+            "message": "Payment captured successfully",
+            "transaction": PaymentTransactionResponse.model_validate(transaction),
+            "status": transaction.status.value
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error capturing PayPal payment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error capturing payment: {str(e)}"
+        )
+
+
+@payment_router.post("/paypal/webhook", status_code=status.HTTP_200_OK)
+async def paypal_webhook(
+    webhook_data: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    """Handle PayPal webhook events"""
+    try:
+        payment_service = PaymentService(db)
+        transaction, error = payment_service.handle_paypal_webhook(webhook_data)
+
+        if error:
+            logger.error(f"PayPal webhook error: {error}")
+
+        return {"received": True}
+
+    except Exception as e:
+        logger.error(f"Error processing PayPal webhook: {str(e)}")
+        return {"received": True, "error": str(e)}
+
 
 @payment_router.post("/cancel-subscription/{store_id}", response_model=Dict[str, Any])
 async def cancel_subscription(

@@ -21,7 +21,8 @@ from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
     WhatsAppAccountsListResponse, WhatsAppMessagesListResponse,
-    WhatsAppWebhookVerification, WhatsAppWebhookPayload
+    WhatsAppWebhookVerification, WhatsAppWebhookPayload,
+    BulkMessageRequest, BulkMessageResponse, BulkMessageResult
 )
 from modules.business.models import FacebookBusinessAccount
 
@@ -455,6 +456,121 @@ def send_whatsapp_template_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to send template message: {str(e)}"
         )
+
+@whatsapp_router.post("/accounts/{account_id}/send-bulk", response_model=BulkMessageResponse)
+def send_bulk_whatsapp_messages(
+    account_id: uuid.UUID,
+    bulk_data: BulkMessageRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Send bulk WhatsApp messages to multiple recipients.
+    Supports both template messages and text messages (within 24-hour window).
+    """
+    whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+
+    results: List[BulkMessageResult] = []
+    successful = 0
+    failed = 0
+
+    for recipient in bulk_data.recipients:
+        try:
+            # Clean phone number
+            to_clean = recipient.phone_number.replace(" ", "").replace("+", "").strip()
+
+            if bulk_data.message_type == "template":
+                # Send template message
+                template_payload = {
+                    "name": bulk_data.template_name or "hello_world",
+                    "language": {
+                        "code": bulk_data.language_code
+                    }
+                }
+
+                if bulk_data.components:
+                    template_payload["components"] = bulk_data.components
+
+                result = send_whatsapp_message_request(
+                    phone_number_id=whatsapp_account.phone_number_id,
+                    access_token=access_token,
+                    to=to_clean,
+                    message_type="template",
+                    message_data={"template": template_payload}
+                )
+            else:
+                # Send text message (requires active 24-hour window)
+                if not bulk_data.text_message:
+                    raise ValueError("text_message is required for text messages")
+
+                result = send_whatsapp_message_request(
+                    phone_number_id=whatsapp_account.phone_number_id,
+                    access_token=access_token,
+                    to=to_clean,
+                    message_type="text",
+                    message_data={
+                        "text": {
+                            "body": bulk_data.text_message,
+                            "preview_url": False
+                        }
+                    }
+                )
+
+            # Extract message IDs
+            message_id = result.get("messages", [{}])[0].get("id")
+            wamid = result.get("messages", [{}])[0].get("wamid")
+
+            # Save to database
+            save_message_to_db(
+                db=db,
+                whatsapp_account_id=account_id,
+                message_id=message_id or f"bulk_{datetime.utcnow().timestamp()}",
+                from_number=whatsapp_account.phone_number,
+                to_number=to_clean,
+                message_type=bulk_data.message_type,
+                direction="outbound",
+                status="sent",
+                message_text=bulk_data.text_message if bulk_data.message_type == "text" else None,
+                template_name=bulk_data.template_name if bulk_data.message_type == "template" else None,
+                wamid=wamid,
+                meta_data=result
+            )
+
+            results.append(BulkMessageResult(
+                phone_number=to_clean,
+                success=True,
+                message_id=message_id,
+                wamid=wamid
+            ))
+            successful += 1
+
+        except HTTPException as e:
+            results.append(BulkMessageResult(
+                phone_number=recipient.phone_number,
+                success=False,
+                error=e.detail
+            ))
+            failed += 1
+            logger.error(f"Bulk message failed for {recipient.phone_number}: {e.detail}")
+
+        except Exception as e:
+            results.append(BulkMessageResult(
+                phone_number=recipient.phone_number,
+                success=False,
+                error=str(e)
+            ))
+            failed += 1
+            logger.error(f"Bulk message failed for {recipient.phone_number}: {str(e)}")
+
+    return BulkMessageResponse(
+        success=failed == 0,
+        total_recipients=len(bulk_data.recipients),
+        successful=successful,
+        failed=failed,
+        results=results,
+        message=f"Sent {successful}/{len(bulk_data.recipients)} messages successfully"
+    )
+
 
 @whatsapp_router.post("/accounts/{account_id}/send-hello-world")
 def send_whatsapp_hello_world(

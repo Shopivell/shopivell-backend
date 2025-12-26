@@ -131,14 +131,22 @@ class StoreSubscriptionResponse(StoreSubscriptionBase):
 
 class PaymentSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
-    total_transactions: int
-    total_amount: float
-    successful_transactions: int
-    failed_transactions: int
-    pending_transactions: int
-    last_payment_date: Optional[datetime] = None
-    currency: str = "USD"
+
+    store_id: str
+    current_package: str
+    billing_period: str
+    is_active: bool
+    auto_renew: bool = False
+    current_period_start: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    next_payment_date: Optional[datetime] = None
+    next_payment_amount: float = 0
+    total_transactions: int = 0
+    completed_payments: int = 0
+    total_spent: float = 0
+    enabled_features: Dict[str, Any] = {}
+    usage_limits: Dict[str, Any] = {}
+    package_features: List[str] = []
 
 class PackageComparisonResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

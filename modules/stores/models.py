@@ -76,6 +76,8 @@ class Store(Base):
 
     payments = relationship("PaymentTransaction", back_populates="store", cascade="all, delete-orphan")
     subscription = relationship("StoreSubscription", back_populates="store", cascade="all, delete-orphan", uselist=False)
+    url_campaigns = relationship("UrlCampaign", back_populates="store", cascade="all, delete-orphan")
+    assets = relationship("Asset", back_populates="store", cascade="all, delete-orphan")
 
 class StoreSetupSession(Base):
     __tablename__ = "store_setup_sessions"

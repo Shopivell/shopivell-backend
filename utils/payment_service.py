@@ -6,12 +6,19 @@ from sqlalchemy.orm import Session
 import logging
 
 from modules.payment.models import (
-    PaymentTransaction, PaymentStatus, PaymentMethod, 
+    PaymentTransaction, PaymentStatus, PaymentMethod,
     SubscriptionPlan, StoreSubscription, PackagePricing
 )
 import os
 
 logger = logging.getLogger(__name__)
+
+# Stripe and PayPal configuration
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
+PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID")
+PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET")
+PAYPAL_MODE = os.getenv("PAYPAL_MODE", "sandbox")  # sandbox or live
 
 class PaymentService:
     def __init__(self, db: Session):
@@ -110,55 +117,90 @@ class PaymentService:
         mobile_number: str,
         email: str
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """Initiate EcoCash payment via PayNow"""
+        """
+        Initiate EcoCash payment via PayNow
+
+        PayNow API Reference:
+        - Create payment: paynow.create_payment(reference, email)
+        - Add items: payment.add(name, amount)
+        - Send to mobile: paynow.send_mobile(payment, phone, 'ecocash')
+        - Response: response.success, response.poll_url, response.instructions
+        """
         try:
             if not self.paynow:
                 # Simulate PayNow response for testing
                 logger.info("PayNow not configured, simulating payment")
                 return self._simulate_paynow_payment(transaction, mobile_number)
-            
+
             # Real PayNow integration
-            description = f"{transaction.package_name.value.capitalize()} Subscription"
+            # Reference format: Order reference that will appear in PayNow
+            description = f"Shopivell {transaction.package_name.value.capitalize()} - {transaction.reference}"
             payment = self.paynow.create_payment(description, email)
-            
-            payment.add(f"Store Subscription", float(transaction.amount))
-            
-            # FIXED: Handle PayNow response safely
+
+            # Add the subscription as a line item
+            payment.add(
+                f"{transaction.package_name.value.capitalize()} Subscription ({transaction.billing_period})",
+                float(transaction.amount)
+            )
+
+            # Send mobile payment request to EcoCash
+            # The phone number should be in format: 0771234567 or 0781234567
             response = self.paynow.send_mobile(payment, mobile_number, 'ecocash')
-            
-            # Debug log to see what response looks like
-            logger.info(f"PayNow response type: {type(response)}")
-            logger.info(f"PayNow response attributes: {dir(response)}")
-            
+
+            # Log response for debugging
+            logger.info(f"PayNow EcoCash response - success: {response.success}")
+            if hasattr(response, 'poll_url'):
+                logger.info(f"PayNow poll_url: {response.poll_url}")
+
             if response.success:
-                # Safely extract PayNow reference
+                # Extract poll_url (required for status checking)
+                raw_poll_url = getattr(response, 'poll_url', None)
+                poll_url = str(raw_poll_url) if raw_poll_url else None
+
+                # Extract instructions for the user
+                default_instruction = 'Check your EcoCash phone for a payment prompt. Dial *151*2# to approve.'
+                raw_instructions = getattr(response, 'instructions', None) or getattr(response, 'instruction', None)
+
+                # Ensure instructions is a proper string (not a class type)
+                if raw_instructions is None or raw_instructions is str or isinstance(raw_instructions, type):
+                    instructions = default_instruction
+                elif callable(raw_instructions):
+                    try:
+                        instructions = str(raw_instructions())
+                    except:
+                        instructions = default_instruction
+                else:
+                    instructions = str(raw_instructions) if raw_instructions else default_instruction
+
+                # Generate or extract PayNow reference
                 paynow_ref = self._extract_paynow_reference(response)
-                
-                # Update transaction
-                transaction.poll_url = getattr(response, 'poll_url', None)
+
+                # Update transaction with PayNow details
+                transaction.poll_url = poll_url
                 transaction.paynow_reference = paynow_ref
                 transaction.mobile_number = mobile_number
-                
+                transaction.status = PaymentStatus.PROCESSING
+
                 self.db.commit()
-                
+
                 return {
-                    "poll_url": transaction.poll_url,
+                    "poll_url": poll_url,
                     "paynow_reference": paynow_ref,
-                    "instruction": getattr(response, 'instruction', 'Check your phone for payment prompt'),
+                    "instruction": instructions,
                     "reference": transaction.reference
                 }, None
             else:
-                # FIXED: Safely extract error message
+                # Extract error message from response
                 error_msg = self._extract_error_message(response)
-                
+
                 transaction.status = PaymentStatus.FAILED
                 transaction.error_message = error_msg
                 self.db.commit()
                 return None, error_msg
-                
+
         except Exception as e:
-            logger.error(f"Error initiating EcoCash payment: {str(e)}")
-            
+            logger.error(f"Error initiating EcoCash payment: {str(e)}", exc_info=True)
+
             # Update transaction with error
             try:
                 transaction.status = PaymentStatus.FAILED
@@ -167,7 +209,7 @@ class PaymentService:
             except Exception as db_error:
                 logger.error(f"Error updating transaction: {db_error}")
                 self.db.rollback()
-            
+
             return None, str(e)
     
     def _extract_paynow_reference(self, response) -> str:
@@ -227,37 +269,134 @@ class PaymentService:
         }, None
     
     def check_payment_status(self, poll_url: str) -> Optional[Dict[str, Any]]:
-        """Check payment status from PayNow"""
+        """
+        Check payment status from PayNow
+
+        PayNow API Reference:
+        - Check status: paynow.check_transaction_status(poll_url)
+        - Response: status.paid (boolean), status.status (string)
+        """
         try:
             if not self.paynow:
-                return {"status": "pending", "message": "PayNow not configured - simulation mode"}
-            
+                return {"status": "pending", "paid": False, "message": "PayNow not configured - simulation mode"}
+
+            # Call PayNow to check transaction status
             status = self.paynow.check_transaction_status(poll_url)
-            
+
+            # Log response for debugging
+            logger.info(f"PayNow status check - paid: {getattr(status, 'paid', None)}, status: {getattr(status, 'status', None)}")
+
             result = {
                 "status": "unknown",
+                "paid": False,
                 "amount": None,
                 "reference": None,
                 "paynow_reference": None
             }
-            
-            # Safely extract attributes
+
+            # Check if payment is complete using status.paid (boolean)
+            if hasattr(status, 'paid'):
+                result["paid"] = bool(status.paid)
+                if status.paid:
+                    result["status"] = "paid"
+
+            # Get status string if available
             if hasattr(status, 'status'):
-                result["status"] = str(status.status).lower()
+                status_str = str(status.status).lower()
+                result["status"] = status_str
+
+                # Map PayNow status to our status
+                # PayNow statuses: created, sent, cancelled, disputed, paid, awaiting delivery, delivered, refunded
+                if status_str in ['paid', 'delivered', 'awaiting delivery']:
+                    result["paid"] = True
+                elif status_str in ['cancelled', 'refunded', 'disputed']:
+                    result["paid"] = False
+                    result["failed"] = True
+
+            # Extract amount if available
             if hasattr(status, 'amount'):
-                result["amount"] = status.amount
+                result["amount"] = float(status.amount) if status.amount else None
+
+            # Extract reference
             if hasattr(status, 'reference'):
                 result["reference"] = str(status.reference)
-            
+
             # Extract PayNow reference
             result["paynow_reference"] = self._extract_paynow_reference(status)
-            
+
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error checking payment status: {str(e)}")
-            return {"status": "error", "message": str(e)}
-    
+            logger.error(f"Error checking payment status: {str(e)}", exc_info=True)
+            return {"status": "error", "paid": False, "message": str(e)}
+
+    def poll_and_update_transaction(self, reference: str) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
+        """
+        Poll PayNow for transaction status and update our database accordingly.
+        This is the main method to check if a mobile payment has been completed.
+        """
+        try:
+            # Get transaction by reference
+            transaction = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.reference == reference
+            ).first()
+
+            if not transaction:
+                return None, "Transaction not found"
+
+            # Skip if already completed or failed
+            if transaction.status in [PaymentStatus.COMPLETED, PaymentStatus.FAILED, PaymentStatus.CANCELLED]:
+                return transaction, None
+
+            # Need poll_url to check status
+            if not transaction.poll_url:
+                return transaction, "No poll URL available for this transaction"
+
+            # Check status with PayNow
+            status_result = self.check_payment_status(transaction.poll_url)
+
+            if not status_result:
+                return transaction, "Failed to check payment status"
+
+            # Update based on PayNow response
+            if status_result.get("paid"):
+                # Payment completed successfully
+                transaction.status = PaymentStatus.COMPLETED
+                transaction.completed_at = datetime.utcnow()
+
+                # Update PayNow reference if available
+                if status_result.get("paynow_reference"):
+                    transaction.paynow_reference = status_result["paynow_reference"]
+
+                # Activate subscription
+                self._activate_subscription(transaction)
+
+                self.db.commit()
+                self.db.refresh(transaction)
+                logger.info(f"Payment {reference} marked as COMPLETED after polling")
+                return transaction, None
+
+            elif status_result.get("failed"):
+                # Payment failed
+                transaction.status = PaymentStatus.FAILED
+                transaction.completed_at = datetime.utcnow()
+                transaction.error_message = f"Payment {status_result.get('status', 'failed')}"
+
+                self.db.commit()
+                self.db.refresh(transaction)
+                logger.info(f"Payment {reference} marked as FAILED after polling")
+                return transaction, None
+
+            else:
+                # Still pending/processing
+                paynow_status = status_result.get("status", "unknown")
+                logger.info(f"Payment {reference} still pending. PayNow status: {paynow_status}")
+                return transaction, None
+
+        except Exception as e:
+            logger.error(f"Error polling transaction status: {str(e)}", exc_info=True)
+            return None, str(e)
+
     def update_payment_status(
         self,
         reference: str,
@@ -421,3 +560,633 @@ class PaymentService:
         """Update subscription features based on package"""
         subscription.enabled_features = self._get_package_features(subscription.package_name)
         subscription.usage_limits = self._get_package_limits(subscription.package_name)
+
+    def get_payment_summary(self, store_id: uuid.UUID) -> Dict[str, Any]:
+        """Get payment summary for a store"""
+        try:
+            # Get subscription
+            subscription = self.db.query(StoreSubscription).filter(
+                StoreSubscription.store_id == store_id
+            ).first()
+
+            # Get transaction stats
+            total_transactions = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.store_id == store_id
+            ).count()
+
+            completed_payments = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.store_id == store_id,
+                PaymentTransaction.status == PaymentStatus.COMPLETED
+            ).count()
+
+            # Calculate total spent
+            from sqlalchemy import func
+            total_spent = self.db.query(func.sum(PaymentTransaction.amount)).filter(
+                PaymentTransaction.store_id == store_id,
+                PaymentTransaction.status == PaymentStatus.COMPLETED
+            ).scalar() or 0.0
+
+            # Get package info
+            if subscription:
+                package = self.db.query(PackagePricing).filter(
+                    PackagePricing.package_name == subscription.package_name,
+                    PackagePricing.is_active == True
+                ).first()
+
+                next_payment_date = subscription.current_period_end
+                next_payment_amount = package.monthly_price if subscription.billing_period == "monthly" else package.annual_price if package else 0
+            else:
+                package = self.db.query(PackagePricing).filter(
+                    PackagePricing.package_name == SubscriptionPlan.FREE,
+                    PackagePricing.is_active == True
+                ).first()
+                next_payment_date = None
+                next_payment_amount = 0
+
+            return {
+                "store_id": str(store_id),
+                "current_package": subscription.package_name.value if subscription else SubscriptionPlan.FREE.value,
+                "billing_period": subscription.billing_period if subscription else "monthly",
+                "is_active": subscription.is_active if subscription else True,
+                "auto_renew": subscription.auto_renew if subscription else False,
+                "current_period_start": subscription.current_period_start if subscription else None,
+                "current_period_end": subscription.current_period_end if subscription else None,
+                "next_payment_date": next_payment_date,
+                "next_payment_amount": next_payment_amount,
+                "total_transactions": total_transactions,
+                "completed_payments": completed_payments,
+                "total_spent": float(total_spent),
+                "enabled_features": subscription.enabled_features if subscription else self._get_package_features(SubscriptionPlan.FREE),
+                "usage_limits": subscription.usage_limits if subscription else self._get_package_limits(SubscriptionPlan.FREE),
+                "package_features": package.features if package else []
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting payment summary: {str(e)}")
+            return {
+                "store_id": str(store_id),
+                "current_package": SubscriptionPlan.FREE.value,
+                "billing_period": "monthly",
+                "is_active": True,
+                "error": str(e)
+            }
+
+    def simulate_payment(self, reference: str) -> bool:
+        """Simulate payment completion for testing"""
+        try:
+            transaction = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.reference == reference
+            ).first()
+
+            if not transaction:
+                return False
+
+            # Update to completed
+            transaction.status = PaymentStatus.COMPLETED
+            transaction.completed_at = datetime.utcnow()
+
+            # Activate subscription
+            self._activate_subscription(transaction)
+
+            self.db.commit()
+            logger.info(f"Simulated payment completion for {reference}")
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error simulating payment: {str(e)}")
+            return False
+
+    def generate_receipt(self, reference: str) -> Optional[Dict[str, Any]]:
+        """Generate receipt for a completed transaction"""
+        try:
+            transaction = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.reference == reference
+            ).first()
+
+            if not transaction:
+                return None
+
+            # Get store info
+            from modules.stores.models import Store
+            store = self.db.query(Store).filter(Store.id == transaction.store_id).first()
+
+            # Get package info
+            package = self.db.query(PackagePricing).filter(
+                PackagePricing.package_name == transaction.package_name
+            ).first()
+
+            return {
+                "receipt_number": f"RCP-{transaction.reference}",
+                "transaction_reference": transaction.reference,
+                "paynow_reference": transaction.paynow_reference,
+                "status": transaction.status.value,
+                "amount": float(transaction.amount),
+                "currency": transaction.currency,
+                "payment_method": transaction.payment_method.value,
+                "package_name": transaction.package_name.value,
+                "package_description": package.description if package else None,
+                "billing_period": transaction.billing_period,
+                "store_name": store.store_name if store else None,
+                "store_id": str(transaction.store_id),
+                "initiated_at": transaction.initiated_at.isoformat() if transaction.initiated_at else None,
+                "completed_at": transaction.completed_at.isoformat() if transaction.completed_at else None,
+                "features": package.features if package else []
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating receipt: {str(e)}")
+            return None
+
+    def initiate_innbucks_payment(
+        self,
+        transaction: PaymentTransaction,
+        mobile_number: str,
+        email: str
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Initiate InnBucks payment via PayNow
+
+        PayNow API Reference:
+        - Create payment: paynow.create_payment(reference, email)
+        - Add items: payment.add(name, amount)
+        - Send to mobile: paynow.send_mobile(payment, phone, 'innbucks')
+        - Response: response.success, response.poll_url, response.instructions
+        """
+        try:
+            if not self.paynow:
+                # Simulate PayNow response for testing
+                logger.info("PayNow not configured, simulating InnBucks payment")
+                return self._simulate_innbucks_payment(transaction, mobile_number)
+
+            # Real PayNow integration for InnBucks
+            description = f"Shopivell {transaction.package_name.value.capitalize()} - {transaction.reference}"
+            payment = self.paynow.create_payment(description, email)
+
+            # Add the subscription as a line item
+            payment.add(
+                f"{transaction.package_name.value.capitalize()} Subscription ({transaction.billing_period})",
+                float(transaction.amount)
+            )
+
+            # Send mobile payment request to InnBucks
+            response = self.paynow.send_mobile(payment, mobile_number, 'innbucks')
+
+            # Log response for debugging
+            logger.info(f"PayNow InnBucks response - success: {response.success}")
+            if hasattr(response, 'poll_url'):
+                logger.info(f"PayNow poll_url: {response.poll_url}")
+
+            if response.success:
+                # Extract poll_url (required for status checking)
+                poll_url = getattr(response, 'poll_url', None)
+
+                # Extract instructions for the user
+                instructions = getattr(response, 'instructions', None) or \
+                              getattr(response, 'instruction', None) or \
+                              'Open your InnBucks app and approve the payment request.'
+
+                # Generate or extract PayNow reference
+                paynow_ref = self._extract_paynow_reference(response)
+
+                # Update transaction with PayNow details
+                transaction.poll_url = poll_url
+                transaction.paynow_reference = paynow_ref
+                transaction.mobile_number = mobile_number
+                transaction.status = PaymentStatus.PROCESSING
+
+                self.db.commit()
+
+                return {
+                    "poll_url": poll_url,
+                    "paynow_reference": paynow_ref,
+                    "instruction": instructions,
+                    "reference": transaction.reference
+                }, None
+            else:
+                # Extract error message from response
+                error_msg = self._extract_error_message(response)
+                transaction.status = PaymentStatus.FAILED
+                transaction.error_message = error_msg
+                self.db.commit()
+                return None, error_msg
+
+        except Exception as e:
+            logger.error(f"Error initiating InnBucks payment: {str(e)}", exc_info=True)
+            try:
+                transaction.status = PaymentStatus.FAILED
+                transaction.error_message = str(e)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+            return None, str(e)
+
+    def _simulate_innbucks_payment(
+        self,
+        transaction: PaymentTransaction,
+        mobile_number: str
+    ) -> Tuple[Dict[str, Any], None]:
+        """Simulate InnBucks payment for testing"""
+        paynow_ref = f"INB-SIM-{uuid.uuid4().hex[:8].upper()}"
+        poll_url = f"https://demo.paynow.co.zw/poll/{paynow_ref}"
+
+        transaction.poll_url = poll_url
+        transaction.paynow_reference = paynow_ref
+        transaction.mobile_number = mobile_number
+
+        self.db.commit()
+
+        return {
+            "poll_url": poll_url,
+            "paynow_reference": paynow_ref,
+            "instruction": "Check your InnBucks app to complete payment (SIMULATED)",
+            "reference": transaction.reference,
+            "simulated": True
+        }, None
+
+    def cancel_subscription(self, store_id: uuid.UUID) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Cancel a store's subscription"""
+        try:
+            subscription = self.db.query(StoreSubscription).filter(
+                StoreSubscription.store_id == store_id,
+                StoreSubscription.is_active == True
+            ).first()
+
+            if not subscription:
+                return None, "Active subscription not found"
+
+            # Mark as cancelled
+            subscription.is_active = False
+            subscription.auto_renew = False
+            subscription.cancelled_at = datetime.utcnow()
+
+            # Downgrade to free
+            subscription.enabled_features = self._get_package_features(SubscriptionPlan.FREE)
+            subscription.usage_limits = self._get_package_limits(SubscriptionPlan.FREE)
+
+            # Update store's enabled_features
+            from modules.stores.models import Store
+            store = self.db.query(Store).filter(Store.id == store_id).first()
+            if store:
+                store.enabled_features = subscription.enabled_features
+
+            self.db.commit()
+
+            return {
+                "message": "Subscription cancelled successfully",
+                "store_id": str(store_id),
+                "cancelled_at": subscription.cancelled_at.isoformat(),
+                "new_package": SubscriptionPlan.FREE.value
+            }, None
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error cancelling subscription: {str(e)}")
+            return None, str(e)
+
+    # Stripe Payment Methods
+    def create_stripe_payment_intent(
+        self,
+        transaction: PaymentTransaction
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Create a Stripe PaymentIntent for card payments"""
+        try:
+            if not STRIPE_SECRET_KEY:
+                logger.warning("Stripe not configured, simulating payment intent")
+                return self._simulate_stripe_payment(transaction)
+
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+
+            # Create PaymentIntent
+            intent = stripe.PaymentIntent.create(
+                amount=int(transaction.amount * 100),  # Stripe uses cents
+                currency=transaction.currency.lower(),
+                metadata={
+                    "reference": transaction.reference,
+                    "store_id": str(transaction.store_id),
+                    "package_name": transaction.package_name.value,
+                    "billing_period": transaction.billing_period
+                },
+                description=f"{transaction.package_name.value.capitalize()} Subscription - {transaction.billing_period}"
+            )
+
+            # Update transaction with Stripe reference
+            transaction.paynow_reference = intent.id  # Store Stripe intent ID
+            self.db.commit()
+
+            return {
+                "client_secret": intent.client_secret,
+                "payment_intent_id": intent.id,
+                "publishable_key": STRIPE_PUBLISHABLE_KEY,
+                "reference": transaction.reference,
+                "amount": transaction.amount,
+                "currency": transaction.currency
+            }, None
+
+        except Exception as e:
+            logger.error(f"Error creating Stripe PaymentIntent: {str(e)}")
+            transaction.status = PaymentStatus.FAILED
+            transaction.error_message = str(e)
+            self.db.commit()
+            return None, str(e)
+
+    def _simulate_stripe_payment(
+        self,
+        transaction: PaymentTransaction
+    ) -> Tuple[Dict[str, Any], None]:
+        """Simulate Stripe payment for testing"""
+        fake_intent_id = f"pi_sim_{uuid.uuid4().hex[:16]}"
+        fake_client_secret = f"{fake_intent_id}_secret_{uuid.uuid4().hex[:16]}"
+
+        transaction.paynow_reference = fake_intent_id
+        self.db.commit()
+
+        return {
+            "client_secret": fake_client_secret,
+            "payment_intent_id": fake_intent_id,
+            "publishable_key": "pk_test_simulated",
+            "reference": transaction.reference,
+            "amount": transaction.amount,
+            "currency": transaction.currency,
+            "simulated": True
+        }, None
+
+    def confirm_stripe_payment(
+        self,
+        payment_intent_id: str
+    ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
+        """Confirm Stripe payment and activate subscription"""
+        try:
+            # Find transaction by Stripe intent ID
+            transaction = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.paynow_reference == payment_intent_id
+            ).first()
+
+            if not transaction:
+                return None, "Transaction not found"
+
+            if not STRIPE_SECRET_KEY:
+                # Simulate confirmation
+                transaction.status = PaymentStatus.COMPLETED
+                transaction.completed_at = datetime.utcnow()
+                self._activate_subscription(transaction)
+                self.db.commit()
+                return transaction, None
+
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+
+            # Retrieve PaymentIntent
+            intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+
+            if intent.status == "succeeded":
+                transaction.status = PaymentStatus.COMPLETED
+                transaction.completed_at = datetime.utcnow()
+                self._activate_subscription(transaction)
+                self.db.commit()
+                return transaction, None
+            else:
+                transaction.status = PaymentStatus.FAILED
+                transaction.error_message = f"Payment not completed: {intent.status}"
+                self.db.commit()
+                return None, f"Payment status: {intent.status}"
+
+        except Exception as e:
+            logger.error(f"Error confirming Stripe payment: {str(e)}")
+            return None, str(e)
+
+    def handle_stripe_webhook(
+        self,
+        payload: bytes,
+        sig_header: str,
+        webhook_secret: str
+    ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
+        """Handle Stripe webhook events"""
+        try:
+            if not STRIPE_SECRET_KEY:
+                logger.warning("Stripe not configured")
+                return None, "Stripe not configured"
+
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+
+            # Verify webhook signature
+            event = stripe.Webhook.construct_event(
+                payload, sig_header, webhook_secret
+            )
+
+            # Handle payment_intent.succeeded
+            if event.type == "payment_intent.succeeded":
+                intent = event.data.object
+                return self.confirm_stripe_payment(intent.id)
+
+            # Handle payment_intent.payment_failed
+            elif event.type == "payment_intent.payment_failed":
+                intent = event.data.object
+                transaction = self.db.query(PaymentTransaction).filter(
+                    PaymentTransaction.paynow_reference == intent.id
+                ).first()
+
+                if transaction:
+                    transaction.status = PaymentStatus.FAILED
+                    transaction.error_message = intent.last_payment_error.message if intent.last_payment_error else "Payment failed"
+                    self.db.commit()
+                    return transaction, None
+
+            return None, None
+
+        except Exception as e:
+            logger.error(f"Error handling Stripe webhook: {str(e)}")
+            return None, str(e)
+
+    # PayPal Payment Methods
+    def create_paypal_order(
+        self,
+        transaction: PaymentTransaction
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Create a PayPal order"""
+        try:
+            if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+                logger.warning("PayPal not configured, simulating order")
+                return self._simulate_paypal_order(transaction)
+
+            import paypalrestsdk
+            paypalrestsdk.configure({
+                "mode": PAYPAL_MODE,
+                "client_id": PAYPAL_CLIENT_ID,
+                "client_secret": PAYPAL_CLIENT_SECRET
+            })
+
+            payment = paypalrestsdk.Payment({
+                "intent": "sale",
+                "payer": {
+                    "payment_method": "paypal"
+                },
+                "transactions": [{
+                    "amount": {
+                        "total": str(transaction.amount),
+                        "currency": transaction.currency
+                    },
+                    "description": f"{transaction.package_name.value.capitalize()} Subscription - {transaction.billing_period}",
+                    "custom": transaction.reference
+                }],
+                "redirect_urls": {
+                    "return_url": f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/payment/success?ref={transaction.reference}",
+                    "cancel_url": f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/payment/cancel?ref={transaction.reference}"
+                }
+            })
+
+            if payment.create():
+                # Get approval URL
+                approval_url = None
+                for link in payment.links:
+                    if link.rel == "approval_url":
+                        approval_url = link.href
+                        break
+
+                # Update transaction with PayPal ID
+                transaction.paynow_reference = payment.id
+                self.db.commit()
+
+                return {
+                    "order_id": payment.id,
+                    "approval_url": approval_url,
+                    "reference": transaction.reference,
+                    "amount": transaction.amount,
+                    "currency": transaction.currency
+                }, None
+            else:
+                error_msg = payment.error.get("message", "PayPal order creation failed")
+                transaction.status = PaymentStatus.FAILED
+                transaction.error_message = error_msg
+                self.db.commit()
+                return None, error_msg
+
+        except Exception as e:
+            logger.error(f"Error creating PayPal order: {str(e)}")
+            transaction.status = PaymentStatus.FAILED
+            transaction.error_message = str(e)
+            self.db.commit()
+            return None, str(e)
+
+    def _simulate_paypal_order(
+        self,
+        transaction: PaymentTransaction
+    ) -> Tuple[Dict[str, Any], None]:
+        """Simulate PayPal order for testing"""
+        fake_order_id = f"PAYPAL-SIM-{uuid.uuid4().hex[:12].upper()}"
+
+        transaction.paynow_reference = fake_order_id
+        self.db.commit()
+
+        return {
+            "order_id": fake_order_id,
+            "approval_url": f"https://sandbox.paypal.com/checkoutnow?token={fake_order_id}",
+            "reference": transaction.reference,
+            "amount": transaction.amount,
+            "currency": transaction.currency,
+            "simulated": True
+        }, None
+
+    def capture_paypal_payment(
+        self,
+        order_id: str,
+        payer_id: str
+    ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
+        """Capture/Execute PayPal payment after user approval"""
+        try:
+            # Find transaction by PayPal order ID
+            transaction = self.db.query(PaymentTransaction).filter(
+                PaymentTransaction.paynow_reference == order_id
+            ).first()
+
+            if not transaction:
+                return None, "Transaction not found"
+
+            if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+                # Simulate capture
+                transaction.status = PaymentStatus.COMPLETED
+                transaction.completed_at = datetime.utcnow()
+                self._activate_subscription(transaction)
+                self.db.commit()
+                return transaction, None
+
+            import paypalrestsdk
+            paypalrestsdk.configure({
+                "mode": PAYPAL_MODE,
+                "client_id": PAYPAL_CLIENT_ID,
+                "client_secret": PAYPAL_CLIENT_SECRET
+            })
+
+            payment = paypalrestsdk.Payment.find(order_id)
+
+            if payment.execute({"payer_id": payer_id}):
+                transaction.status = PaymentStatus.COMPLETED
+                transaction.completed_at = datetime.utcnow()
+                self._activate_subscription(transaction)
+                self.db.commit()
+                return transaction, None
+            else:
+                error_msg = payment.error.get("message", "PayPal payment execution failed")
+                transaction.status = PaymentStatus.FAILED
+                transaction.error_message = error_msg
+                self.db.commit()
+                return None, error_msg
+
+        except Exception as e:
+            logger.error(f"Error capturing PayPal payment: {str(e)}")
+            return None, str(e)
+
+    def handle_paypal_webhook(
+        self,
+        payload: Dict[str, Any]
+    ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
+        """Handle PayPal webhook events"""
+        try:
+            event_type = payload.get("event_type")
+            resource = payload.get("resource", {})
+
+            if event_type == "PAYMENT.SALE.COMPLETED":
+                # Get custom field (our reference)
+                custom = None
+                for transaction_data in resource.get("transactions", []):
+                    custom = transaction_data.get("custom")
+                    if custom:
+                        break
+
+                if custom:
+                    transaction = self.db.query(PaymentTransaction).filter(
+                        PaymentTransaction.reference == custom
+                    ).first()
+
+                    if transaction and transaction.status != PaymentStatus.COMPLETED:
+                        transaction.status = PaymentStatus.COMPLETED
+                        transaction.completed_at = datetime.utcnow()
+                        self._activate_subscription(transaction)
+                        self.db.commit()
+                        return transaction, None
+
+            elif event_type == "PAYMENT.SALE.DENIED":
+                custom = None
+                for transaction_data in resource.get("transactions", []):
+                    custom = transaction_data.get("custom")
+                    if custom:
+                        break
+
+                if custom:
+                    transaction = self.db.query(PaymentTransaction).filter(
+                        PaymentTransaction.reference == custom
+                    ).first()
+
+                    if transaction:
+                        transaction.status = PaymentStatus.FAILED
+                        transaction.error_message = "Payment denied"
+                        self.db.commit()
+                        return transaction, None
+
+            return None, None
+
+        except Exception as e:
+            logger.error(f"Error handling PayPal webhook: {str(e)}")
+            return None, str(e)

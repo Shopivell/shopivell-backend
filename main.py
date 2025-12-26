@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from database import engine, init_db
 from modules.customers.models import *
 from modules.customers.router import customer_router
@@ -19,6 +21,9 @@ from modules.marketing.router import marketing_router
 from modules.whatsapp.router import whatsapp_router
 from modules.agents.router import agents_router
 from modules.agency.router import agency_router
+from modules.campaigns.router import campaign_router
+from modules.assets.router import asset_router
+from modules.ad_generator.router import ad_generator_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -67,6 +72,14 @@ app.include_router(marketing_router, prefix="/v1")
 app.include_router(whatsapp_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(agency_router, prefix="/v1")
+app.include_router(campaign_router, prefix="/v1")
+app.include_router(asset_router, prefix="/v1")
+app.include_router(ad_generator_router, prefix="/v1")
+
+# Mount static files for local asset uploads
+uploads_dir = Path("uploads/assets")
+uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads/assets", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
 # Run server
 if __name__ == "__main__":

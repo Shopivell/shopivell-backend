@@ -221,10 +221,17 @@ class MetaAdAccountResponse(MetaAdAccountBase):
 
 class MetaCampaignResponse(MetaCampaignBase):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: uuid.UUID
     campaign_id: str
     ad_account_id: uuid.UUID
+
+    # Draft support fields
+    is_draft: Optional[bool] = Field(default=False)
+    notes: Optional[str] = None
+    draft_data: Optional[Dict[str, Any]] = None
+    published_at: Optional[datetime] = None
+
     created_time: Optional[datetime] = None
     updated_time: Optional[datetime] = None
     effective_status: Optional[str] = None
@@ -232,7 +239,7 @@ class MetaCampaignResponse(MetaCampaignBase):
     is_active: bool = True
     created_at: datetime
     updated_at: datetime
-    
+
     # Statistics
     ad_set_count: Optional[int] = 0
     ad_count: Optional[int] = 0
@@ -242,11 +249,18 @@ class MetaCampaignResponse(MetaCampaignBase):
 
 class MetaAdSetResponse(MetaAdSetBase):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: uuid.UUID
     adset_id: str
     ad_account_id: uuid.UUID
     campaign_id: uuid.UUID
+
+    # Draft support fields
+    is_draft: Optional[bool] = Field(default=False)
+    notes: Optional[str] = None
+    draft_data: Optional[Dict[str, Any]] = None
+    published_at: Optional[datetime] = None
+
     created_time: Optional[datetime] = None
     updated_time: Optional[datetime] = None
     effective_status: Optional[str] = None
@@ -254,7 +268,7 @@ class MetaAdSetResponse(MetaAdSetBase):
     is_active: bool = True
     created_at: datetime
     updated_at: datetime
-    
+
     # Statistics
     ad_count: Optional[int] = 0
     spend: Optional[float] = 0.0
@@ -440,6 +454,7 @@ class MetaCreateCampaignRequest(BaseModel):
     lifetime_budget: Optional[int] = None
     start_time: Optional[datetime] = None
     stop_time: Optional[datetime] = None
+    save_as_draft: Optional[bool] = False  # If true, save locally without publishing to Meta
 
 class MetaCreateAdSetRequest(BaseModel):
     name: str
@@ -453,6 +468,7 @@ class MetaCreateAdSetRequest(BaseModel):
     end_time: Optional[datetime] = None
     targeting: Optional[Dict[str, Any]] = None
     placement: Optional[Dict[str, Any]] = None
+    save_as_draft: Optional[bool] = False  # If true, save locally without publishing to Meta
 
 class MetaCreateAdRequest(BaseModel):
     name: str
@@ -544,6 +560,39 @@ class MetaCampaignPerformance(BaseModel):
     conversions: int
     cost_per_conversion: float
     roas: Optional[float] = None
+
+# Draft Models
+class DraftItem(BaseModel):
+    """Unified draft item for listing all drafts"""
+    id: uuid.UUID
+    type: str  # campaign, adset, ad
+    name: str
+    status: str
+    notes: Optional[str] = None
+    draft_data: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    # Additional context
+    ad_account_id: Optional[uuid.UUID] = None
+    campaign_id: Optional[uuid.UUID] = None
+    campaign_name: Optional[str] = None
+    adset_id: Optional[uuid.UUID] = None
+    adset_name: Optional[str] = None
+
+class DraftListResponse(BaseModel):
+    drafts: List[DraftItem]
+    total_count: int
+
+class PublishDraftRequest(BaseModel):
+    """Request to publish a draft"""
+    notes: Optional[str] = None
+
+class PublishDraftResponse(BaseModel):
+    success: bool
+    message: str
+    meta_id: Optional[str] = None  # The ID returned from Meta API
+    published_at: Optional[datetime] = None
 
 # Update forward references if needed
 MetaCampaignResponse.model_rebuild()

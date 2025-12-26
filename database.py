@@ -64,6 +64,8 @@ def init_db():
     from modules.whatsapp import models as whatsapp_models
     from modules.agents import models as agents_models
     from modules.agency import models as agency_models
+    from modules.campaigns import models as campaign_models
+    from modules.assets import models as asset_models
 
     Base.metadata.create_all(bind=engine)
     

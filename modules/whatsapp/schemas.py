@@ -262,3 +262,53 @@ class KnowledgeCreateRequest(BaseModel):
         default=UUID("36689cad-4b73-4fea-802b-d3a4fbfa23ec"),
         description="Store ID (defaults to SecureSights)"
     )
+
+
+# Bulk Messaging Schemas
+class BulkMessageRecipient(BaseModel):
+    """Single recipient for bulk messaging"""
+    phone_number: str = Field(..., description="Phone number in E.164 format (e.g., 263771234567)")
+    name: Optional[str] = Field(None, description="Optional name for personalization")
+    custom_variables: Optional[Dict[str, str]] = Field(None, description="Custom variables for template personalization")
+
+
+class BulkMessageRequest(BaseModel):
+    """Request schema for bulk messaging"""
+    recipients: List[BulkMessageRecipient] = Field(..., min_length=1, max_length=1000, description="List of recipients")
+    message_type: str = Field("template", description="Message type: 'template' or 'text'")
+    template_name: Optional[str] = Field(None, description="Template name (required for template messages)")
+    language_code: str = Field("en_US", description="Template language code")
+    text_message: Optional[str] = Field(None, description="Text message content (required for text messages)")
+    components: Optional[List[Dict[str, Any]]] = Field(None, description="Template components for personalization")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "recipients": [
+                    {"phone_number": "263771234567", "name": "John"},
+                    {"phone_number": "263772345678", "name": "Jane"}
+                ],
+                "message_type": "template",
+                "template_name": "hello_world",
+                "language_code": "en_US"
+            }
+        }
+
+
+class BulkMessageResult(BaseModel):
+    """Result for a single recipient in bulk messaging"""
+    phone_number: str
+    success: bool
+    message_id: Optional[str] = None
+    wamid: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkMessageResponse(BaseModel):
+    """Response schema for bulk messaging"""
+    success: bool
+    total_recipients: int
+    successful: int
+    failed: int
+    results: List[BulkMessageResult]
+    message: str

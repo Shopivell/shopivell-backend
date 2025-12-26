@@ -17,3 +17,8 @@ paynow
 google-auth
 langgraph
 pgvector
+stripe
+paypalrestsdk
+cloudinary
+tavily-python
+requests
