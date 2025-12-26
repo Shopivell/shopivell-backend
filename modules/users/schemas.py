@@ -63,6 +63,7 @@ class LoginResponse(BaseModel):
     user_status: str  # "no_store", "has_incomplete_setup", "has_store"
     redirect_to: str  # Explicit redirect path
     access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
 
 class UserListResponse(BaseModel):

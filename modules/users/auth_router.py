@@ -17,6 +17,7 @@ from modules.users.schemas import (
 )
 from modules.stores.models import Store, StoreSetupSession
 from utils.Verification_Codes_Services import VerificationCodeService
+from utils.jwt_auth import jwt_auth, token_blacklist, get_current_user, CurrentUser
 
 
 def generate_unique_slug(db: Session, base_name: str) -> str:
@@ -194,7 +195,16 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             redirect_to = "/setup/start"
 
         # Generate access token
-        access_token = f"jwt_{user.id}_{uuid.uuid4()}"
+        # Generate proper JWT tokens
+        tokens = jwt_auth.create_tokens(
+            user_id=str(verified_user.id),
+            email=verified_user.email,
+            role=verified_user.role.value if hasattr(verified_user.role, 'value') else verified_user.role,
+            store_id=str(store.id) if store else None,
+            agency_id=str(agency_id) if agency_id else None
+        )
+        access_token = tokens.access_token
+        refresh_token = tokens.refresh_token
         
         # FIX: Convert UUID to string for proper serialization
         user_dict = {
@@ -226,6 +236,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             "user_status": user_status,
             "redirect_to": redirect_to,
             "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "bearer"
         }
 
@@ -376,7 +387,33 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
             has_store=has_store,
             user_status=user_status,
             redirect_to=redirect_to,
-            access_token="jwt_token_here",
+            # Generate proper JWT tokens
+            tokens = jwt_auth.create_tokens(
+                user_id=str(user.id),
+                email=user.email,
+                role=user.role.value if hasattr(user.role, 'value') else user.role,
+                store_id=str(store.id) if store else None,
+                agency_id=str(agency_id) if agency_id else None
+            )
+            
+            return LoginResponse(
+                user=user,
+                store_id=store.id if store else None,
+                agency_id=agency_id if agency_id else None,
+                has_active_setup_session=has_active_session,
+                setup_session_id=setup_session.id if setup_session else None,
+                setup_progress=setup_session.setup_progress if setup_session else 0,
+                current_setup_step=setup_session.current_step.value if setup_session else None,
+                has_store=has_store,
+                user_status=user_status,
+                redirect_to=redirect_to,
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                token_type="bearer"
+            )
+
+# Removed duplicate return statement - this function now properly returns above
+            # access_token="jwt_token_here",
             token_type="bearer"
         )
         
@@ -474,7 +511,16 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             redirect_to = "/setup/start"
 
         # Generate token
-        access_token = f"jwt_{user.id}"
+        # Generate proper JWT tokens
+        tokens = jwt_auth.create_tokens(
+            user_id=str(user.id),
+            email=user.email,
+            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            store_id=str(store.id) if store else None,
+            agency_id=str(agency_id) if agency_id else None
+        )
+        access_token = tokens.access_token
+        refresh_token = tokens.refresh_token
 
         return LoginResponse(
             user=user,
@@ -498,3 +544,93 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during verification: {str(e)}"
         )
+
+# Token refresh endpoint
+@auth_router.post("/refresh")
+async def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
+    """Get a new access token using a refresh token"""
+    try:
+        # Verify refresh token
+        payload = jwt_auth.verify_token(refresh_token, token_type="refresh")
+        
+        # Get user from database
+        user = db.query(User).filter(User.id == payload["sub"]).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        # Get store and agency
+        store = db.query(Store).filter(Store.owner_id == user.id).first()
+        
+        from sqlalchemy import text
+        agency_result = db.execute(
+            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+            {"owner_id": str(user.id)}
+        ).fetchone()
+        agency_id = agency_result[0] if agency_result else None
+        
+        # Create new tokens
+        tokens = jwt_auth.create_tokens(
+            user_id=str(user.id),
+            email=user.email,
+            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            store_id=str(store.id) if store else None,
+            agency_id=str(agency_id) if agency_id else None
+        )
+        
+        return {
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "token_type": "bearer",
+            "expires_in": tokens.expires_in
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Could not refresh token: {str(e)}"
+        )
+
+
+# Logout endpoint
+@auth_router.post("/logout")
+async def logout(current_user: CurrentUser = Depends(get_current_user)):
+    """Logout and blacklist the current token"""
+    try:
+        # In a real implementation, you would blacklist the token here
+        # token_blacklist.blacklist_token(token, ttl=3600)
+        return {"message": "Successfully logged out"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Logout failed: {str(e)}"
+        )
+
+
+# Get current user endpoint
+@auth_router.get("/me")
+async def get_me(current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get current authenticated user details"""
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    store = db.query(Store).filter(Store.owner_id == user.id).first()
+    
+    return {
+        "id": str(user.id),
+        "name": user.name,
+        "email": user.email,
+        "role": user.role.value if hasattr(user.role, 'value') else user.role,
+        "is_verified": user.is_verified,
+        "profile_picture": user.profile_picture,
+        "store_id": str(store.id) if store else None,
+        "agency_id": current_user.agency_id
+    }

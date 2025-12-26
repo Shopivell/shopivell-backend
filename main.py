@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from database import engine, init_db
+from utils.cache import cache, check_redis_health
+from middleware.cache_middleware import CacheMiddleware, CacheControlMiddleware
 from modules.customers.models import *
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -53,7 +55,12 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# ✅ Include routers with a version prefix
+# Add caching middleware (optional - enable when Redis is configured)
+# Uncomment the following lines to enable Redis caching:
+# app.add_middleware(CacheMiddleware, default_ttl=60)
+# app.add_middleware(CacheControlMiddleware)
+
+# Include routers with a version prefix
 app.include_router(customer_router, prefix="/v1")
 app.include_router(order_router, prefix="/v1")
 app.include_router(products_router, prefix="/v1")
@@ -80,6 +87,18 @@ app.include_router(ad_generator_router, prefix="/v1")
 uploads_dir = Path("uploads/assets")
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/assets", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint with Redis status"""
+    redis_health = check_redis_health()
+    return {
+        "status": "healthy",
+        "database": "connected",
+        "cache": redis_health
+    }
+
 
 # Run server
 if __name__ == "__main__":

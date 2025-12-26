@@ -22,3 +22,5 @@ paypalrestsdk
 cloudinary
 tavily-python
 requests
+redis>=5.0.0
+hiredis>=2.0.0
