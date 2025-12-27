@@ -22,5 +22,8 @@ paypalrestsdk
 cloudinary
 tavily-python
 requests
+httpx>=0.25.0
+beautifulsoup4
+lxml
 redis>=5.0.0
 hiredis>=2.0.0

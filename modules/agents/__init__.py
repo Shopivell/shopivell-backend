@@ -7,6 +7,10 @@ This module contains AI agents for generating Meta advertising campaigns:
 3. VisualDirectorAgent - Creates image/video prompts from creative hooks
 4. MarketResearchAgent - Conducts market and competitor research
 5. AdCreativeAgent - Orchestrates the full creative generation pipeline
+6. CreativeAnglesAgent - Generates creative advertising angles
+7. AdCopyAgent - Generates ad copy variations
+8. MonitorOptimizerAgent - Analyzes performance and suggests optimizations
+9. MediaGeneratorAgent - Generates images and videos using multiple AI providers
 """
 
 from .router import agents_router
@@ -17,6 +21,8 @@ from .visual_director_agent import VisualDirectorAgent, generate_visuals_for_ang
 from .market_research_agent import MarketResearchAgent
 from .creative_angles_agent import CreativeAnglesAgent
 from .ad_copy_agent import AdCopyAgent
+from .monitor_optimizer_agent import MonitorOptimizerAgent
+from .media_generator_agent import MediaGeneratorAgent
 
 __all__ = [
     "agents_router",
@@ -27,6 +33,8 @@ __all__ = [
     "MarketResearchAgent",
     "CreativeAnglesAgent",
     "AdCopyAgent",
+    "MonitorOptimizerAgent",
+    "MediaGeneratorAgent",
     "generate_creative_strategy",
     "generate_copy_for_angle",
     "generate_all_campaign_copy",

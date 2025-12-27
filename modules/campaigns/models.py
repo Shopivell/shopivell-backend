@@ -100,6 +100,7 @@ class UrlAdSet(Base):
     age_range = Column(JSON, nullable=True)
     gender = Column(String(20), nullable=True)
     audience_tags = Column(JSON, default=list)  # Interest/behavior tags
+    hashtags = Column(JSON, default=list)  # Social media hashtags
 
     # Budget
     daily_budget = Column(Float, nullable=True)

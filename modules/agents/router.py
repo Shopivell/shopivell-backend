@@ -20,6 +20,7 @@ from .market_research_agent import MarketResearchAgent
 from .creative_angles_agent import CreativeAnglesAgent
 from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
+from .media_generator_agent import MediaGeneratorAgent
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -772,4 +773,242 @@ async def add_performance_metrics(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to add metrics: {str(e)}"
+        )
+
+
+# ============ Media Generation Endpoints ============
+
+@agents_router.post("/generate-image")
+async def generate_image(
+    prompt: str,
+    style: str = "professional",
+    aspect_ratio: str = "1:1"
+):
+    """
+    Generate an AI image using multiple providers with automatic fallback.
+
+    Supported providers (in priority order):
+    - DALL-E 3 (OpenAI)
+    - Stability AI (SD3)
+    - Replicate (Flux)
+    - Gemini (Imagen 3)
+
+    Args:
+        prompt: The image generation prompt
+        style: Visual style (professional, vibrant, minimal, luxury, lifestyle, bold, cinematic)
+        aspect_ratio: Image aspect ratio (1:1, 16:9, 9:16, 4:5)
+    """
+    try:
+        agent = MediaGeneratorAgent()
+        result = await agent.generate_image(
+            prompt=prompt,
+            style=style,
+            aspect_ratio=aspect_ratio
+        )
+
+        return {
+            "success": True,
+            "image_base64": result.get("image_base64"),
+            "provider_used": result.get("provider_used"),
+            "model": result.get("model"),
+            "is_placeholder": result.get("is_placeholder", False)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate image: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate image: {str(e)}"
+        )
+
+
+@agents_router.post("/generate-video")
+async def generate_video(
+    prompt: str,
+    image_base64: Optional[str] = None,
+    duration: int = 5,
+    aspect_ratio: str = "16:9"
+):
+    """
+    Generate an AI video using multiple providers with automatic fallback.
+
+    Supported providers:
+    - Replicate (Stable Video Diffusion, AnimateDiff)
+    - Runway ML (Gen-3)
+    - Luma AI (Dream Machine)
+
+    Args:
+        prompt: The video generation prompt
+        image_base64: Optional starting image for image-to-video
+        duration: Video duration in seconds (3-10)
+        aspect_ratio: Video aspect ratio (16:9, 9:16, 1:1)
+    """
+    try:
+        agent = MediaGeneratorAgent()
+        result = await agent.generate_video(
+            prompt=prompt,
+            image_base64=image_base64,
+            duration=duration,
+            aspect_ratio=aspect_ratio
+        )
+
+        return {
+            "success": bool(result.get("video_base64") or result.get("video_url")),
+            "video_base64": result.get("video_base64"),
+            "video_url": result.get("video_url"),
+            "provider_used": result.get("provider_used"),
+            "model": result.get("model"),
+            "duration": result.get("duration"),
+            "error": result.get("error")
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate video: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate video: {str(e)}"
+        )
+
+
+@agents_router.post("/generate-ad-media")
+async def generate_ad_media(
+    product_name: str,
+    product_description: str,
+    visual_direction: str = "Professional and engaging",
+    emotion_target: str = "Trust",
+    generate_video: bool = False
+):
+    """
+    Generate complete ad media (image + optional video) for a product.
+
+    This endpoint combines the MediaGeneratorAgent with ad-specific prompting
+    to create ready-to-use advertising visuals.
+    """
+    try:
+        agent = MediaGeneratorAgent()
+
+        product_info = {
+            "product_name": product_name,
+            "product_description": product_description
+        }
+
+        ad_angle = {
+            "visual_direction": visual_direction,
+            "emotion_target": emotion_target,
+            "visual_style": "professional",
+            "aspect_ratio": "1:1"
+        }
+
+        result = await agent.generate_ad_media(
+            product_info=product_info,
+            ad_angle=ad_angle,
+            generate_video=generate_video
+        )
+
+        return {
+            "success": True,
+            "image": {
+                "base64": result["image"].get("image_base64"),
+                "provider": result["image"].get("provider_used"),
+                "model": result["image"].get("model")
+            },
+            "video": result.get("video") if generate_video else None,
+            "prompt_used": result.get("prompt_used")
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate ad media: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate ad media: {str(e)}"
+        )
+
+
+@agents_router.get("/media-providers")
+async def get_media_providers():
+    """
+    Get list of available media generation providers.
+
+    Returns which image and video providers are configured and available.
+    """
+    agent = MediaGeneratorAgent()
+
+    return {
+        "image_providers": [p.value for p in agent.available_image_providers],
+        "video_providers": [p.value for p in agent.available_video_providers],
+        "configured_keys": {
+            "openai": bool(agent.openai_api_key),
+            "stability": bool(agent.stability_api_key),
+            "replicate": bool(agent.replicate_api_key),
+            "gemini": bool(agent.gemini_api_key),
+            "runway": bool(agent.runway_api_key),
+            "luma": bool(agent.luma_api_key),
+            "fal": bool(agent.fal_api_key)
+        }
+    }
+
+
+@agents_router.post("/generate-luxury-assets")
+async def generate_luxury_assets(
+    product_name: str,
+    product_description: str,
+    num_assets: int = 5,
+    brand_colors: Optional[str] = None,
+    generate_images: bool = False
+):
+    """
+    Generate varied luxury ad asset specifications with unique creative directions.
+
+    Each asset varies:
+    - backgroundTone: Visually attractive, brand-aligned
+    - surfaceType: Creative but not distracting (marble, linen, satin, etc.)
+    - accentProp: Luxurious and elegant (flowers, ribbon, crystal, etc.)
+    - lighting: Varies by mood and format
+    - cameraAngle: Changes perspective and storytelling
+    - overlayText: Short, attractive copy (CTA, launch offer, etc.)
+
+    Returns structured JSON with all asset specifications.
+    """
+    try:
+        agent = MediaGeneratorAgent()
+
+        # Parse brand colors if provided
+        colors = None
+        if brand_colors:
+            colors = [c.strip() for c in brand_colors.split(",")]
+
+        if generate_images:
+            # Generate with actual images (async)
+            result = await agent.generate_luxury_ad_assets(
+                product_name=product_name,
+                product_description=product_description,
+                num_assets=num_assets,
+                brand_colors=colors,
+                generate_images=True
+            )
+        else:
+            # Just generate specifications (sync)
+            asset_specs = agent.generate_luxury_asset_prompts(
+                product_name=product_name,
+                product_description=product_description,
+                num_assets=num_assets,
+                brand_colors=colors
+            )
+            result = {
+                "product": {
+                    "name": product_name,
+                    "description": product_description
+                },
+                "brand_colors": colors,
+                "total_assets": num_assets,
+                "assets": asset_specs
+            }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to generate luxury assets: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate luxury assets: {str(e)}"
         )

@@ -1,27 +1,39 @@
 # creative_angles_agent.py - AI Agent for Creative Angles Generation
+"""Uses OpenRouter API via ChatOpenRouter adapter for AI generation."""
 
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, MarketResearch, CreativeAngle
 
+# Import OpenRouter adapter (with fallback to ChatOpenAI)
+try:
+    from modules.openrouter.langchain_adapter import ChatOpenRouter
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    from langchain_openai import ChatOpenAI as ChatOpenRouter
+    OPENROUTER_AVAILABLE = False
+
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class CreativeAnglesAgent:
     """AI Agent for generating creative angles based on market research"""
 
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+        self.llm = ChatOpenRouter(
+            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.8  # Higher temperature for more creative outputs
         )
         self.embeddings = OpenAIEmbeddings()
+        logger.info(f"[CreativeAnglesAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 
         self.prompt = ChatPromptTemplate.from_template("""
 Based on the market research and campaign brief, generate {num_angles} creative angles:

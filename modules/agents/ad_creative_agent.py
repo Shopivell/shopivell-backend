@@ -3,27 +3,40 @@
 This agent takes creative angles and generates:
 1. Detailed image prompts for AI image generation
 2. Ad angles (descriptions) for the ad content
+
+Uses OpenRouter API via ChatOpenRouter adapter for AI generation.
 """
 
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# Import OpenRouter adapter (with fallback to ChatOpenAI)
+try:
+    from modules.openrouter.langchain_adapter import ChatOpenRouter
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    from langchain_openai import ChatOpenAI as ChatOpenRouter
+    OPENROUTER_AVAILABLE = False
+
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class AdCreativeAgent:
     """AI Agent for generating ad creatives with image prompts and ad angles"""
 
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+        # Use OpenRouter with gpt-4o model
+        self.llm = ChatOpenRouter(
+            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.7
         )
+        logger.info(f"[AdCreativeAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 
         # Prompt for generating image prompt and ad angle
         self.prompt = ChatPromptTemplate.from_template("""

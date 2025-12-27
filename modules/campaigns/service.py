@@ -1,6 +1,7 @@
 # modules/campaigns/service.py
 """
 Campaign service for URL scraping, ad generation, and campaign management.
+Uses OpenRouter API for AI-powered content generation.
 """
 import os
 import json
@@ -10,14 +11,30 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 from tavily import TavilyClient
-from openai import OpenAI
 from dotenv import load_dotenv
 import uuid
+import logging
 
 from .models import UrlCampaign, CampaignStatus, CampaignGoal, UrlAdSet, UrlAdContent
 from modules.ad_generator.service import AdGeneratorService
 from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
 from modules.agents.ad_creative_agent import AdCreativeAgent
+
+# Import OpenRouter for AI generation
+try:
+    from modules.openrouter import OpenRouterClient, OPENROUTER_API_KEY
+    OPENROUTER_AVAILABLE = bool(OPENROUTER_API_KEY)
+except ImportError:
+    OPENROUTER_AVAILABLE = False
+
+# Keep OpenAI as fallback
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 # Aliases for readability
 Campaign = UrlCampaign
@@ -30,19 +47,48 @@ load_dotenv()
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
+# Use OpenRouter by default
+USE_OPENROUTER = os.getenv("USE_OPENROUTER", "true").lower() == "true"
+
 
 class CampaignService:
     def __init__(self, db: Session):
         self.db = db
         self.tavily = TavilyClient(api_key=tavily_api_key) if tavily_api_key else None
-        self.openai = OpenAI(api_key=openai_api_key) if openai_api_key else None
+        self.openrouter = None
+        self.openai = None
+        self._init_ai_clients()
         self.ad_generator = AdGeneratorService()
         self.ad_creative_agent = AdCreativeAgent()
 
-    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None) -> Tuple[Campaign, Optional[str]]:
+    def _init_ai_clients(self):
+        """Initialize AI clients (OpenRouter preferred, OpenAI fallback)"""
+        # Try OpenRouter first
+        if USE_OPENROUTER and OPENROUTER_AVAILABLE:
+            try:
+                self.openrouter = OpenRouterClient()
+                logger.info("[CampaignService] OpenRouter client initialized")
+            except Exception as e:
+                logger.warning(f"[CampaignService] Failed to initialize OpenRouter: {e}")
+
+        # Initialize OpenAI as fallback
+        if OPENAI_AVAILABLE and openai_api_key:
+            try:
+                self.openai = OpenAI(api_key=openai_api_key)
+                logger.info("[CampaignService] OpenAI client initialized as fallback")
+            except Exception as e:
+                logger.warning(f"[CampaignService] Failed to initialize OpenAI: {e}")
+
+    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None) -> Tuple[Campaign, Optional[str]]:
         """
         Scrape a URL and create a campaign with the extracted data.
         Returns (campaign, error_message)
+
+        Args:
+            url: The URL to scrape
+            store_id: The store ID
+            campaign_name: Optional custom campaign name
+            asset_ids: Optional list of user-provided asset IDs to use in ad generation
         """
         try:
             # Create campaign in ANALYZING status
@@ -70,14 +116,19 @@ class CampaignService:
             campaign.scraped_data = scraped_data
             campaign.scraped_at = datetime.utcnow()
 
+            # Store user-provided asset IDs in scraped_data for later use
+            if asset_ids:
+                scraped_data["user_asset_ids"] = [str(aid) for aid in asset_ids]
+                campaign.scraped_data = scraped_data
+
             # Generate ad content
             ad_content = self._generate_ad_content(scraped_data, url)
             if ad_content:
                 campaign.generated_headlines = ad_content.get("headlines", [])
                 campaign.generated_descriptions = ad_content.get("descriptions", [])
 
-                # Create ad sets
-                self._create_ad_sets(campaign, ad_content)
+                # Create ad sets (will use user assets if available)
+                self._create_ad_sets(campaign, ad_content, asset_ids)
 
             campaign.status = CampaignStatus.READY
             self.db.commit()
@@ -94,7 +145,7 @@ class CampaignService:
             return None, str(e)
 
     def _scrape_website(self, url: str) -> Optional[Dict[str, Any]]:
-        """Scrape website content using Tavily."""
+        """Scrape website content using Tavily - extracts from multiple pages for complete picture."""
         if not self.tavily:
             return self._mock_scrape_data(url)
 
@@ -104,51 +155,87 @@ class CampaignService:
                 base_url = 'https://' + base_url
 
             domain = base_url.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
+            print(f"[Tavily] Scraping {domain} - extracting from multiple pages...")
 
-            # Extract main page and common pages
-            urls_to_extract = [base_url]
-            for page in ['/about', '/services', '/products', '/features']:
+            # Priority pages to extract (Tavily limit is 20 URLs)
+            # Ordered by importance for understanding the business
+            priority_pages = [
+                '',  # Homepage (most important)
+                '/about', '/about-us',
+                '/products', '/our-products',
+                '/services', '/our-services',
+                '/brands', '/our-brands',
+                '/our-companies',  # For holding companies
+                '/subsidiaries',
+                '/businesses',
+                '/divisions',
+                '/menu',  # For restaurants
+                '/food', '/restaurant',
+                '/shop', '/store',
+            ]
+
+            # Build URLs to extract (max 15 to stay under Tavily's 20 limit)
+            urls_to_extract = []
+            for page in priority_pages[:15]:
                 urls_to_extract.append(base_url + page)
 
             all_content = []
+            extracted_pages = []
 
-            # Try direct extraction
+            # Try direct extraction from multiple pages
             try:
+                print(f"[Tavily] Attempting to extract from {len(urls_to_extract)} URLs...")
                 extract_result = self.tavily.extract(urls=urls_to_extract)
                 if extract_result and extract_result.get("results"):
                     for result in extract_result["results"]:
                         content = result.get("raw_content", "")
-                        if content:
-                            all_content.append(content)
+                        page_url = result.get("url", "")
+                        if content and len(content) > 100:
+                            all_content.append(f"=== PAGE: {page_url} ===\n{content}")
+                            extracted_pages.append(page_url)
+                    print(f"[Tavily] Successfully extracted {len(extracted_pages)} pages")
             except Exception as e:
                 print(f"[Tavily] Extraction error: {e}")
 
-            # Fallback to search
-            if not all_content:
-                try:
+            # Always also do a search for products/services to get more context
+            try:
+                print(f"[Tavily] Searching for {domain} products and services...")
+                search_queries = [
+                    f"site:{domain} products services what we offer",
+                    f"{domain} company about products brands",
+                ]
+
+                for query in search_queries:
                     search_result = self.tavily.search(
-                        query=f"{domain} products services features",
+                        query=query,
                         search_depth="advanced",
                         include_raw_content=True,
-                        max_results=5,
-                        include_domains=[domain]
+                        max_results=5
                     )
                     for result in search_result.get("results", []):
                         content = result.get("raw_content") or result.get("content", "")
-                        if content and domain in result.get("url", ""):
-                            all_content.append(content)
-                except Exception as e:
-                    print(f"[Tavily] Search error: {e}")
+                        result_url = result.get("url", "")
+                        # Include results from the domain or about the domain
+                        if content and len(content) > 100:
+                            if domain in result_url or result_url not in extracted_pages:
+                                all_content.append(f"=== SEARCH RESULT: {result_url} ===\n{content}")
+                print(f"[Tavily] Search complete, total content sources: {len(all_content)}")
+            except Exception as e:
+                print(f"[Tavily] Search error: {e}")
 
             combined_content = "\n\n".join(all_content)
 
             if not combined_content:
+                print(f"[Tavily] No content found, using mock data")
                 return self._mock_scrape_data(url)
+
+            print(f"[Tavily] Scraping complete - {len(combined_content)} chars from {len(all_content)} sources")
 
             return {
                 "url": url,
                 "domain": domain,
-                "content": combined_content[:20000],  # Limit content
+                "content": combined_content[:25000],  # Increased limit for more context
+                "pages_extracted": len(all_content),
                 "extracted_at": datetime.utcnow().isoformat()
             }
 
@@ -157,45 +244,103 @@ class CampaignService:
             return self._mock_scrape_data(url)
 
     def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str) -> Optional[Dict[str, Any]]:
-        """Generate ad content using OpenAI."""
-        if not self.openai:
-            return self._mock_ad_content(url)
-
+        """Generate ad content using OpenRouter (preferred) or OpenAI."""
         content = scraped_data.get("content", "")
         domain = scraped_data.get("domain", "")
+        pages_extracted = scraped_data.get("pages_extracted", 1)
 
-        prompt = f"""You are an expert digital marketing specialist. Analyze this website content and generate ad campaign materials.
+        prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this website content and create compelling Facebook/Instagram ad campaigns.
+
+CRITICAL INSTRUCTIONS:
+1. FIRST, identify what this business ACTUALLY SELLS or OFFERS (products, services, brands)
+2. Look beyond corporate messaging - find the actual products, services, brands, menu items, offerings
+3. Focus on what customers would actually buy or use
+4. If this is a company with multiple brands (like a holding company), identify all the consumer-facing brands
+5. Generate ads that promote the actual products/services, NOT corporate values
 
 Website URL: {url}
 Domain: {domain}
+Pages Scraped: {pages_extracted}
 
-CONTENT:
-{content[:10000]}
+WEBSITE CONTENT (from multiple pages):
+{content[:15000]}
 
-Generate the following:
+STEP 1 - BUSINESS ANALYSIS:
+First, identify:
+- What does this business actually sell? (products, services, food, software, etc.)
+- What brands or product lines do they have?
+- Who are their customers?
+- What problems do they solve?
+
+STEP 2 - GENERATE AD CONTENT:
+Based on your analysis, generate:
 
 1. HEADLINES (5 different attention-grabbing headlines for ads, max 40 chars each)
+   - Focus on products/services, not corporate values
+   - Use action words and benefits
+
 2. DESCRIPTIONS (5 different ad descriptions, max 125 chars each)
+   - Highlight what customers can buy or experience
+   - Include a call to action
+
 3. AD_SETS (5 different audience segments with):
-   - name: Segment name (e.g., "Security Professionals")
-   - title: Ad set title
-   - audience_tags: List of 10-15 interest/behavior targeting tags
-   - primary_text: The main ad copy (50-100 words)
-   - features: List of 3-4 key selling points
+   - name: Segment name based on who would buy these products/services
+   - title: Ad set title featuring actual products/services
+   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to buyers
+   - primary_text: Compelling ad copy (50-100 words) promoting actual offerings
+   - features: List of 3-4 key benefits customers get
+   - hashtags: List of 5-8 relevant hashtags for social media (without # symbol)
+
+IMPORTANT: You MUST generate exactly 5 different ad sets targeting different audience segments.
 
 Return as JSON:
 {{
     "business_name": "...",
     "business_type": "...",
-    "headlines": ["...", "...", "...", "...", "..."],
-    "descriptions": ["...", "...", "...", "...", "..."],
+    "products_services": ["product1", "product2", "product3"],
+    "brands": ["brand1", "brand2"],
+    "headlines": ["headline1", "headline2", "headline3", "headline4", "headline5"],
+    "descriptions": ["desc1", "desc2", "desc3", "desc4", "desc5"],
     "ad_sets": [
         {{
-            "name": "...",
-            "title": "...",
-            "audience_tags": ["...", "..."],
-            "primary_text": "...",
-            "features": ["...", "...", "..."]
+            "name": "Audience Segment 1",
+            "title": "Ad Title for Segment 1",
+            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+            "primary_text": "Compelling ad copy for segment 1...",
+            "features": ["benefit1", "benefit2", "benefit3"],
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+        }},
+        {{
+            "name": "Audience Segment 2",
+            "title": "Ad Title for Segment 2",
+            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+            "primary_text": "Compelling ad copy for segment 2...",
+            "features": ["benefit1", "benefit2", "benefit3"],
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+        }},
+        {{
+            "name": "Audience Segment 3",
+            "title": "Ad Title for Segment 3",
+            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+            "primary_text": "Compelling ad copy for segment 3...",
+            "features": ["benefit1", "benefit2", "benefit3"],
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+        }},
+        {{
+            "name": "Audience Segment 4",
+            "title": "Ad Title for Segment 4",
+            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+            "primary_text": "Compelling ad copy for segment 4...",
+            "features": ["benefit1", "benefit2", "benefit3"],
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+        }},
+        {{
+            "name": "Audience Segment 5",
+            "title": "Ad Title for Segment 5",
+            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+            "primary_text": "Compelling ad copy for segment 5...",
+            "features": ["benefit1", "benefit2", "benefit3"],
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
         }}
     ]
 }}
@@ -203,7 +348,59 @@ Return as JSON:
 Return ONLY valid JSON, no markdown.
 """
 
+        # Try OpenRouter first
+        if self.openrouter:
+            result = self._generate_with_openrouter(prompt)
+            if result:
+                return result
+            logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
+
+        # Fall back to OpenAI
+        if self.openai:
+            result = self._generate_with_openai(prompt)
+            if result:
+                return result
+
+        # Final fallback to mock data
+        logger.warning("[CampaignService] No AI client available, using mock data")
+        return self._mock_ad_content(url)
+
+    def _generate_with_openrouter(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Generate content using OpenRouter API."""
         try:
+            logger.info("[CampaignService] Generating ad content with OpenRouter...")
+
+            # Use synchronous version for compatibility
+            result = self.openrouter.chat_completion_sync(
+                messages=[
+                    {"role": "system", "content": "You are a digital marketing expert. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=4000,  # Increased for complex companies with many brands
+                response_format={"type": "json_object"}
+            )
+
+            result_text = result['choices'][0]['message']['content'].strip()
+
+            # Clean markdown if present
+            if result_text.startswith("```"):
+                result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+                result_text = re.sub(r'\n?```$', '', result_text)
+
+            parsed = json.loads(result_text)
+            logger.info("[CampaignService] OpenRouter generated ad content successfully")
+            return parsed
+
+        except Exception as e:
+            logger.error(f"[CampaignService] OpenRouter generation error: {e}")
+            return None
+
+    def _generate_with_openai(self, prompt: str) -> Optional[Dict[str, Any]]:
+        """Generate content using OpenAI API (fallback)."""
+        try:
+            logger.info("[CampaignService] Generating ad content with OpenAI...")
+
             response = self.openai.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -211,7 +408,7 @@ Return ONLY valid JSON, no markdown.
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=3000
+                max_tokens=4000  # Increased for complex companies with many brands
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -221,19 +418,32 @@ Return ONLY valid JSON, no markdown.
                 result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
                 result_text = re.sub(r'\n?```$', '', result_text)
 
-            return json.loads(result_text)
+            parsed = json.loads(result_text)
+            logger.info("[CampaignService] OpenAI generated ad content successfully")
+            return parsed
 
         except Exception as e:
-            print(f"[AI] Generation error: {e}")
-            return self._mock_ad_content(url)
+            logger.error(f"[CampaignService] OpenAI generation error: {e}")
+            return None
 
-    def _create_ad_sets(self, campaign: Campaign, ad_content: Dict[str, Any]):
-        """Create ad sets from generated content with AI-generated images using Ad Creative Agent."""
+    def _create_ad_sets(self, campaign: Campaign, ad_content: Dict[str, Any], asset_ids: Optional[List[uuid.UUID]] = None):
+        """Create ad sets from generated content with AI-generated images using Ad Creative Agent.
+
+        If user provides assets via asset_ids, those will be used instead of generating AI images.
+        """
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
         # Different styles for variety
         styles = [AdStyle.MODERN, AdStyle.VIBRANT, AdStyle.PROFESSIONAL, AdStyle.ELEGANT, AdStyle.BOLD]
+
+        # Fetch user-provided assets if available
+        user_assets = []
+        if asset_ids:
+            from modules.assets.models import Asset as AssetModel
+            user_assets = self.db.query(AssetModel).filter(AssetModel.id.in_(asset_ids)).all()
+            if user_assets:
+                logger.info(f"[CampaignService] Using {len(user_assets)} user-provided assets for ad sets")
 
         for i, ad_set_data in enumerate(ad_sets_data[:5]):
             ad_set = AdSet(
@@ -241,6 +451,7 @@ Return ONLY valid JSON, no markdown.
                 name=ad_set_data.get("name", f"Ad Set {i+1}"),
                 title=ad_set_data.get("title", ""),
                 audience_tags=ad_set_data.get("audience_tags", []),
+                hashtags=ad_set_data.get("hashtags", []),
                 daily_budget=campaign.daily_budget / max(len(ad_sets_data), 1),
                 is_selected=True
             )
@@ -257,6 +468,15 @@ Return ONLY valid JSON, no markdown.
             generated_image_base64 = None
             agent_ad_angle = None
             agent_headline = None
+            user_asset_url = None
+            user_asset_id = None
+
+            # Check if we have a user-provided asset for this ad set
+            if user_assets and i < len(user_assets):
+                user_asset = user_assets[i]
+                user_asset_url = user_asset.cloudinary_secure_url or user_asset.cloudinary_url
+                user_asset_id = user_asset.id
+                logger.info(f"[CampaignService] Using user asset {user_asset.id} for ad set {i+1}")
 
             try:
                 # Step 1: Use Ad Creative Agent to generate image prompt and ad angle
@@ -287,24 +507,27 @@ Return ONLY valid JSON, no markdown.
                     print(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
                     print(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
-                    # Step 2: Generate image using the agent's prompt
-                    ad_request = GenerateAdRequest(
-                        product_name=business_name,
-                        product_description=primary_text or description or f"{business_name} - {headline}",
-                        target_audience=ad_set_data.get("name", "General"),
-                        key_benefits=features[:3] if features else None,
-                        call_to_action=campaign.conversion_button or "Learn More",
-                        style=styles[i % len(styles)],
-                        format=AdFormat.SQUARE,
-                        platform=AdPlatform.FACEBOOK,
-                        include_text_overlay=True,
-                        agent_prompt=agent_image_prompt  # Use the agent's prompt
-                    )
+                    # Step 2: Generate image using the agent's prompt (only if no user asset)
+                    if not user_asset_url:
+                        ad_request = GenerateAdRequest(
+                            product_name=business_name,
+                            product_description=primary_text or description or f"{business_name} - {headline}",
+                            target_audience=ad_set_data.get("name", "General"),
+                            key_benefits=features[:3] if features else None,
+                            call_to_action=campaign.conversion_button or "Learn More",
+                            style=styles[i % len(styles)],
+                            format=AdFormat.SQUARE,
+                            platform=AdPlatform.FACEBOOK,
+                            include_text_overlay=True,
+                            agent_prompt=agent_image_prompt  # Use the agent's prompt
+                        )
 
-                    result = loop.run_until_complete(self.ad_generator.generate_ad(ad_request))
-                    if result.success and result.image_base64:
-                        generated_image_base64 = result.image_base64
-                        print(f"[AdGenerator] Generated image for ad set: {ad_set.name}")
+                        result = loop.run_until_complete(self.ad_generator.generate_ad(ad_request))
+                        if result.success and result.image_base64:
+                            generated_image_base64 = result.image_base64
+                            print(f"[AdGenerator] Generated image for ad set: {ad_set.name}")
+                    else:
+                        print(f"[AdGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
 
                 finally:
                     loop.close()
@@ -320,8 +543,10 @@ Return ONLY valid JSON, no markdown.
                 description=description,
                 call_to_action=campaign.conversion_button,
                 destination_url=campaign.source_url,
+                media_url=user_asset_url,  # Use user-provided asset URL if available
+                asset_id=user_asset_id,  # Link to user asset
                 is_primary=True,
-                generated_image_base64=generated_image_base64
+                generated_image_base64=generated_image_base64 if not user_asset_url else None  # Only use AI image if no user asset
             )
             self.db.add(ad_content_obj)
 

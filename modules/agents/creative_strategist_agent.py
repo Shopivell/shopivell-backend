@@ -1,16 +1,27 @@
 # creative_strategist_agent.py - AI Agent for Creative Strategy & Hook Generation
+"""Uses OpenRouter API via ChatOpenRouter adapter for AI generation."""
 
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, MarketResearch, CreativeAngle
 
+# Import OpenRouter adapter (with fallback to ChatOpenAI)
+try:
+    from modules.openrouter.langchain_adapter import ChatOpenRouter
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    from langchain_openai import ChatOpenAI as ChatOpenRouter
+    OPENROUTER_AVAILABLE = False
+
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 # Hook Types for Meta Ads
@@ -80,11 +91,12 @@ class CreativeStrategistAgent:
     """
 
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+        self.llm = ChatOpenRouter(
+            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else os.getenv("OPENAI_MODEL", "gpt-4o"),
             temperature=0.8
         )
         self.embeddings = OpenAIEmbeddings()
+        logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 
         self.audience_analysis_prompt = ChatPromptTemplate.from_template("""
 You are an expert marketing strategist specializing in Meta (Facebook/Instagram) advertising.

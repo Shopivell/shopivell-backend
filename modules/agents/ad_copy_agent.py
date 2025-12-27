@@ -1,26 +1,37 @@
 # ad_copy_agent.py - AI Agent for Ad Copy Generation
+"""Uses OpenRouter API via ChatOpenRouter adapter for AI generation."""
 
 import os
 import json
+import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, CreativeAngle, AdCopy
 
+# Import OpenRouter adapter (with fallback to ChatOpenAI)
+try:
+    from modules.openrouter.langchain_adapter import ChatOpenRouter
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    from langchain_openai import ChatOpenAI as ChatOpenRouter
+    OPENROUTER_AVAILABLE = False
+
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class AdCopyAgent:
     """AI Agent for generating ad copy based on creative angles"""
 
     def __init__(self):
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
+        self.llm = ChatOpenRouter(
+            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.9  # Higher temperature for more creative outputs
         )
+        logger.info(f"[AdCopyAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 
         self.prompt = ChatPromptTemplate.from_template("""
 Generate Facebook/Instagram ad copy for the given creative angle.

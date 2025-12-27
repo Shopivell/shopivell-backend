@@ -8,34 +8,62 @@ from .schemas import (
     GenerateAdRequest, GenerateAdResponse, AdStyle, AdFormat, AdPlatform
 )
 
+# Import OpenRouter integration
+try:
+    from modules.openrouter import (
+        OpenRouterClient,
+        LUXURY_CREATIVE_GUIDELINES,
+        FACEBOOK_AD_TYPES,
+        OPENROUTER_API_KEY
+    )
+    OPENROUTER_AVAILABLE = bool(OPENROUTER_API_KEY)
+except ImportError:
+    OPENROUTER_AVAILABLE = False
+    LUXURY_CREATIVE_GUIDELINES = {}
+    FACEBOOK_AD_TYPES = {}
+
 logger = logging.getLogger(__name__)
 
 # Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Use OpenRouter by default if available
+USE_OPENROUTER = os.getenv("USE_OPENROUTER", "true").lower() == "true"
+
 
 class AdGeneratorService:
-    """Service for generating ads using Google Gemini API"""
+    """Service for generating ads using OpenRouter or Google Gemini API"""
 
     def __init__(self):
         self.client = None
-        self._init_gemini()
+        self.openrouter_client = None
+        self._init_clients()
 
-    def _init_gemini(self):
-        """Initialize the Gemini client"""
+    def _init_clients(self):
+        """Initialize AI clients (OpenRouter preferred, Gemini fallback)"""
+        # Try OpenRouter first
+        if USE_OPENROUTER and OPENROUTER_AVAILABLE:
+            try:
+                self.openrouter_client = OpenRouterClient()
+                logger.info("[AdGenerator] OpenRouter client initialized successfully")
+            except Exception as e:
+                logger.warning(f"[AdGenerator] Failed to initialize OpenRouter: {e}")
+                self.openrouter_client = None
+
+        # Initialize Gemini as fallback
         try:
             if not GEMINI_API_KEY:
-                logger.warning("GEMINI_API_KEY not configured")
+                logger.warning("[AdGenerator] GEMINI_API_KEY not configured")
                 return
 
             from google import genai
             self.client = genai.Client(api_key=GEMINI_API_KEY)
-            logger.info("Gemini client initialized successfully")
+            logger.info("[AdGenerator] Gemini client initialized successfully")
         except ImportError:
-            logger.warning("google-genai library not installed. Run: pip install google-genai")
+            logger.warning("[AdGenerator] google-genai library not installed")
             self.client = None
         except Exception as e:
-            logger.error(f"Failed to initialize Gemini client: {str(e)}")
+            logger.error(f"[AdGenerator] Failed to initialize Gemini client: {str(e)}")
             self.client = None
 
     def _build_ad_prompt(self, request: GenerateAdRequest) -> str:
@@ -92,6 +120,19 @@ class AdGeneratorService:
         if request.custom_prompt:
             prompt_parts.append(f"\nAdditional instructions: {request.custom_prompt}")
 
+        # Add luxury creative guidelines if available
+        if LUXURY_CREATIVE_GUIDELINES:
+            prompt_parts.extend([
+                "\n\nLUXURY AD CREATIVE GUIDELINES:",
+                f"- Background: {LUXURY_CREATIVE_GUIDELINES.get('backgroundTone', 'neutral backdrop')}",
+                f"- Surface: {LUXURY_CREATIVE_GUIDELINES.get('surfaceType', 'premium materials')}",
+                f"- Accent: {LUXURY_CREATIVE_GUIDELINES.get('accentProp', 'minimal luxury prop')}",
+                f"- Lighting: {LUXURY_CREATIVE_GUIDELINES.get('lighting', 'soft diffused light')}",
+                f"- Composition: {LUXURY_CREATIVE_GUIDELINES.get('composition', 'asymmetrical with breathing room')}",
+                f"- Colors: {', '.join(LUXURY_CREATIVE_GUIDELINES.get('colorPalette', ['champagne', 'ivory']))}",
+                f"- Texture: {LUXURY_CREATIVE_GUIDELINES.get('textureEmphasis', 'tactile quality')}"
+            ])
+
         # Add quality instructions
         prompt_parts.extend([
             "\n\nIMPORTANT REQUIREMENTS:",
@@ -99,7 +140,8 @@ class AdGeneratorService:
             "- Clean composition with clear focal point",
             "- Suitable for commercial advertising",
             "- Visually appealing and attention-grabbing",
-            "- No watermarks or stock photo indicators"
+            "- No watermarks or stock photo indicators",
+            "- Premium, sophisticated aesthetic"
         ])
 
         return "".join(prompt_parts)
@@ -123,26 +165,111 @@ class AdGeneratorService:
         return "\n".join(copy_parts)
 
     async def generate_ad(self, request: GenerateAdRequest) -> GenerateAdResponse:
+        """Generate an ad image using OpenRouter (preferred) or Gemini API"""
+        # Use agent prompt if provided, otherwise build our own
+        if request.agent_prompt:
+            prompt = request.agent_prompt
+            logger.info("[AdGenerator] Using agent-generated prompt for image creation")
+        else:
+            prompt = self._build_ad_prompt(request)
+
+        logger.info(f"[AdGenerator] Generating ad with prompt: {prompt[:200]}...")
+
+        # Try OpenRouter first if available
+        if self.openrouter_client:
+            result = await self._generate_with_openrouter(request, prompt)
+            if result.success:
+                return result
+            logger.warning("[AdGenerator] OpenRouter failed, trying Gemini fallback")
+
+        # Fall back to Gemini
+        if self.client:
+            result = await self._generate_with_gemini(request, prompt)
+            if result.success:
+                return result
+
+        # Final fallback to simulated generation
+        logger.info("[AdGenerator] No AI client available, returning simulated response")
+        return self._simulate_ad_generation(request)
+
+    async def _generate_with_openrouter(self, request: GenerateAdRequest, prompt: str) -> GenerateAdResponse:
+        """Generate an ad image using OpenRouter API"""
+        try:
+            logger.info("[AdGenerator] Generating with OpenRouter...")
+
+            # Generate using OpenRouter
+            result = await self.openrouter_client.generate_image(
+                prompt=prompt,
+                apply_luxury_guidelines=True
+            )
+
+            # Extract content from response
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+            # Try to extract base64 image from response
+            image_base64 = self._extract_image_from_openrouter_response(content)
+
+            if image_base64:
+                return GenerateAdResponse(
+                    success=True,
+                    image_base64=image_base64,
+                    ad_copy=self._build_ad_copy(request),
+                    prompt_used=prompt,
+                    format=request.format.value
+                )
+
+            # If no image, generate ad copy instead
+            ad_copy_result = await self.openrouter_client.generate_ad_copy(
+                product_info={
+                    "product_name": request.product_name,
+                    "description": request.product_description,
+                    "target_audience": request.target_audience or "General audience",
+                    "benefits": request.key_benefits or []
+                },
+                ad_type="facebook-ad"
+            )
+
+            return GenerateAdResponse(
+                success=True,
+                image_base64=None,
+                ad_copy=ad_copy_result.get('primary_text', self._build_ad_copy(request)),
+                prompt_used=prompt,
+                format=request.format.value
+            )
+
+        except Exception as e:
+            logger.error(f"[AdGenerator] OpenRouter error: {str(e)}", exc_info=True)
+            return GenerateAdResponse(
+                success=False,
+                error=str(e),
+                format=request.format.value
+            )
+
+    def _extract_image_from_openrouter_response(self, content: Any) -> Optional[str]:
+        """Extract base64 image data from OpenRouter response"""
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and 'image' in item:
+                    return item['image'].get('data')
+        elif isinstance(content, str):
+            # Check if it's a data URL
+            if content.startswith('data:image'):
+                return content.split(',')[1] if ',' in content else None
+            # Check if it looks like base64
+            if len(content) > 100 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in content[:100]):
+                return content
+        return None
+
+    async def _generate_with_gemini(self, request: GenerateAdRequest, prompt: str) -> GenerateAdResponse:
         """Generate an ad image using Gemini API"""
         try:
-            if not self.client:
-                # Return a simulated response for testing
-                logger.info("Gemini client not available, returning simulated response")
-                return self._simulate_ad_generation(request)
-
-            # Use agent prompt if provided, otherwise build our own
-            if request.agent_prompt:
-                prompt = request.agent_prompt
-                logger.info("Using agent-generated prompt for image creation")
-            else:
-                prompt = self._build_ad_prompt(request)
-            logger.info(f"Generating ad with prompt: {prompt[:200]}...")
+            logger.info("[AdGenerator] Generating with Gemini...")
 
             # Generate the image using Gemini
             from google.genai import types
 
             response = self.client.models.generate_content(
-                model="gemini-2.0-flash-exp",  # Using the experimental model with image generation
+                model="gemini-2.0-flash-exp",
                 contents=[prompt],
                 config=types.GenerateContentConfig(
                     response_modalities=["TEXT", "IMAGE"]
@@ -157,7 +284,6 @@ class AdGeneratorService:
                 if hasattr(part, 'text') and part.text is not None:
                     generated_text = part.text
                 elif hasattr(part, 'inline_data') and part.inline_data is not None:
-                    # Get the image data
                     image_data = part.inline_data.data
                     image_base64 = base64.b64encode(image_data).decode('utf-8')
 
@@ -170,18 +296,16 @@ class AdGeneratorService:
                     format=request.format.value
                 )
             else:
-                # If no image was generated, try with a different approach
-                logger.warning("No image generated, trying alternative method")
+                # Try with Imagen model
+                logger.warning("[AdGenerator] No image from Gemini, trying Imagen")
                 return await self._generate_with_imagen(request, prompt)
 
         except Exception as e:
             error_str = str(e)
-            logger.error(f"Error generating ad: {error_str}", exc_info=True)
+            logger.error(f"[AdGenerator] Gemini error: {error_str}", exc_info=True)
 
-            # Fall back to simulated generation on API errors (rate limits, quota, etc.)
             if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
-                logger.info("API quota exhausted, falling back to simulated generation")
-                return self._simulate_ad_generation(request)
+                logger.info("[AdGenerator] API quota exhausted")
 
             return GenerateAdResponse(
                 success=False,

@@ -76,7 +76,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         name = user_info.get('name', '')
         profile_picture = user_info.get('picture', '')
         
-        print(f"🔍 Extracted from Google - ID: {google_id}, Email: {email}, Name: '{name}', Picture: '{profile_picture}'")
+        print(f"[INFO] Extracted from Google - ID: {google_id}, Email: {email}, Name: '{name}', Picture: '{profile_picture}'")
         
         # Check if user already exists by email or google_id
         user = db.query(User).filter(
@@ -84,9 +84,9 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         ).first()
         
         if user:
-            print(f"✅ Found existing user: {user.email}, Current name: '{user.name}'")
+            print(f"[OK] Found existing user: {user.email}, Current name: '{user.name}'")
         else:
-            print(f"🆕 Creating new user for: {email}")
+            print(f"[NEW] Creating new user for: {email}")
         
         if not user:
             # Create new user with Google data
@@ -106,7 +106,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             print(f"[OK] New user created: {user.email}")
         else:
             # FIX: Update existing user with Google data - always update name and profile if available
-            print(f"🔄 Checking updates for existing user: {user.email}")
+            print(f"[UPDATE] Checking updates for existing user: {user.email}")
             updates = {}
             
             # Always update google_id if it's not set or different
@@ -130,12 +130,12 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
                 updates['is_verified'] = True
             
             if updates:
-                print(f"📝 Applying updates: {updates}")
+                print(f"[UPDATE] Applying updates: {updates}")
                 db.commit()
                 db.refresh(user)
-                print(f"✅ User updated in database")
+                print(f"[OK] User updated in database")
             else:
-                print(f"✅ No updates needed")
+                print(f"[OK] No updates needed")
         
         # VERIFY: Query the user again to confirm what's in DB
         verified_user = db.query(User).filter(User.id == user.id).first()
@@ -221,7 +221,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             "updated_at": verified_user.updated_at.isoformat() if verified_user.updated_at else None
         }
         
-        print(f"🔍 Final user data being sent: {user_dict}")
+        print(f"[INFO] Final user data being sent: {user_dict}")
         
         # Create response - ensure all UUIDs are converted to strings
         response_data = {
@@ -241,12 +241,12 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         }
 
         print(f"[OK] Google auth completed successfully for: {verified_user.email}")
-        print(f"📤 Response data: {response_data}")
+        print(f"[RESPONSE] Response data: {response_data}")
         
         return LoginResponse(**response_data)
         
     except Exception as e:
-        print(f"❌ Google authentication error: {str(e)}")
+        print(f"[ERROR] Google authentication error: {str(e)}")
         print(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -376,6 +376,15 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
             user_status = "no_store"
             redirect_to = "/setup/start"
 
+        # Generate proper JWT tokens
+        tokens = jwt_auth.create_tokens(
+            user_id=str(user.id),
+            email=user.email,
+            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            store_id=str(store.id) if store else None,
+            agency_id=str(agency_id) if agency_id else None
+        )
+
         return LoginResponse(
             user=user,
             store_id=store.id if store else None,
@@ -387,33 +396,8 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
             has_store=has_store,
             user_status=user_status,
             redirect_to=redirect_to,
-            # Generate proper JWT tokens
-            tokens = jwt_auth.create_tokens(
-                user_id=str(user.id),
-                email=user.email,
-                role=user.role.value if hasattr(user.role, 'value') else user.role,
-                store_id=str(store.id) if store else None,
-                agency_id=str(agency_id) if agency_id else None
-            )
-            
-            return LoginResponse(
-                user=user,
-                store_id=store.id if store else None,
-                agency_id=agency_id if agency_id else None,
-                has_active_setup_session=has_active_session,
-                setup_session_id=setup_session.id if setup_session else None,
-                setup_progress=setup_session.setup_progress if setup_session else 0,
-                current_setup_step=setup_session.current_step.value if setup_session else None,
-                has_store=has_store,
-                user_status=user_status,
-                redirect_to=redirect_to,
-                access_token=tokens.access_token,
-                refresh_token=tokens.refresh_token,
-                token_type="bearer"
-            )
-
-# Removed duplicate return statement - this function now properly returns above
-            # access_token="jwt_token_here",
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
             token_type="bearer"
         )
         

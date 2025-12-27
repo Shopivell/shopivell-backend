@@ -42,6 +42,7 @@ class AdSetBase(BaseModel):
     age_range: Optional[Dict[str, int]] = None
     gender: Optional[str] = None
     audience_tags: List[str] = []
+    hashtags: List[str] = []
     daily_budget: Optional[float] = None
 
 
@@ -135,6 +136,7 @@ class ScrapeUrlRequest(BaseModel):
     url: str
     store_id: uuid.UUID
     campaign_name: Optional[str] = None
+    asset_ids: Optional[List[uuid.UUID]] = None  # User-provided assets to help AI agents
 
 
 class ScrapeUrlResponse(BaseModel):

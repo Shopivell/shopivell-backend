@@ -14,10 +14,11 @@ import asyncio
 
 from database import get_db
 from .models import (
-    MetaAdAccount, MetaCampaign, MetaAdSet, MetaAd, 
+    MetaAdAccount, MetaCampaign, MetaAdSet, MetaAd,
     MetaAdCreative, MetaExperiment, MetaAutomatedRule, MetaAdInsight,
 )
 from modules.business.models import FacebookBusinessAccount
+from modules.campaigns.models import UrlCampaign, CampaignStatus as UrlCampaignStatus
 from .schemas import (
     MetaAdAccountCreate, MetaAdAccountUpdate, MetaAdAccountResponse, MetaAdAccountListResponse,
     MetaCampaignCreate, MetaCampaignUpdate, MetaCampaignResponse, MetaCampaignListResponse,
@@ -2594,15 +2595,48 @@ def get_ads_from_library(
 @marketing_router.get("/drafts", response_model=DraftListResponse)
 def list_all_drafts(
     ad_account_id: Optional[uuid.UUID] = None,
-    draft_type: Optional[str] = Query(None, description="Filter by type: campaign, adset, ad"),
+    draft_type: Optional[str] = Query(None, description="Filter by type: campaign, adset, ad, url_campaign"),
     skip: int = 0,
     limit: int = 50,
     db: Session = Depends(get_db)
 ):
-    """List all drafts (campaigns, ad sets, and ads)"""
+    """List all drafts (campaigns, ad sets, ads, and URL campaigns)"""
     drafts = []
 
-    # Get draft campaigns
+    # Get URL campaigns that are not published (DRAFT, ANALYZING, READY status)
+    if draft_type is None or draft_type == "campaign" or draft_type == "url_campaign":
+        url_campaign_query = db.query(UrlCampaign).filter(
+            UrlCampaign.status.in_([
+                UrlCampaignStatus.DRAFT,
+                UrlCampaignStatus.ANALYZING,
+                UrlCampaignStatus.READY
+            ])
+        )
+
+        for url_campaign in url_campaign_query.all():
+            # Build draft_data with campaign details for resuming
+            draft_data = {
+                "source_url": url_campaign.source_url,
+                "scraped_data": url_campaign.scraped_data,
+                "goal": url_campaign.goal.value if url_campaign.goal else None,
+                "daily_budget": url_campaign.daily_budget,
+                "countries": url_campaign.countries,
+                "ad_sets_count": len(url_campaign.ad_sets) if url_campaign.ad_sets else 0
+            }
+
+            drafts.append(DraftItem(
+                id=url_campaign.id,
+                type="campaign",
+                name=url_campaign.name,
+                status=url_campaign.status.value.upper() if url_campaign.status else "DRAFT",
+                notes=f"URL: {url_campaign.source_url}" if url_campaign.source_url else None,
+                draft_data=draft_data,
+                created_at=url_campaign.created_at,
+                updated_at=url_campaign.updated_at,
+                ad_account_id=None
+            ))
+
+    # Get Meta draft campaigns
     if draft_type is None or draft_type == "campaign":
         campaign_query = db.query(MetaCampaign).filter(MetaCampaign.is_draft == True)
         if ad_account_id:
