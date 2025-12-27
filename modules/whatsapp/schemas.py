@@ -19,6 +19,7 @@ class WhatsAppAccountBase(BaseModel):
 
 class WhatsAppAccountCreate(WhatsAppAccountBase):
     business_account_id: uuid.UUID
+    store_id: Optional[uuid.UUID] = None
     permanent_access_token: Optional[str] = None
     webhook_url: Optional[str] = None
     webhook_verify_token: Optional[str] = None
@@ -30,12 +31,14 @@ class WhatsAppAccountUpdate(BaseModel):
     is_enabled: Optional[bool] = None
     is_default: Optional[bool] = None
     permanent_access_token: Optional[str] = None
+    store_id: Optional[uuid.UUID] = None
 
 class WhatsAppAccountResponse(WhatsAppAccountBase):
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: uuid.UUID
     business_account_id: uuid.UUID
+    store_id: Optional[uuid.UUID] = None
     quality_rating: Optional[str] = None
     created_at: datetime
     updated_at: datetime

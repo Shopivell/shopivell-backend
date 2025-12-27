@@ -24,7 +24,11 @@ class WhatsAppAccount(Base):
     webhook_url = Column(Text, nullable=True)
     webhook_verify_token = Column(String(255), nullable=True)
     permanent_access_token = Column(Text, nullable=True)
-    
+
+    # Store association for multi-store support
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True)
+    store = relationship("Store")
+
     # --- NEW FIELDS FOR CONVERSIONS API ---
     capi_dataset_id = Column(String(50), nullable=True, comment="Meta Conversions API Dataset ID (Pixel ID)")
     capi_access_token = Column(Text, nullable=True, comment="Meta CAPI Access Token - STORE ENCRYPTED IN PRODUCTION")

@@ -31,6 +31,10 @@ CLOUDINARY_CONFIGURED = (
     CLOUDINARY_API_KEY != "your_api_key"
 )
 
+print(f"[AssetService] Cloudinary configured: {CLOUDINARY_CONFIGURED}")
+if not CLOUDINARY_CONFIGURED:
+    print(f"[AssetService] Cloudinary env vars - Cloud: {bool(CLOUDINARY_CLOUD_NAME)}, Key: {bool(CLOUDINARY_API_KEY)}, Secret: {bool(CLOUDINARY_API_SECRET)}")
+
 if CLOUDINARY_CONFIGURED:
     # Initialize Cloudinary
     cloudinary.config(

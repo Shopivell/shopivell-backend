@@ -335,17 +335,33 @@ def get_whatsapp_accounts(
         total_count=total_count
     )
 
+@whatsapp_router.get("/store/{store_id}/accounts", response_model=WhatsAppAccountsListResponse)
+def get_store_whatsapp_accounts(
+    store_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Get all WhatsApp accounts for a specific store"""
+    accounts = db.query(WhatsAppAccount).filter(
+        WhatsAppAccount.store_id == store_id,
+        WhatsAppAccount.is_enabled == True
+    ).all()
+
+    return WhatsAppAccountsListResponse(
+        accounts=[WhatsAppAccountResponse.model_validate(acc) for acc in accounts],
+        total_count=len(accounts)
+    )
+
 @whatsapp_router.get("/accounts/{account_id}", response_model=WhatsAppAccountResponse)
 def get_whatsapp_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
     """Get a specific WhatsApp account"""
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
-    
+
     if not account:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="WhatsApp account not found"
         )
-    
+
     return WhatsAppAccountResponse.model_validate(account)
 
 @whatsapp_router.put("/accounts/{account_id}", response_model=WhatsAppAccountResponse)

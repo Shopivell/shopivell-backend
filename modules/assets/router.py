@@ -24,17 +24,24 @@ async def upload_asset(
     db: Session = Depends(get_db)
 ):
     """Upload an image or video asset to Cloudinary."""
+    print(f"[Asset Upload] Received file: {file.filename}, store_id: {store_id}, name: {name}")
+
     # Validate file type
     content_type = file.content_type or ""
+    print(f"[Asset Upload] Content type: {content_type}")
+
     if content_type.startswith("image/"):
         file_type = AssetType.IMAGE
     elif content_type.startswith("video/"):
         file_type = AssetType.VIDEO
     else:
+        print(f"[Asset Upload] Unsupported file type: {content_type}")
         raise HTTPException(status_code=400, detail="Unsupported file type. Only images and videos are allowed.")
 
     # Read file data
     file_data = await file.read()
+    print(f"[Asset Upload] File size: {len(file_data)} bytes")
+
     if len(file_data) > 50 * 1024 * 1024:  # 50MB limit
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
 
@@ -50,8 +57,10 @@ async def upload_asset(
     )
 
     if error:
+        print(f"[Asset Upload] Error: {error}")
         raise HTTPException(status_code=500, detail=error)
 
+    print(f"[Asset Upload] Success! Asset ID: {asset.id}, URL: {asset.cloudinary_secure_url}")
     return AssetResponse.model_validate(asset)
 
 
