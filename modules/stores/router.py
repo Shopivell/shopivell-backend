@@ -44,15 +44,15 @@ async def start_store_setup(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
-        # Check if user already has a store
+
+        # Check if user already has a COMPLETED store
         existing_store = db.query(Store).filter(Store.owner_id == user_id).first()
-        if existing_store:
+        if existing_store and existing_store.is_setup_completed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already has a store"
+                detail="User already has a completed store"
             )
-        
+
         # Check for existing active session - OVERWRITE IT
         existing_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user_id,
@@ -334,7 +334,7 @@ async def get_or_create_setup_session(
     """Get existing active session or create new one"""
     try:
         user_id = start_data.user_id
-        
+
         # Verify user exists
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -342,15 +342,15 @@ async def get_or_create_setup_session(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
-        # Check if user already has a store
+
+        # Check if user already has a COMPLETED store
         existing_store = db.query(Store).filter(Store.owner_id == user_id).first()
-        if existing_store:
+        if existing_store and existing_store.is_setup_completed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already has a store"
+                detail="User already has a completed store"
             )
-        
+
         # Try to get existing active session
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user_id,
@@ -390,7 +390,7 @@ async def force_restart_setup(
     """Force restart store setup - deactivates all existing sessions"""
     try:
         user_id = start_data.user_id
-        
+
         # Verify user exists
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -398,15 +398,15 @@ async def force_restart_setup(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
-        # Check if user already has a store
+
+        # Check if user already has a COMPLETED store
         existing_store = db.query(Store).filter(Store.owner_id == user_id).first()
-        if existing_store:
+        if existing_store and existing_store.is_setup_completed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already has a store"
+                detail="User already has a completed store"
             )
-        
+
         # Deactivate ALL existing sessions for this user
         existing_sessions = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user_id,
