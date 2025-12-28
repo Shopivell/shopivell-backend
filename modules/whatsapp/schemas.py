@@ -244,8 +244,9 @@ class ConversionsAPISettingsUpdate(BaseModel):
     )
 
 class ChatRequest(BaseModel):
-    user_id: str  # Use this to keep track of different "conversations"
+    user_id: str  # Phone number to track conversations
     question: str
+    store_id: UUID  # Required for multi-tenant bot
 
 class KnowledgeResponse(BaseModel):
     """Response for knowledge creation"""
@@ -261,10 +262,7 @@ class KnowledgeResponse(BaseModel):
 class KnowledgeCreateRequest(BaseModel):
     """Schema for creating knowledge entries"""
     content: str = Field(..., min_length=10, description="Knowledge content")
-    store_id: UUID = Field(
-        default=UUID("36689cad-4b73-4fea-802b-d3a4fbfa23ec"),
-        description="Store ID (defaults to SecureSights)"
-    )
+    store_id: UUID = Field(..., description="Store ID - required for multi-tenant support")
 
 
 # Bulk Messaging Schemas
@@ -315,3 +313,476 @@ class BulkMessageResponse(BaseModel):
     failed: int
     results: List[BulkMessageResult]
     message: str
+
+
+# =============================================================================
+# FAQ Schemas
+# =============================================================================
+
+class FAQCategory(str, Enum):
+    """FAQ categories"""
+    GENERAL = "general"
+    SHIPPING = "shipping"
+    RETURNS = "returns"
+    PRICING = "pricing"
+    PAYMENT = "payment"
+    PRODUCTS = "products"
+    SERVICES = "services"
+    SUPPORT = "support"
+    OTHER = "other"
+
+
+class FAQBase(BaseModel):
+    """Base FAQ schema"""
+    question: str = Field(..., min_length=5, max_length=500, description="The question")
+    answer: str = Field(..., min_length=10, description="The answer to the question")
+    category: Optional[str] = Field(None, description="FAQ category")
+    is_active: bool = Field(True, description="Whether the FAQ is active")
+    is_featured: bool = Field(False, description="Whether to feature on website FAQ page")
+    display_order: int = Field(0, description="Display order for sorting")
+
+
+class FAQCreate(FAQBase):
+    """Schema for creating a FAQ"""
+    pass
+
+
+class FAQUpdate(BaseModel):
+    """Schema for updating a FAQ"""
+    question: Optional[str] = Field(None, min_length=5, max_length=500)
+    answer: Optional[str] = Field(None, min_length=10)
+    category: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_featured: Optional[bool] = None
+    display_order: Optional[int] = None
+
+
+class FAQResponse(FAQBase):
+    """Schema for FAQ response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    view_count: int = 0
+    helpful_count: int = 0
+    not_helpful_count: int = 0
+    knowledge_id: Optional[UUID] = None
+    last_synced_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FAQListResponse(BaseModel):
+    """Schema for paginated FAQ list"""
+    faqs: List[FAQResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class FAQFeedback(BaseModel):
+    """Schema for FAQ feedback (helpful/not helpful)"""
+    helpful: bool = Field(..., description="Whether the FAQ was helpful")
+
+
+# =============================================================================
+# Store Bot Config Schemas
+# =============================================================================
+
+class StoreBotConfigBase(BaseModel):
+    """Base schema for bot configuration"""
+    bot_name: str = Field("Sales Assistant", max_length=100)
+    bot_personality: Optional[str] = None
+    greeting_message: str = Field("Hello! Welcome to our store. How can I help you today?")
+    fallback_message: str = Field("I'll connect you with a team member who can help you better.")
+    handoff_message: str = Field("A team member will be with you shortly.")
+    temperature: float = Field(0.7, ge=0, le=1)
+    max_response_tokens: int = Field(500, ge=50, le=2000)
+    similarity_threshold: float = Field(0.4, ge=0, le=1)
+    hot_lead_threshold: int = Field(80, ge=0, le=100)
+    handoff_keywords: List[str] = Field(default=["speak to human", "talk to someone", "customer service", "manager"])
+    max_fallbacks_before_handoff: int = Field(3, ge=1, le=10)
+    notify_on_hot_lead: bool = True
+    notify_on_handoff: bool = True
+    notify_on_unanswered: bool = True
+    is_enabled: bool = True
+    auto_respond: bool = True
+
+
+class StoreBotConfigCreate(StoreBotConfigBase):
+    """Schema for creating bot configuration"""
+    pass
+
+
+class StoreBotConfigUpdate(BaseModel):
+    """Schema for updating bot configuration"""
+    bot_name: Optional[str] = None
+    bot_personality: Optional[str] = None
+    greeting_message: Optional[str] = None
+    fallback_message: Optional[str] = None
+    handoff_message: Optional[str] = None
+    temperature: Optional[float] = None
+    max_response_tokens: Optional[int] = None
+    similarity_threshold: Optional[float] = None
+    hot_lead_threshold: Optional[int] = None
+    handoff_keywords: Optional[List[str]] = None
+    max_fallbacks_before_handoff: Optional[int] = None
+    notify_on_hot_lead: Optional[bool] = None
+    notify_on_handoff: Optional[bool] = None
+    notify_on_unanswered: Optional[bool] = None
+    is_enabled: Optional[bool] = None
+    auto_respond: Optional[bool] = None
+
+
+class StoreBotConfigResponse(StoreBotConfigBase):
+    """Schema for bot configuration response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+# =============================================================================
+# Knowledge Base Schemas
+# =============================================================================
+
+class KnowledgeContentType(str, Enum):
+    """Knowledge content types"""
+    MANUAL = "manual"
+    PRODUCT = "product"
+    FAQ = "faq"
+    POLICY = "policy"
+
+
+class KnowledgeEntryBase(BaseModel):
+    """Base schema for knowledge entry"""
+    title: Optional[str] = Field(None, max_length=255)
+    content: str = Field(..., min_length=10)
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    priority: float = Field(1.0, ge=0, le=10)
+
+
+class KnowledgeEntryCreate(KnowledgeEntryBase):
+    """Schema for creating knowledge entry"""
+    content_type: str = Field("manual", description="Content type: manual, product, faq, policy")
+
+
+class KnowledgeEntryUpdate(BaseModel):
+    """Schema for updating knowledge entry"""
+    title: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    priority: Optional[float] = None
+    is_active: Optional[bool] = None
+
+
+class KnowledgeEntryResponse(KnowledgeEntryBase):
+    """Schema for knowledge entry response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    content_type: str
+    source_id: Optional[UUID] = None
+    is_active: bool
+    last_synced_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeListResponse(BaseModel):
+    """Schema for paginated knowledge list"""
+    entries: List[KnowledgeEntryResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class KnowledgeSearchResult(BaseModel):
+    """Schema for knowledge search result"""
+    id: UUID
+    title: Optional[str]
+    content: str
+    category: Optional[str]
+    content_type: str
+    similarity_score: float
+
+
+class KnowledgeSearchResponse(BaseModel):
+    """Schema for knowledge search response"""
+    query: str
+    results: List[KnowledgeSearchResult]
+    total_results: int
+
+
+# =============================================================================
+# CRM Task Schemas
+# =============================================================================
+
+class TaskType(str, Enum):
+    """Task types"""
+    FOLLOW_UP = "follow_up"
+    HANDOFF = "handoff"
+    CALLBACK = "callback"
+    MEETING = "meeting"
+    QUOTE = "quote"
+
+
+class TaskPriority(str, Enum):
+    """Task priorities"""
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
+class TaskStatus(str, Enum):
+    """Task statuses"""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class CRMTaskBase(BaseModel):
+    """Base schema for CRM task"""
+    title: str = Field(..., min_length=3, max_length=255)
+    description: Optional[str] = None
+    task_type: TaskType
+    priority: TaskPriority = TaskPriority.NORMAL
+    phone_number: Optional[str] = None
+    due_date: Optional[datetime] = None
+    context: Optional[Dict[str, Any]] = None
+
+
+class CRMTaskCreate(CRMTaskBase):
+    """Schema for creating CRM task"""
+    lead_id: Optional[UUID] = None
+    conversation_id: Optional[UUID] = None
+    assigned_to: Optional[UUID] = None
+
+
+class CRMTaskUpdate(BaseModel):
+    """Schema for updating CRM task"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[TaskPriority] = None
+    status: Optional[TaskStatus] = None
+    assigned_to: Optional[UUID] = None
+    due_date: Optional[datetime] = None
+    completion_notes: Optional[str] = None
+
+
+class CRMTaskResponse(CRMTaskBase):
+    """Schema for CRM task response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    status: TaskStatus
+    lead_id: Optional[UUID] = None
+    conversation_id: Optional[UUID] = None
+    assigned_to: Optional[UUID] = None
+    reminder_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    completed_by: Optional[UUID] = None
+    completion_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CRMTaskListResponse(BaseModel):
+    """Schema for paginated CRM task list"""
+    tasks: List[CRMTaskResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+# =============================================================================
+# Conversation Schemas
+# =============================================================================
+
+class ConversationStatus(str, Enum):
+    """Conversation statuses"""
+    ACTIVE = "active"
+    HANDOFF = "handoff"
+    CLOSED = "closed"
+
+
+class ConversationResponse(BaseModel):
+    """Schema for conversation response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    phone_number: str
+    customer_name: Optional[str] = None
+    conversation_summary: Optional[str] = None
+    topics_discussed: Optional[List[str]] = None
+    handoff_requested: bool
+    handoff_reason: Optional[str] = None
+    assigned_to: Optional[UUID] = None
+    total_messages: int
+    fallback_count: int
+    status: str
+    last_message_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationListResponse(BaseModel):
+    """Schema for paginated conversation list"""
+    conversations: List[ConversationResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class ConversationAssign(BaseModel):
+    """Schema for assigning conversation to user"""
+    assigned_to: UUID = Field(..., description="User ID to assign the conversation to")
+
+
+class ConversationMessageResponse(BaseModel):
+    """Schema for conversation message response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    conversation_id: UUID
+    role: str
+    content: str
+    intent_detected: Optional[str] = None
+    confidence_score: Optional[float] = None
+    fallback_triggered: bool
+    created_at: datetime
+
+
+# =============================================================================
+# Lead Schemas (Enhanced)
+# =============================================================================
+
+class LeadStatus(str, Enum):
+    """Lead statuses"""
+    NEW = "new"
+    ENGAGED = "engaged"
+    QUALIFIED = "qualified"
+    CONVERTED = "converted"
+    LOST = "lost"
+
+
+class LeadResponse(BaseModel):
+    """Schema for lead response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    whatsapp_account_id: UUID
+    phone_number: str
+    lead_score: float
+    lead_status: str
+    scoring_reason: Optional[str] = None
+    total_messages: int
+    last_message: Optional[str] = None
+    interests: Optional[List[str]] = None
+    conversion_sent: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LeadListResponse(BaseModel):
+    """Schema for paginated lead list"""
+    leads: List[LeadResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class LeadScoreUpdate(BaseModel):
+    """Schema for manually updating lead score"""
+    lead_score: float = Field(..., ge=0, le=100)
+    lead_status: Optional[LeadStatus] = None
+    scoring_reason: Optional[str] = None
+
+
+# =============================================================================
+# Ad Campaign Schemas (Multi-Store Routing)
+# =============================================================================
+
+class AdCampaignBase(BaseModel):
+    """Base schema for ad campaign"""
+    name: str = Field(..., min_length=1, max_length=255, description="Campaign name for reference")
+    description: Optional[str] = None
+    campaign_id: Optional[str] = Field(None, description="Meta campaign ID")
+    ad_id: Optional[str] = Field(None, description="Meta ad ID")
+    ctwa_clid: Optional[str] = Field(None, description="Click-to-WhatsApp Click ID")
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    custom_ref: Optional[str] = Field(None, description="Custom reference code for routing (e.g., STORE123)")
+    is_active: bool = True
+
+
+class AdCampaignCreate(AdCampaignBase):
+    """Schema for creating ad campaign"""
+    store_id: UUID = Field(..., description="Store ID to route to")
+    whatsapp_account_id: UUID = Field(..., description="WhatsApp account this campaign is linked to")
+
+
+class AdCampaignUpdate(BaseModel):
+    """Schema for updating ad campaign"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    campaign_id: Optional[str] = None
+    ad_id: Optional[str] = None
+    ctwa_clid: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    custom_ref: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AdCampaignResponse(AdCampaignBase):
+    """Schema for ad campaign response"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    store_id: UUID
+    whatsapp_account_id: UUID
+    click_count: int = 0
+    conversation_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdCampaignListResponse(BaseModel):
+    """Schema for paginated ad campaign list"""
+    campaigns: List[AdCampaignResponse]
+    total: int
+
+
+class RoutingInfoResponse(BaseModel):
+    """Schema for routing information"""
+    store_id: Optional[UUID] = None
+    store_name: Optional[str] = None
+    routing_method: str
+    campaign_id: Optional[UUID] = None
+    campaign_name: Optional[str] = None
+
+
+class StoreSelectionOption(BaseModel):
+    """Schema for store selection option"""
+    id: UUID
+    name: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+
+
+class AvailableStoresResponse(BaseModel):
+    """Schema for available stores response"""
+    stores: List[StoreSelectionOption]
+    total: int

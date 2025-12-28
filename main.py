@@ -21,11 +21,14 @@ from modules.business.router import business_router
 from modules.payment.router import payment_router 
 from modules.marketing.router import marketing_router
 from modules.whatsapp.router import whatsapp_router
+from modules.whatsapp.faq_router import faq_router
+from modules.whatsapp.embedded_signup_router import embedded_signup_router
 from modules.agents.router import agents_router
 from modules.agency.router import agency_router
 from modules.campaigns.router import campaign_router
 from modules.assets.router import asset_router
 from modules.ad_generator.router import ad_generator_router
+from modules.notifications.router import notification_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -77,11 +80,14 @@ app.include_router(business_router, prefix="/v1")
 app.include_router(payment_router, prefix="/v1")
 app.include_router(marketing_router, prefix="/v1")
 app.include_router(whatsapp_router, prefix="/v1")
+app.include_router(faq_router, prefix="/v1")
+app.include_router(embedded_signup_router, prefix="/v1/api")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(agency_router, prefix="/v1")
 app.include_router(campaign_router, prefix="/v1")
 app.include_router(asset_router, prefix="/v1")
 app.include_router(ad_generator_router, prefix="/v1")
+app.include_router(notification_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")

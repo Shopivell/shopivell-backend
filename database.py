@@ -66,6 +66,7 @@ def init_db():
     from modules.agency import models as agency_models
     from modules.campaigns import models as campaign_models
     from modules.assets import models as asset_models
+    from modules.notifications import models as notification_models
 
     Base.metadata.create_all(bind=engine)
     

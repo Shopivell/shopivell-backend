@@ -33,11 +33,20 @@ class Store(Base):
     # Basic Info
     store_name: Mapped[str] = mapped_column(String(255), nullable=False)
     store_phone: Mapped[str] = mapped_column(String(50), nullable=False)
-    store_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # ADDED
+    store_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     store_link: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     color_theme: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # ADDED
-    
+    logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # Store Details for AI Bot Context
+    store_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Detailed description
+    store_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Physical address
+    store_city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    store_country: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    store_category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # e.g., "Electronics", "Fashion"
+    operating_hours: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # {"mon": "9am-5pm", ...}
+    currency: Mapped[str] = mapped_column(String(10), default="USD")
+
     # Business Type
     business_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     

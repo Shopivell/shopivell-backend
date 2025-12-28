@@ -8,8 +8,9 @@ from database import Base
 
 class Product(Base):
     __tablename__ = "products"
-    
+
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -41,16 +42,18 @@ class Product(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
     # Relationships
+    store = relationship("Store", backref="products")
     collections: Mapped[List["Collection"]] = relationship(
-        "Collection", 
-        secondary="collection_products", 
+        "Collection",
+        secondary="collection_products",
         back_populates="products"
     )
 
 class Collection(Base):
     __tablename__ = "collections"
-    
+
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     collection_type: Mapped[str] = mapped_column(String(50), nullable=False, default='manual')
@@ -66,9 +69,10 @@ class Collection(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
     # Relationships
+    store = relationship("Store", backref="collections")
     products: Mapped[List["Product"]] = relationship(
-        "Product", 
-        secondary="collection_products", 
+        "Product",
+        secondary="collection_products",
         back_populates="collections"
     )
 

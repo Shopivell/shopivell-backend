@@ -95,10 +95,307 @@ class WhatsAppLead(Base):
 
 
 class CompanyKnowledge(Base):
+    """
+    Knowledge base for AI Sales Bot.
+    Stores product info, FAQs, policies, and other content for RAG retrieval.
+    """
     __tablename__ = "company_knowledge"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+
+    # Content
+    title = Column(String(255), nullable=True)
+    content = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True, index=True)  # faq, product, policy, general
+    tags = Column(ARRAY(String), nullable=True)
+
+    # Content type and source
+    content_type = Column(String(50), default="manual", index=True)  # manual, product, faq, policy
+    source_id = Column(UUID(as_uuid=True), nullable=True)  # Link to product_id if synced from products
+
+    # Vector embedding for semantic search
+    embedding = Column(Vector(1536))
+
+    # Status
+    is_active = Column(Boolean, default=True, index=True)
+    priority = Column(Float, default=1.0)  # Higher priority = more relevant
+
+    # Sync tracking
+    last_synced_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    store = relationship("Store", backref="knowledge_entries")
+
+    def __repr__(self):
+        return f"<CompanyKnowledge {self.id} - {self.title or self.content[:30]}>"
+
+
+class StoreBotConfig(Base):
+    """
+    Per-store bot configuration for AI Sales Assistant.
+    """
+    __tablename__ = "store_bot_configs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, unique=True, index=True)
+
+    # Bot identity
+    bot_name = Column(String(100), default="Sales Assistant")
+    bot_personality = Column(Text, nullable=True)  # Custom personality description
+
+    # Messages
+    greeting_message = Column(Text, default="Hello! Welcome to our store. How can I help you today?")
+    fallback_message = Column(Text, default="I'll connect you with a team member who can help you better.")
+    handoff_message = Column(Text, default="A team member will be with you shortly.")
+
+    # AI Settings
+    temperature = Column(Float, default=0.7)
+    max_response_tokens = Column(Float, default=500)
+    similarity_threshold = Column(Float, default=0.4)  # Minimum confidence for knowledge match
+
+    # Lead scoring
+    hot_lead_threshold = Column(Float, default=80)  # Score >= this triggers hot lead notification
+
+    # Handoff triggers
+    handoff_keywords = Column(ARRAY(String), default=["speak to human", "talk to someone", "customer service", "manager"])
+    max_fallbacks_before_handoff = Column(Float, default=3)  # After N failed responses, trigger handoff
+
+    # Notification settings
+    notify_on_hot_lead = Column(Boolean, default=True)
+    notify_on_handoff = Column(Boolean, default=True)
+    notify_on_unanswered = Column(Boolean, default=True)
+
+    # Feature toggles
+    is_enabled = Column(Boolean, default=True)
+    auto_respond = Column(Boolean, default=True)  # If false, just score leads, don't respond
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship
+    store = relationship("Store", backref="bot_config")
+
+    def __repr__(self):
+        return f"<StoreBotConfig store={self.store_id}>"
+
+
+class WhatsAppConversation(Base):
+    """
+    Conversation state per phone number for context memory.
+    Supports multi-store routing via a shared WhatsApp number.
+    """
+    __tablename__ = "whatsapp_conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True, index=True)  # Nullable until routed
+    whatsapp_account_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_accounts.id"), nullable=False, index=True)
+    phone_number = Column(String(50), nullable=False, index=True)
+
+    # Routing information
+    routing_status = Column(String(50), default="pending")  # pending, routed, awaiting_selection
+    routed_via = Column(String(50), nullable=True)  # ad_campaign, previous_conversation, user_selection, default
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("ad_campaigns.id"), nullable=True)
+    referral_data = Column(JSON, nullable=True)  # Raw referral data from Meta
+
+    # Conversation summary (AI-generated)
+    conversation_summary = Column(Text, nullable=True)
+    topics_discussed = Column(ARRAY(String), nullable=True)
+    customer_name = Column(String(255), nullable=True)
+
+    # Handoff status
+    handoff_requested = Column(Boolean, default=False)
+    handoff_reason = Column(Text, nullable=True)
+    assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    # Stats
+    total_messages = Column(Float, default=0)
+    fallback_count = Column(Float, default=0)  # Times bot couldn't answer
+    last_message_at = Column(DateTime, nullable=True)
+
+    # Status
+    status = Column(String(50), default="active")  # active, handoff, closed
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    store = relationship("Store", backref="whatsapp_conversations")
+    whatsapp_account = relationship("WhatsAppAccount", backref="conversations")
+    assigned_user = relationship("User", backref="assigned_conversations")
+    messages = relationship("WhatsAppConversationMessage", back_populates="conversation", cascade="all, delete-orphan")
+    campaign = relationship("AdCampaign", backref="conversations")
+
+    def __repr__(self):
+        return f"<WhatsAppConversation {self.phone_number} - {self.routing_status}>"
+
+
+class WhatsAppConversationMessage(Base):
+    """
+    Individual messages in a conversation for context/history.
+    """
+    __tablename__ = "whatsapp_conversation_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_conversations.id"), nullable=False, index=True)
+
+    # Message content
+    role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
 
-    embedding = Column(Vector(1536)) 
+    # AI analysis
+    intent_detected = Column(String(100), nullable=True)  # pricing, availability, support, etc.
+    confidence_score = Column(Float, nullable=True)  # Knowledge match confidence
+    fallback_triggered = Column(Boolean, default=False)
+
+    # Metadata
+    message_id = Column(String(255), nullable=True)  # WhatsApp message ID
+    meta_data = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationship
+    conversation = relationship("WhatsAppConversation", back_populates="messages")
+
+    def __repr__(self):
+        return f"<ConversationMessage {self.role}: {self.content[:30]}>"
+
+
+class CRMTask(Base):
+    """
+    Follow-up and handoff tasks for CRM integration.
+    """
+    __tablename__ = "crm_tasks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+
+    # Task details
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    task_type = Column(String(50), nullable=False, index=True)  # follow_up, handoff, callback, meeting, quote
+    priority = Column(String(20), default="normal")  # low, normal, high, urgent
+    status = Column(String(50), default="pending", index=True)  # pending, in_progress, completed, cancelled
+
+    # Related entities
+    phone_number = Column(String(50), nullable=True, index=True)
+    lead_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_leads.id"), nullable=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_conversations.id"), nullable=True)
+    assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    # Scheduling
+    due_date = Column(DateTime, nullable=True)
+    reminder_at = Column(DateTime, nullable=True)
+
+    # Context
+    context = Column(JSON, nullable=True)  # Additional data about the task
+
+    # Completion
+    completed_at = Column(DateTime, nullable=True)
+    completed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    completion_notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    store = relationship("Store", backref="crm_tasks")
+    lead = relationship("WhatsAppLead", backref="tasks")
+    conversation = relationship("WhatsAppConversation", backref="tasks")
+    assignee = relationship("User", foreign_keys=[assigned_to], backref="assigned_tasks")
+    completer = relationship("User", foreign_keys=[completed_by], backref="completed_tasks")
+
+    def __repr__(self):
+        return f"<CRMTask {self.task_type}: {self.title}>"
+
+
+class AdCampaign(Base):
+    """
+    Links Click-to-WhatsApp ad campaigns to stores.
+    Used for routing: when a customer clicks an ad, the referral data
+    identifies which store they should be connected to.
+    """
+    __tablename__ = "ad_campaigns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+    whatsapp_account_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_accounts.id"), nullable=False, index=True)
+
+    # Campaign identifiers from Meta
+    campaign_id = Column(String(255), nullable=True, index=True)  # Meta campaign ID
+    ad_id = Column(String(255), nullable=True, index=True)  # Meta ad ID
+    ctwa_clid = Column(String(255), nullable=True, index=True)  # Click-to-WhatsApp Click ID
+
+    # Custom tracking
+    utm_source = Column(String(100), nullable=True)
+    utm_medium = Column(String(100), nullable=True)
+    utm_campaign = Column(String(255), nullable=True, index=True)
+    custom_ref = Column(String(255), nullable=True, index=True)  # Custom reference code
+
+    # Campaign details
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Status
+    is_active = Column(Boolean, default=True, index=True)
+
+    # Stats
+    click_count = Column(Float, default=0)
+    conversation_count = Column(Float, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    store = relationship("Store", backref="ad_campaigns")
+    whatsapp_account = relationship("WhatsAppAccount", backref="ad_campaigns")
+
+    def __repr__(self):
+        return f"<AdCampaign {self.name} -> Store {self.store_id}>"
+
+
+class FAQ(Base):
+    """
+    Frequently Asked Questions for the store.
+    These are automatically synced to CompanyKnowledge for bot retrieval.
+    """
+    __tablename__ = "faqs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+
+    # FAQ content
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    category = Column(String(100), nullable=True, index=True)  # shipping, returns, pricing, general, etc.
+
+    # Ordering and status
+    display_order = Column(Float, default=0)
+    is_active = Column(Boolean, default=True, index=True)
+    is_featured = Column(Boolean, default=False)  # Show on website FAQ page
+
+    # Usage tracking
+    view_count = Column(Float, default=0)
+    helpful_count = Column(Float, default=0)
+    not_helpful_count = Column(Float, default=0)
+
+    # Sync status with knowledge base
+    knowledge_id = Column(UUID(as_uuid=True), ForeignKey("company_knowledge.id"), nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    store = relationship("Store", backref="faqs")
+    knowledge_entry = relationship("CompanyKnowledge", backref="faq_source")
+
+    def __repr__(self):
+        return f"<FAQ {self.id} - {self.question[:50]}>"
+
+    def to_knowledge_content(self):
+        """Format FAQ for knowledge base embedding."""
+        return f"Question: {self.question}\n\nAnswer: {self.answer}" 

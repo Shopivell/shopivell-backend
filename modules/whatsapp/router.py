@@ -15,14 +15,17 @@ from datetime import datetime, time, timedelta
 import logging 
 from sqlalchemy import text
 from database import get_db
-from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer
-from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead
+from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer, MultiTenantSalesBot
+from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation
+from .store_router import StoreRouter
 from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
     WhatsAppAccountsListResponse, WhatsAppMessagesListResponse,
     WhatsAppWebhookVerification, WhatsAppWebhookPayload,
-    BulkMessageRequest, BulkMessageResponse, BulkMessageResult
+    BulkMessageRequest, BulkMessageResponse, BulkMessageResult,
+    AdCampaignCreate, AdCampaignUpdate, AdCampaignResponse, AdCampaignListResponse,
+    AvailableStoresResponse, StoreSelectionOption
 )
 from modules.business.models import FacebookBusinessAccount
 
@@ -350,6 +353,112 @@ def get_store_whatsapp_accounts(
         accounts=[WhatsAppAccountResponse.model_validate(acc) for acc in accounts],
         total_count=len(accounts)
     )
+
+@whatsapp_router.get("/store/{store_id}/unread-count")
+def get_store_unread_message_count(
+    store_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the count of unread inbound messages for a store.
+    Unread messages are inbound messages that have not been marked as read by the store owner.
+    """
+    try:
+        # Get all WhatsApp accounts for this store
+        accounts = db.query(WhatsAppAccount).filter(
+            WhatsAppAccount.store_id == store_id,
+            WhatsAppAccount.is_enabled == True
+        ).all()
+
+        if not accounts:
+            return {"unread_count": 0, "store_id": str(store_id)}
+
+        account_ids = [acc.id for acc in accounts]
+
+        # Count inbound messages that haven't been read (read_at is NULL)
+        unread_count = db.query(WhatsAppMessage).filter(
+            WhatsAppMessage.whatsapp_account_id.in_(account_ids),
+            WhatsAppMessage.direction == "inbound",
+            WhatsAppMessage.read_at == None  # Not yet read by store owner
+        ).count()
+
+        return {
+            "unread_count": unread_count,
+            "store_id": str(store_id)
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting unread count: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get unread count: {str(e)}"
+        )
+
+@whatsapp_router.post("/messages/{message_id}/mark-read")
+def mark_message_as_read(
+    message_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Mark a message as read by the store owner"""
+    try:
+        message = db.query(WhatsAppMessage).filter(
+            WhatsAppMessage.id == message_id
+        ).first()
+
+        if not message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Message not found"
+            )
+
+        message.read_at = datetime.utcnow()
+        db.commit()
+
+        return {"success": True, "message_id": str(message_id)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error marking message as read: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to mark message as read: {str(e)}"
+        )
+
+@whatsapp_router.post("/conversations/{phone_number}/mark-read")
+def mark_conversation_as_read(
+    phone_number: str,
+    account_id: uuid.UUID = Query(..., description="WhatsApp account ID"),
+    db: Session = Depends(get_db)
+):
+    """Mark all messages in a conversation as read"""
+    try:
+        phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
+
+        # Update all unread inbound messages from this phone number
+        updated = db.query(WhatsAppMessage).filter(
+            WhatsAppMessage.whatsapp_account_id == account_id,
+            WhatsAppMessage.from_number == phone_clean,
+            WhatsAppMessage.direction == "inbound",
+            WhatsAppMessage.read_at == None
+        ).update({"read_at": datetime.utcnow()})
+
+        db.commit()
+
+        return {
+            "success": True,
+            "phone_number": phone_clean,
+            "messages_marked_read": updated
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error marking conversation as read: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to mark conversation as read: {str(e)}"
+        )
 
 @whatsapp_router.get("/accounts/{account_id}", response_model=WhatsAppAccountResponse)
 def get_whatsapp_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
@@ -769,13 +878,20 @@ def process_webhook_payload(payload: Dict[str, Any]):
         db.close()
 
 def process_incoming_messages(value: Dict[str, Any], db: Session):
-    """Process incoming messages from webhook and auto-respond using AI chatbot"""
-    # FIX APPLIED: Using 'metadata' to correctly extract the object
+    """
+    Process incoming messages from webhook with multi-store routing.
+
+    Routing Flow:
+    1. Check for Click-to-WhatsApp ad referral data -> route to campaign's store
+    2. Check for existing conversation -> route to same store
+    3. Check for default store on WhatsApp account -> route there
+    4. No routing found -> ask customer to select a store
+    """
+    # Extract metadata
     meta_data = value.get("metadata", {})
     phone_number_id = meta_data.get("phone_number_id")
 
-    # Optional: Log the ID for debugging the account lookup
-    logger.info(f"Attempting to find account with phone_number_id: {phone_number_id}")
+    logger.info(f"Processing message for phone_number_id: {phone_number_id}")
 
     contacts = value.get("contacts", [])
     messages = value.get("messages", [])
@@ -796,10 +912,11 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         if business_account:
             access_token = business_account.access_token
 
+    # Initialize the store router
+    router = StoreRouter(whatsapp_account_id=whatsapp_account.id, db=db)
+
     for message in messages:
         from_number_raw = message.get("from")
-
-        # CRITICAL FIX (Phone Number Cleaning)
         from_number_clean = from_number_raw.replace(" ", "").replace("+", "").strip()
 
         message_id = message.get("id")
@@ -828,7 +945,6 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
         # REAL-TIME PUSH: Broadcast the new message to the frontend
         if new_message_db:
-            # We convert the SQLAlchemy model to the Pydantic response schema for clean data
             message_response = WhatsAppMessageResponse.model_validate(new_message_db)
             asyncio.run(manager.broadcast_message(
                 str(whatsapp_account.id),
@@ -840,24 +956,130 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         # AUTO-RESPOND: If it's a text message, use AI chatbot to respond
         if message_type == "text" and message_text and access_token:
             try:
-                # Generate AI response using SalesBot with token limit for very short WhatsApp messages
-                bot = SalesBot(max_tokens=100).get_graph()
-                config = {"configurable": {"thread_id": from_number_clean}}
+                # === MULTI-STORE ROUTING ===
+                store_id, routing_method, conversation = router.route_message(
+                    phone_number=from_number_clean,
+                    message_data=message
+                )
 
-                # Run the bot synchronously (we're already in a background task)
+                logger.info(f"Routing result: store_id={store_id}, method={routing_method}")
+
+                # Handle case where no store is routed (needs selection)
+                if store_id is None:
+                    # Check if this is a store selection response
+                    if conversation and conversation.routing_status == "awaiting_selection":
+                        selected_store_id = router.parse_store_selection(message_text)
+                        if selected_store_id:
+                            # Route to selected store
+                            conversation = router.route_to_store(
+                                phone_number=from_number_clean,
+                                store_id=selected_store_id,
+                                method="user_selection"
+                            )
+                            store_id = selected_store_id
+                            logger.info(f"Customer selected store: {store_id}")
+
+                            # Send welcome message for the selected store
+                            from modules.stores.models import Store
+                            store = db.query(Store).filter(Store.id == store_id).first()
+                            if store:
+                                welcome = f"Great! You're now connected to {store.store_name}. How can we help you today?"
+                                send_whatsapp_message_request(
+                                    phone_number_id=whatsapp_account.phone_number_id,
+                                    access_token=access_token,
+                                    to=from_number_clean,
+                                    message_type="text",
+                                    message_data={"text": {"body": welcome, "preview_url": False}}
+                                )
+                                save_message_to_db(
+                                    db=db,
+                                    whatsapp_account_id=whatsapp_account.id,
+                                    message_id=f"welcome_{datetime.utcnow().timestamp()}",
+                                    from_number=whatsapp_account.phone_number,
+                                    to_number=from_number_clean,
+                                    message_type="text",
+                                    direction="outbound",
+                                    status="sent",
+                                    message_text=welcome
+                                )
+                            continue
+                        else:
+                            # Invalid selection, send selection menu again
+                            selection_message = router.build_store_selection_message()
+                            if selection_message:
+                                invalid_response = f"Sorry, I didn't understand that. {selection_message}"
+                                send_whatsapp_message_request(
+                                    phone_number_id=whatsapp_account.phone_number_id,
+                                    access_token=access_token,
+                                    to=from_number_clean,
+                                    message_type="text",
+                                    message_data={"text": {"body": invalid_response, "preview_url": False}}
+                                )
+                                save_message_to_db(
+                                    db=db,
+                                    whatsapp_account_id=whatsapp_account.id,
+                                    message_id=f"selection_{datetime.utcnow().timestamp()}",
+                                    from_number=whatsapp_account.phone_number,
+                                    to_number=from_number_clean,
+                                    message_type="text",
+                                    direction="outbound",
+                                    status="sent",
+                                    message_text=invalid_response
+                                )
+                            continue
+
+                    # First contact - send store selection menu
+                    selection_message = router.build_store_selection_message()
+                    if selection_message:
+                        send_whatsapp_message_request(
+                            phone_number_id=whatsapp_account.phone_number_id,
+                            access_token=access_token,
+                            to=from_number_clean,
+                            message_type="text",
+                            message_data={"text": {"body": selection_message, "preview_url": False}}
+                        )
+                        save_message_to_db(
+                            db=db,
+                            whatsapp_account_id=whatsapp_account.id,
+                            message_id=f"selection_{datetime.utcnow().timestamp()}",
+                            from_number=whatsapp_account.phone_number,
+                            to_number=from_number_clean,
+                            message_type="text",
+                            direction="outbound",
+                            status="sent",
+                            message_text=selection_message
+                        )
+                        continue
+                    else:
+                        logger.warning(f"No stores available for WhatsApp account {whatsapp_account.id}")
+                        continue
+
+                # === GENERATE AI RESPONSE ===
+                # Use MultiTenantSalesBot with store-specific configuration
+                bot = MultiTenantSalesBot(
+                    store_id=store_id,
+                    db=db
+                )
+
+                # Run the bot asynchronously
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(
-                        bot.ainvoke(
-                            {"messages": [("user", message_text)]},
-                            config=config
+                    ai_response = loop.run_until_complete(
+                        bot.generate_response(
+                            user_message=message_text,
+                            phone_number=from_number_clean,
+                            whatsapp_account_id=whatsapp_account.id
                         )
                     )
                 finally:
                     loop.close()
 
-                ai_response = result["messages"][-1].content
+                # NO HALLUCINATION POLICY: If bot returns None, stay silent
+                if ai_response is None:
+                    logger.info(f"Bot has no knowledge match for query from {from_number_clean}, staying silent")
+                    continue
+
                 logger.info(f"AI Response for {from_number_clean}: {ai_response[:100]}...")
 
                 # Send the AI response back via WhatsApp
@@ -1629,66 +1851,58 @@ async def chat_and_respond(
             db.commit()
             db.refresh(lead)
 
-        # 2. Get conversation history for context
-        recent_messages = db.query(WhatsAppMessage).filter(
-            WhatsAppMessage.whatsapp_account_id == account_id,
-            WhatsAppMessage.from_number.contains(to_clean[-9:])
-        ).order_by(WhatsAppMessage.timestamp.desc()).limit(5).all()
+        # 2. Get store_id from WhatsApp account
+        store_id = whatsapp_account.store_id
 
-        conversation_history = "\n".join([
-            f"{'Customer' if 'inbound' in m.direction else 'Bot'}: {m.message_text}"
-            for m in reversed(recent_messages) if m.message_text
-        ])
+        if not store_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="WhatsApp account is not linked to a store"
+            )
 
-        # 3. Generate AI response
-        bot = SalesBot(max_tokens=100).get_graph()
-        config = {"configurable": {"thread_id": to_clean}}
-
-        result = await bot.ainvoke(
-            {"messages": [("user", message_data.body)]},
-            config=config
+        # 3. Generate AI response using MultiTenantSalesBot
+        bot = MultiTenantSalesBot(
+            store_id=store_id,
+            db=db
         )
 
-        ai_response = result["messages"][-1].content
+        ai_response = await bot.generate_response(
+            user_message=message_data.body,
+            phone_number=to_clean,
+            whatsapp_account_id=account_id
+        )
+
+        # NO HALLUCINATION POLICY: If bot returns None, stay silent
+        if ai_response is None:
+            logger.info(f"Bot has no knowledge match for {to_clean}, staying silent")
+            return {
+                "success": False,
+                "message": "No knowledge match - staying silent. Notification sent to store owner.",
+                "lead": {
+                    "phone_number": to_clean,
+                    "score": lead.lead_score,
+                    "status": lead.lead_status
+                }
+            }
+
         logger.info(f"AI Response for {to_clean}: {ai_response}")
 
-        # 4. Score the lead
-        scorer = LeadScorer()
-        lead_result = scorer.score_lead(conversation_history, message_data.body)
+        # Lead scoring and updates are now handled inside MultiTenantSalesBot
+        # Refresh lead to get updated values
+        db.refresh(lead)
 
-        # Force flush to ensure logs appear immediately
-        import sys
-        print(f"\n{'='*50}", flush=True)
-        print(f"LEAD SCORING RESULT for {to_clean}", flush=True)
-        print(f"   Score: {lead_result.get('score')}", flush=True)
-        print(f"   Status: {lead_result.get('status')}", flush=True)
-        print(f"   Hot Lead: {lead_result.get('is_hot_lead')}", flush=True)
-        print(f"   Interests: {lead_result.get('interests')}", flush=True)
-        print(f"   Reason: {lead_result.get('reasoning')}", flush=True)
-        print(f"{'='*50}\n", flush=True)
-        sys.stdout.flush()
+        logger.info(f"LEAD SCORE: {to_clean} = {lead.lead_score} | Status: {lead.lead_status}")
 
-        # Also log via logger for backup
-        logger.warning(f"LEAD SCORE: {to_clean} = {lead_result.get('score')} | Hot: {lead_result.get('is_hot_lead')} | Status: {lead_result.get('status')}")
-
-        # 5. Update lead record
-        lead.lead_score = lead_result.get("score", lead.lead_score)
-        lead.lead_status = lead_result.get("status", lead.lead_status)
-        lead.interests = lead_result.get("interests", lead.interests)
-        lead.scoring_reason = lead_result.get("reasoning")
-        lead.total_messages = (lead.total_messages or 0) + 1
-        lead.last_message = message_data.body
-        db.commit()
-
-        # 6. Send to Meta CAPI if hot lead and not already sent
+        # 4. Send to Meta CAPI if hot lead and not already sent
         capi_result = None
-        if lead_result.get("is_hot_lead") and not lead.conversion_sent:
+        is_hot_lead = lead.lead_score >= 80 if lead.lead_score else False
+        if is_hot_lead and not lead.conversion_sent:
             if whatsapp_account.capi_dataset_id and whatsapp_account.capi_access_token:
                 capi_result = send_capi_lead_event(
                     pixel_id=whatsapp_account.capi_dataset_id,
                     access_token=whatsapp_account.capi_access_token,
                     phone_number=to_clean,
-                    lead_score=lead_result.get("score", 70)
+                    lead_score=lead.lead_score or 80
                 )
                 if capi_result.get("success"):
                     lead.conversion_sent = True
@@ -1730,11 +1944,11 @@ async def chat_and_respond(
             "question": message_data.body,
             "response": ai_response,
             "sent_to": to_clean,
-            "lead_score": lead_result.get("score"),
-            "lead_status": lead_result.get("status"),
-            "is_hot_lead": lead_result.get("is_hot_lead"),
-            "interests": lead_result.get("interests"),
-            "reasoning": lead_result.get("reasoning"),
+            "lead_score": lead.lead_score,
+            "lead_status": lead.lead_status,
+            "is_hot_lead": is_hot_lead,
+            "interests": lead.interests,
+            "reasoning": lead.scoring_reason,
             "capi_sent": capi_result.get("success") if capi_result else False
         }
 
@@ -1899,31 +2113,43 @@ def get_lead_by_phone(
 
 
 @whatsapp_router.post("/ask")
-async def ask_question(request: ChatRequest):
+async def ask_question(request: ChatRequest, db: Session = Depends(get_db)):
+    """
+    Test endpoint to ask questions to the AI Sales Bot.
+    Uses the MultiTenantSalesBot with store-specific knowledge.
+    """
     try:
-        # 1. Initialize the Graph with token limit
-        bot = SalesBot(max_tokens=100).get_graph()
-        
-        # 2. Set the configuration (thread_id enables memory)
-        config = {"configurable": {"thread_id": request.user_id}}
-        
-        # 3. Invoke the logic
-        # We use ainvoke (async) for the AI logic
-        result = await bot.ainvoke(
-            {"messages": [("user", request.question)]}, 
-            config=config
+        # Initialize the multi-tenant bot
+        bot = MultiTenantSalesBot(
+            store_id=request.store_id,
+            db=db
         )
-        
-        # 4. Extract the last message from the AI
-        ai_response = result["messages"][-1].content
-        
+
+        # Generate response
+        ai_response = await bot.generate_response(
+            user_message=request.question,
+            phone_number=request.user_id
+        )
+
+        # Handle no knowledge match
+        if ai_response is None:
+            return {
+                "user_id": request.user_id,
+                "store_id": str(request.store_id),
+                "response": None,
+                "message": "No knowledge match - bot stays silent. Owner notified.",
+                "fallback_triggered": True
+            }
+
         return {
             "user_id": request.user_id,
+            "store_id": str(request.store_id),
             "response": ai_response,
-            "history_count": len(result["messages"])
+            "fallback_triggered": False
         }
 
     except Exception as e:
+        logger.error(f"Ask endpoint error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
 # ============ KNOWLEDGE MANAGEMENT ENDPOINTS ============
@@ -2106,4 +2332,420 @@ def fix_all_embeddings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fix embeddings: {str(e)}"
+        )
+
+
+# =============================================================================
+# AD CAMPAIGN ENDPOINTS (Multi-Store Routing)
+# =============================================================================
+
+@whatsapp_router.post("/campaigns", response_model=AdCampaignResponse)
+def create_ad_campaign(
+    campaign_data: AdCampaignCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new ad campaign for multi-store routing.
+
+    When customers click a Click-to-WhatsApp ad with this campaign's identifiers,
+    they will be automatically routed to the associated store.
+    """
+    try:
+        # Verify store exists
+        from modules.stores.models import Store
+        store = db.query(Store).filter(Store.id == campaign_data.store_id).first()
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Store not found: {campaign_data.store_id}"
+            )
+
+        # Verify WhatsApp account exists
+        whatsapp_account = db.query(WhatsAppAccount).filter(
+            WhatsAppAccount.id == campaign_data.whatsapp_account_id
+        ).first()
+        if not whatsapp_account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"WhatsApp account not found: {campaign_data.whatsapp_account_id}"
+            )
+
+        # Create campaign
+        campaign = AdCampaign(
+            store_id=campaign_data.store_id,
+            whatsapp_account_id=campaign_data.whatsapp_account_id,
+            name=campaign_data.name,
+            description=campaign_data.description,
+            campaign_id=campaign_data.campaign_id,
+            ad_id=campaign_data.ad_id,
+            ctwa_clid=campaign_data.ctwa_clid,
+            utm_source=campaign_data.utm_source,
+            utm_medium=campaign_data.utm_medium,
+            utm_campaign=campaign_data.utm_campaign,
+            custom_ref=campaign_data.custom_ref,
+            is_active=campaign_data.is_active
+        )
+        db.add(campaign)
+        db.commit()
+        db.refresh(campaign)
+
+        logger.info(f"Created ad campaign: {campaign.name} -> Store {campaign.store_id}")
+        return AdCampaignResponse.model_validate(campaign)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create campaign: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create campaign: {str(e)}"
+        )
+
+
+@whatsapp_router.get("/campaigns", response_model=AdCampaignListResponse)
+def list_ad_campaigns(
+    whatsapp_account_id: Optional[uuid.UUID] = Query(None, description="Filter by WhatsApp account"),
+    store_id: Optional[uuid.UUID] = Query(None, description="Filter by store"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    db: Session = Depends(get_db)
+):
+    """List all ad campaigns with optional filters."""
+    query = db.query(AdCampaign)
+
+    if whatsapp_account_id:
+        query = query.filter(AdCampaign.whatsapp_account_id == whatsapp_account_id)
+    if store_id:
+        query = query.filter(AdCampaign.store_id == store_id)
+    if is_active is not None:
+        query = query.filter(AdCampaign.is_active == is_active)
+
+    campaigns = query.order_by(AdCampaign.created_at.desc()).all()
+
+    return AdCampaignListResponse(
+        campaigns=[AdCampaignResponse.model_validate(c) for c in campaigns],
+        total=len(campaigns)
+    )
+
+
+@whatsapp_router.get("/campaigns/{campaign_id}", response_model=AdCampaignResponse)
+def get_ad_campaign(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Get a specific ad campaign by ID."""
+    campaign = db.query(AdCampaign).filter(AdCampaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign not found: {campaign_id}"
+        )
+    return AdCampaignResponse.model_validate(campaign)
+
+
+@whatsapp_router.put("/campaigns/{campaign_id}", response_model=AdCampaignResponse)
+def update_ad_campaign(
+    campaign_id: uuid.UUID,
+    campaign_data: AdCampaignUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update an existing ad campaign."""
+    campaign = db.query(AdCampaign).filter(AdCampaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign not found: {campaign_id}"
+        )
+
+    try:
+        update_data = campaign_data.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(campaign, key, value)
+
+        campaign.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(campaign)
+
+        logger.info(f"Updated ad campaign: {campaign.name}")
+        return AdCampaignResponse.model_validate(campaign)
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update campaign: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update campaign: {str(e)}"
+        )
+
+
+@whatsapp_router.delete("/campaigns/{campaign_id}")
+def delete_ad_campaign(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete an ad campaign."""
+    campaign = db.query(AdCampaign).filter(AdCampaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Campaign not found: {campaign_id}"
+        )
+
+    try:
+        db.delete(campaign)
+        db.commit()
+        logger.info(f"Deleted ad campaign: {campaign_id}")
+        return {"success": True, "message": f"Campaign {campaign_id} deleted"}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete campaign: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete campaign: {str(e)}"
+        )
+
+
+@whatsapp_router.get("/accounts/{account_id}/available-stores", response_model=AvailableStoresResponse)
+def get_available_stores_for_account(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all stores that can be routed to from this WhatsApp account.
+    Includes stores with active campaigns and the default store.
+    """
+    try:
+        router = StoreRouter(whatsapp_account_id=account_id, db=db)
+        stores = router.get_available_stores()
+
+        return AvailableStoresResponse(
+            stores=[StoreSelectionOption(**s) for s in stores],
+            total=len(stores)
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to get available stores: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get available stores: {str(e)}"
+        )
+
+
+@whatsapp_router.post("/accounts/{account_id}/route-conversation")
+def manually_route_conversation(
+    account_id: uuid.UUID,
+    phone_number: str = Query(..., description="Customer phone number"),
+    store_id: uuid.UUID = Query(..., description="Store to route to"),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually route a conversation to a specific store.
+    Use this when a customer needs to be transferred to a different store.
+    """
+    try:
+        phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
+        router = StoreRouter(whatsapp_account_id=account_id, db=db)
+        conversation = router.route_to_store(
+            phone_number=phone_clean,
+            store_id=store_id,
+            method="manual_assignment"
+        )
+
+        return {
+            "success": True,
+            "message": f"Conversation routed to store {store_id}",
+            "conversation_id": str(conversation.id),
+            "phone_number": phone_clean,
+            "store_id": str(store_id)
+        }
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to route conversation: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to route conversation: {str(e)}"
+        )
+
+
+@whatsapp_router.post("/test/simulate-ad-click")
+def simulate_ad_click(
+    whatsapp_account_id: uuid.UUID = Query(..., description="WhatsApp account ID"),
+    phone_number: str = Query(..., description="Customer phone number to simulate"),
+    custom_ref: str = Query(..., description="Campaign custom_ref (e.g., ZIMSECURE, SECURICO)"),
+    message: str = Query("Hi, I saw your ad!", description="Initial message from customer"),
+    db: Session = Depends(get_db)
+):
+    """
+    TESTING ONLY: Simulate a Click-to-WhatsApp ad click.
+
+    This mimics what happens when a customer clicks a Facebook/Instagram ad
+    and sends a message via WhatsApp.
+    """
+    try:
+        # Clean phone number
+        phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
+
+        # Get the WhatsApp account
+        whatsapp_account = db.query(WhatsAppAccount).filter(
+            WhatsAppAccount.id == whatsapp_account_id
+        ).first()
+        if not whatsapp_account:
+            raise HTTPException(status_code=404, detail="WhatsApp account not found")
+
+        # Find the campaign by custom_ref
+        campaign = db.query(AdCampaign).filter(
+            AdCampaign.custom_ref == custom_ref,
+            AdCampaign.whatsapp_account_id == whatsapp_account_id,
+            AdCampaign.is_active == True
+        ).first()
+
+        if not campaign:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active campaign found with custom_ref '{custom_ref}'"
+            )
+
+        # Get store info
+        from modules.stores.models import Store
+        store = db.query(Store).filter(Store.id == campaign.store_id).first()
+
+        # Initialize router and route the message
+        router = StoreRouter(whatsapp_account_id=whatsapp_account_id, db=db)
+
+        # Simulate referral data that would come from Meta
+        simulated_referral = {
+            "source_url": f"https://wa.me/{whatsapp_account.phone_number}?text=ref_{custom_ref}",
+            "source_type": "ad",
+            "source_id": str(campaign.id),
+            "headline": campaign.name,
+            "ctwa_clid": None,
+            "custom_ref": custom_ref
+        }
+
+        # Route the conversation
+        conversation = router._get_or_create_conversation(
+            phone_number=phone_clean,
+            store_id=campaign.store_id,
+            routing_status="routed",
+            routed_via="ad_campaign",
+            campaign_id=campaign.id,
+            referral_data=simulated_referral
+        )
+
+        # Update campaign stats
+        campaign.click_count += 1
+        campaign.conversation_count += 1
+        db.commit()
+
+        # Now generate AI response using the store's bot
+        bot = MultiTenantSalesBot(store_id=campaign.store_id, db=db)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            ai_response = loop.run_until_complete(
+                bot.generate_response(
+                    user_message=message,
+                    phone_number=phone_clean,
+                    whatsapp_account_id=whatsapp_account_id
+                )
+            )
+        finally:
+            loop.close()
+
+        return {
+            "success": True,
+            "simulation": {
+                "customer_phone": phone_clean,
+                "customer_message": message,
+                "ad_clicked": custom_ref,
+                "routed_to_store": store.store_name if store else str(campaign.store_id),
+                "store_id": str(campaign.store_id),
+                "campaign_name": campaign.name
+            },
+            "bot_response": ai_response if ai_response else "(Bot stayed silent - no knowledge match)",
+            "conversation_id": str(conversation.id)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Simulation failed: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Simulation failed: {str(e)}"
+        )
+
+
+@whatsapp_router.get("/accounts/{account_id}/routing-stats")
+def get_routing_stats(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """
+    Get routing statistics for a WhatsApp account.
+    Shows how conversations are being routed to different stores.
+    """
+    try:
+        # Get all conversations for this account
+        conversations = db.query(WhatsAppConversation).filter(
+            WhatsAppConversation.whatsapp_account_id == account_id
+        ).all()
+
+        # Count by routing method
+        routing_methods = {}
+        store_counts = {}
+
+        for conv in conversations:
+            # Count by routing method
+            method = conv.routed_via or "unknown"
+            routing_methods[method] = routing_methods.get(method, 0) + 1
+
+            # Count by store
+            if conv.store_id:
+                store_id_str = str(conv.store_id)
+                store_counts[store_id_str] = store_counts.get(store_id_str, 0) + 1
+
+        # Get campaign stats
+        campaigns = db.query(AdCampaign).filter(
+            AdCampaign.whatsapp_account_id == account_id
+        ).all()
+
+        campaign_stats = [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "store_id": str(c.store_id),
+                "clicks": c.click_count,
+                "conversations": c.conversation_count,
+                "is_active": c.is_active
+            }
+            for c in campaigns
+        ]
+
+        return {
+            "total_conversations": len(conversations),
+            "routing_methods": routing_methods,
+            "conversations_by_store": store_counts,
+            "campaigns": campaign_stats
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get routing stats: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get routing stats: {str(e)}"
         )
