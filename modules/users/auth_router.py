@@ -143,7 +143,8 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
 
         # Check store and setup session status
         store = db.query(Store).filter(Store.owner_id == user.id).first()
-        has_store = store is not None
+        # Only consider has_store=True if setup is actually completed
+        has_store = store is not None and store.is_setup_completed
 
         # Get or create user's agency using raw SQL to avoid mapper issues
         from sqlalchemy import text
@@ -323,7 +324,8 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         
         # Check if user has a completed store
         store = db.query(Store).filter(Store.owner_id == user.id).first()
-        has_store = store is not None
+        # Only consider has_store=True if setup is actually completed
+        has_store = store is not None and store.is_setup_completed
 
         # Get or create agency for user using raw SQL
         from sqlalchemy import text
@@ -444,7 +446,8 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
 
         # Check store and setup session status
         store = db.query(Store).filter(Store.owner_id == user.id).first()
-        has_store = store is not None
+        # Only consider has_store=True if setup is actually completed
+        has_store = store is not None and store.is_setup_completed
 
         # Get or create agency for user using raw SQL
         from sqlalchemy import text
@@ -605,9 +608,15 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user), db: Sess
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     store = db.query(Store).filter(Store.owner_id == user.id).first()
-    
+
+    # Check for active setup session
+    setup_session = db.query(StoreSetupSession).filter(
+        StoreSetupSession.user_id == user.id,
+        StoreSetupSession.is_active == True
+    ).first()
+
     return {
         "id": str(user.id),
         "name": user.name,
@@ -616,5 +625,9 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user), db: Sess
         "is_verified": user.is_verified,
         "profile_picture": user.profile_picture,
         "store_id": str(store.id) if store else None,
-        "agency_id": current_user.agency_id
+        "agency_id": current_user.agency_id,
+        "has_store": store is not None and store.is_setup_completed,
+        "is_setup_completed": store.is_setup_completed if store else False,
+        "has_active_setup_session": setup_session is not None,
+        "setup_session_id": str(setup_session.id) if setup_session else None
     }
