@@ -34,6 +34,7 @@ COLLECTION_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 async def get_inventory_items(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
+    store_id: Optional[uuid.UUID] = None,
     product_id: Optional[uuid.UUID] = None,
     sku: Optional[str] = None,
     search: Optional[str] = None,
@@ -43,7 +44,11 @@ async def get_inventory_items(
     try:
         # Build query with filters
         query = db.query(Product)
-        
+
+        # Filter by store_id (required for multi-tenant)
+        if store_id:
+            query = query.filter(Product.store_id == store_id)
+
         if product_id:
             query = query.filter(Product.id == product_id)
         if sku:
@@ -52,7 +57,7 @@ async def get_inventory_items(
             query = query.filter(Product.status == status)
         if search:
             query = query.filter(
-                Product.title.ilike(f"%{search}%") | 
+                Product.title.ilike(f"%{search}%") |
                 Product.sku.ilike(f"%{search}%")
             )
         
@@ -417,6 +422,7 @@ async def get_collection_image(filename: str):
 async def get_products(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
+    store_id: Optional[uuid.UUID] = None,
     category: Optional[str] = None,
     status: Optional[str] = None,
     vendor: Optional[str] = None,
@@ -426,7 +432,11 @@ async def get_products(
     try:
         # Build query with filters
         query = db.query(Product)
-        
+
+        # Filter by store_id (required for multi-tenant)
+        if store_id:
+            query = query.filter(Product.store_id == store_id)
+
         if category:
             query = query.filter(Product.category == category)
         if status:
@@ -435,7 +445,7 @@ async def get_products(
             query = query.filter(Product.vendor == vendor)
         if search:
             query = query.filter(
-                Product.title.ilike(f"%{search}%") | 
+                Product.title.ilike(f"%{search}%") |
                 Product.description.ilike(f"%{search}%") |
                 Product.sku.ilike(f"%{search}%")
             )
@@ -666,6 +676,7 @@ async def delete_product(product_id: uuid.UUID, db: Session = Depends(get_db)):
 async def get_collections(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
+    store_id: Optional[uuid.UUID] = None,
     collection_type: Optional[str] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_db)
@@ -673,7 +684,11 @@ async def get_collections(
     try:
         # Build query with filters
         query = db.query(Collection)
-        
+
+        # Filter by store_id (required for multi-tenant)
+        if store_id:
+            query = query.filter(Collection.store_id == store_id)
+
         if collection_type:
             query = query.filter(Collection.collection_type == collection_type)
         if search:

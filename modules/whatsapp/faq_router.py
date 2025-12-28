@@ -20,6 +20,7 @@ from sqlalchemy import func
 from database import get_db
 from dependencies import get_current_user
 from modules.users.models import User
+from modules.stores.models import Store
 
 from .models import (
     FAQ, CompanyKnowledge, StoreBotConfig, CRMTask,
@@ -47,6 +48,23 @@ logger = logging.getLogger(__name__)
 faq_router = APIRouter(prefix="/api/whatsapp", tags=["FAQ & Knowledge"])
 
 
+def check_store_access(db: Session, user: User, store_id: UUID) -> bool:
+    """Check if user has access to a store (owns it or owns the agency that owns it)"""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        return False
+    # User owns the store directly
+    if store.owner_id == user.id:
+        return True
+    # User owns the agency that owns the store
+    if store.agency_id:
+        from modules.agency.models import Agency
+        agency = db.query(Agency).filter(Agency.id == store.agency_id).first()
+        if agency and agency.owner_id == user.id:
+            return True
+    return False
+
+
 # =============================================================================
 # FAQ Endpoints
 # =============================================================================
@@ -65,7 +83,7 @@ async def get_faqs(
 ):
     """Get paginated FAQs for a store with optional filters"""
     # Verify user has access to this store
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     query = db.query(FAQ).filter(FAQ.store_id == store_id)
@@ -107,7 +125,7 @@ async def create_faq(
     current_user: User = Depends(get_current_user),
 ):
     """Create a new FAQ and sync to knowledge base"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     # Create FAQ
@@ -149,7 +167,7 @@ async def get_faq(
     if not faq:
         raise HTTPException(status_code=404, detail="FAQ not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(faq.store_id):
+    if not check_store_access(db, current_user, faq.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this FAQ")
 
     # Increment view count
@@ -172,7 +190,7 @@ async def update_faq(
     if not faq:
         raise HTTPException(status_code=404, detail="FAQ not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(faq.store_id):
+    if not check_store_access(db, current_user, faq.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to update this FAQ")
 
     # Update fields
@@ -215,7 +233,7 @@ async def delete_faq(
     if not faq:
         raise HTTPException(status_code=404, detail="FAQ not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(faq.store_id):
+    if not check_store_access(db, current_user, faq.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to delete this FAQ")
 
     # Delete knowledge entry first
@@ -261,7 +279,7 @@ async def sync_all_faqs(
     current_user: User = Depends(get_current_user),
 ):
     """Sync all active FAQs to knowledge base"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     knowledge_service = KnowledgeService(store_id)
@@ -281,7 +299,7 @@ async def get_bot_config(
     current_user: User = Depends(get_current_user),
 ):
     """Get bot configuration for a store"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
@@ -304,7 +322,7 @@ async def update_bot_config(
     current_user: User = Depends(get_current_user),
 ):
     """Update bot configuration for a store"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
@@ -343,7 +361,7 @@ async def get_knowledge_entries(
     current_user: User = Depends(get_current_user),
 ):
     """Get paginated knowledge base entries"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     query = db.query(CompanyKnowledge).filter(CompanyKnowledge.store_id == store_id)
@@ -376,7 +394,7 @@ async def create_knowledge_entry(
     current_user: User = Depends(get_current_user),
 ):
     """Create a manual knowledge base entry"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     knowledge_service = KnowledgeService(store_id)
@@ -405,7 +423,7 @@ async def update_knowledge_entry(
     if not knowledge:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(knowledge.store_id):
+    if not check_store_access(db, current_user, knowledge.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to update this entry")
 
     knowledge_service = KnowledgeService(knowledge.store_id)
@@ -430,7 +448,7 @@ async def delete_knowledge_entry(
     if not knowledge:
         raise HTTPException(status_code=404, detail="Knowledge entry not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(knowledge.store_id):
+    if not check_store_access(db, current_user, knowledge.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to delete this entry")
 
     knowledge_service = KnowledgeService(knowledge.store_id)
@@ -446,7 +464,7 @@ async def sync_products_to_knowledge(
     current_user: User = Depends(get_current_user),
 ):
     """Sync all products to knowledge base"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     knowledge_service = KnowledgeService(store_id)
@@ -465,7 +483,7 @@ async def search_knowledge(
     current_user: User = Depends(get_current_user),
 ):
     """Semantic search in knowledge base"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     knowledge_service = KnowledgeService(store_id)
@@ -500,7 +518,7 @@ async def get_knowledge_stats(
     current_user: User = Depends(get_current_user),
 ):
     """Get knowledge base statistics"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     knowledge_service = KnowledgeService(store_id)
@@ -526,7 +544,7 @@ async def get_crm_tasks(
     current_user: User = Depends(get_current_user),
 ):
     """Get paginated CRM tasks"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     query = db.query(CRMTask).filter(CRMTask.store_id == store_id)
@@ -561,7 +579,7 @@ async def create_crm_task(
     current_user: User = Depends(get_current_user),
 ):
     """Create a new CRM task"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     task = CRMTask(
@@ -589,7 +607,7 @@ async def update_crm_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(task.store_id):
+    if not check_store_access(db, current_user, task.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to update this task")
 
     update_data = task_data.model_dump(exclude_unset=True)
@@ -622,7 +640,7 @@ async def delete_crm_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(task.store_id):
+    if not check_store_access(db, current_user, task.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to delete this task")
 
     db.delete(task)
@@ -646,7 +664,7 @@ async def get_conversations(
     current_user: User = Depends(get_current_user),
 ):
     """Get paginated conversations with optional filters"""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+    if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
     query = db.query(WhatsAppConversation).filter(WhatsAppConversation.store_id == store_id)
@@ -683,7 +701,7 @@ async def get_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(conversation.store_id):
+    if not check_store_access(db, current_user, conversation.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
 
     return ConversationResponse.model_validate(conversation)
@@ -704,7 +722,7 @@ async def get_conversation_messages(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(conversation.store_id):
+    if not check_store_access(db, current_user, conversation.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
 
     messages = db.query(WhatsAppConversationMessage).filter(
@@ -729,7 +747,7 @@ async def assign_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(conversation.store_id):
+    if not check_store_access(db, current_user, conversation.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
 
     conversation.assigned_to = assignment.assigned_to
@@ -755,7 +773,7 @@ async def close_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if not current_user.store_id or str(current_user.store_id) != str(conversation.store_id):
+    if not check_store_access(db, current_user, conversation.store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this conversation")
 
     conversation.status = "closed"

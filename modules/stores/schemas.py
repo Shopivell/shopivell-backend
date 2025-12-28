@@ -30,6 +30,7 @@ class StoreBase(BaseModel):
 class StoreCreate(StoreBase):
     owner_id: uuid.UUID
     agency_id: Optional[uuid.UUID] = None
+    scraped_faqs: Optional[List[Dict[str, Any]]] = None  # FAQs from scraping
 
 class StoreUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)

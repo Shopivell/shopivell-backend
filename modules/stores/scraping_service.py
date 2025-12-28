@@ -138,6 +138,11 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         if images_data.get("images"):
             store_data["extracted_images"] = images_data["images"][:10]  # Limit to 10 images
 
+        # Extract FAQs from the scraped content
+        print(f"[FAQ] Extracting FAQs from scraped content...")
+        faqs = _extract_faqs_with_ai(combined_content, url)
+        store_data["faqs"] = faqs
+
         return store_data
 
     except Exception as e:
@@ -598,16 +603,26 @@ EXTRACT THESE FIELDS (return null only if truly not found):
    - Their mission or value proposition
    - What makes them unique
 
-5. services_products: List the main products/services offered (comma-separated)
+5. store_tone: Analyze the website's communication style and pick ONE:
+   - "friendly" = Friendly & Casual tone
+   - "professional" = Professional & Formal tone
+   - "luxury" = Luxury & Premium feel
+   - "modern" = Modern & Trendy vibe
+   - "traditional" = Traditional & Classic approach
+   - "playful" = Playful & Fun personality
+   - "minimalist" = Minimalist & Clean aesthetic
+   - "eco_friendly" = Eco-Friendly & Sustainable focus
+
+6. services_products: List the main products/services offered (comma-separated)
    - Look at navigation menu, product categories, services listed
    - Be specific, not generic
 
-6. color_theme: The PRIMARY brand color as hex code
+7. color_theme: The PRIMARY brand color as hex code
    - IMPORTANT: If brand colors were detected from image analysis above, use those!
    - Otherwise, pick a color that fits the industry
    - Common examples: Blue=#2563EB, Green=#16A34A, Red=#DC2626
 
-7. business_type: Describe the business in 2-4 words
+8. business_type: Describe the business in 2-4 words
    - Examples: "Coffee Shop", "Athletic Apparel", "SaaS Platform"
 
 WEBSITE CONTENT:
@@ -620,7 +635,7 @@ CRITICAL RULES:
 - Return ONLY valid JSON, no markdown or explanation
 
 JSON FORMAT:
-{{"store_name": "...", "store_email": "...", "store_phone": "...", "store_voice": "...", "services_products": "...", "color_theme": "#...", "business_type": "..."}}
+{{"store_name": "...", "store_email": "...", "store_phone": "...", "store_voice": "...", "store_tone": "...", "services_products": "...", "color_theme": "#...", "business_type": "..."}}
 """
 
     try:
@@ -664,6 +679,16 @@ JSON FORMAT:
 
         if not store_data.get("business_type"):
             store_data["business_type"] = "other"
+
+        # Default store_tone if not extracted
+        valid_tones = ["friendly", "professional", "luxury", "modern", "traditional", "playful", "minimalist", "eco_friendly"]
+        if not store_data.get("store_tone") or store_data.get("store_tone") not in valid_tones:
+            store_data["store_tone"] = "professional"  # Default to professional
+
+        # Generate store_link from store name
+        if store_data.get("store_name"):
+            store_link = re.sub(r'[^a-z0-9]+', '-', store_data["store_name"].lower())
+            store_data["store_link"] = store_link.strip('-')[:30]
 
         # Add brand style from image analysis
         if image_analysis and image_analysis.get("brand_style"):
@@ -738,19 +763,120 @@ def _extract_domain_name(url: str) -> str:
     return domain.capitalize()
 
 
+def _extract_faqs_with_ai(content: str, url: str) -> List[Dict[str, str]]:
+    """
+    Use OpenAI to extract FAQ information from website content.
+    Returns a list of {question, answer, category} dicts.
+    """
+    client = OpenAI(api_key=openai_api_key)
+
+    # Truncate content if too long
+    if len(content) > 15000:
+        content = content[:15000] + "..."
+
+    domain = url.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
+
+    prompt = f"""You are an expert at extracting FAQ information from website content.
+
+TASK: Analyze this website content and extract any FAQ (Frequently Asked Questions) information.
+
+Website URL: {url}
+Domain: {domain}
+
+Look for:
+1. Explicit FAQ sections (Q&A format)
+2. "How it works" sections that answer common questions
+3. Shipping, returns, refund policies
+4. Pricing information and payment options
+5. Contact hours and availability
+6. Product/service specifications that answer common questions
+7. Any "About" section content that answers "who are you" type questions
+
+WEBSITE CONTENT:
+{content}
+
+IMPORTANT RULES:
+- Extract ONLY information that ACTUALLY appears in the content
+- Create 5-10 FAQs based on available information
+- If content is limited, extract fewer FAQs (minimum 3)
+- Each FAQ should be practical and helpful for customers
+- Categorize each FAQ: shipping, returns, pricing, general, products, services, hours, contact, payment
+
+Return ONLY valid JSON array in this format:
+[
+  {{"question": "...", "answer": "...", "category": "..."}},
+  {{"question": "...", "answer": "...", "category": "..."}}
+]
+
+If no FAQ information can be extracted, return an empty array: []
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that extracts FAQ information from website content. Always return valid JSON only."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.3,
+            max_tokens=2000
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Clean up the response
+        if result_text.startswith("```"):
+            result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+            result_text = re.sub(r'\n?```$', '', result_text)
+
+        print(f"[FAQ Agent] Extracted FAQs: {result_text[:200]}...")
+
+        faqs = json.loads(result_text)
+
+        # Validate FAQ structure
+        valid_faqs = []
+        for faq in faqs:
+            if isinstance(faq, dict) and faq.get("question") and faq.get("answer"):
+                valid_faqs.append({
+                    "question": faq.get("question", ""),
+                    "answer": faq.get("answer", ""),
+                    "category": faq.get("category", "general")
+                })
+
+        print(f"[FAQ Agent] Extracted {len(valid_faqs)} valid FAQs")
+        return valid_faqs
+
+    except json.JSONDecodeError as e:
+        print(f"[FAQ Agent] JSON parse error: {e}")
+        return []
+    except Exception as e:
+        print(f"[FAQ Agent] Error extracting FAQs: {e}")
+        return []
+
+
 def _generate_fallback_data(url: str) -> Dict[str, Any]:
     """Generate fallback data when scraping fails."""
     domain = _extract_domain_name(url)
+    store_link = re.sub(r'[^a-z0-9]+', '-', domain.lower()).strip('-')[:30]
 
     return {
         "store_name": f"{domain} Store",
         "store_email": None,
         "store_phone": None,
         "store_voice": f"Welcome to {domain}. We provide quality products and services tailored to your needs.",
+        "store_tone": "professional",
+        "store_link": store_link,
         "services_products": "General Products, Services",
         "color_theme": "#3B82F6",
         "business_type": "other",
-        "logo_url": None
+        "logo_url": None,
+        "faqs": []
     }
 
 

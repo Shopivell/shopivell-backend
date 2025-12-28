@@ -12,14 +12,16 @@ from pgvector.sqlalchemy import Vector
 # NO import from users module!
 
 class StoreSetupStep(str, enum.Enum):
-    CREATE_STORE = "create_store"  # Add the new one
+    CREATE_STORE = "create_store"
     BASIC_INFO = "basic_info"
     BUSINESS_TYPE = "business_type"
+    GOALS = "goals"
+    SUBSCRIPTION = "subscription"  # Subscription plan selection
+    PAYMENT = "payment"  # Subscription payment during signup
     DELIVERY_SETTINGS = "delivery_settings"
     PAYMENT_METHODS = "payment_methods"
     FEATURES = "features"
-    GOALS = "goals"
-    DOMAIN = "domain"
+    PRODUCTS = "products"
     WHATSAPP = "whatsapp"
     COMPLETED = "completed"
 

@@ -1,7 +1,7 @@
 # modules/stores/api.py
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import uuid
 from datetime import datetime
 
@@ -12,18 +12,25 @@ from modules.stores.schemas import (
     MessageSend, ScrapeRequest, SimpleMessage, StoreCreate, StoreResponse, StoreUpdate, StoreListResponse,
     StoreSetupStepData, StoreSetupSessionResponse, StoreSetupStart
 )
+from modules.whatsapp.models import FAQ
+from modules.agency.models import Agency
+import re
 
 store_router = APIRouter(prefix="/api/stores", tags=["stores"])
 
 # Constants for setup progress
 SETUP_STEPS = {
-    "basic_info": 20,
-    "business_type": 35,
-    "delivery_settings": 50,
-    "payment_methods": 65,
-    "features": 80,
-    "goals": 95,
-    "whatsapp": 95,  
+    "basic_info": 10,
+    "business_type": 20,
+    "goals": 30,
+    "subscription": 40,
+    "payment": 50,
+    "create_store": 55,
+    "products": 60,
+    # "delivery_settings": 70,  # Skipped for now
+    "payment_methods": 75,
+    "features": 85,
+    "whatsapp": 95,
     "completed": 100
 }
 
@@ -114,8 +121,8 @@ async def update_setup_step(
                 detail="Setup session not found or inactive"
             )
         
-        print(f"🔄 BEFORE UPDATE - session_data: {setup_session.session_data}")
-        print(f"🔄 RECEIVED DATA: {step_data.data}")
+        print(f"[UPDATE] BEFORE UPDATE - session_data: {setup_session.session_data}")
+        print(f"[UPDATE] RECEIVED DATA: {step_data.data}")
         
         # FIX: Create a NEW dictionary to force SQLAlchemy to detect changes
         current_data = setup_session.session_data or {}
@@ -149,22 +156,22 @@ async def update_setup_step(
         # Force update timestamp
         setup_session.updated_at = datetime.utcnow()
         
-        print(f"🔄 AFTER UPDATE - session_data: {setup_session.session_data}")
-        print(f"🔄 Completed steps: {setup_session.completed_steps}")
-        print(f"🔄 Progress: {setup_session.setup_progress}%")
+        print(f"[UPDATE] AFTER UPDATE - session_data: {setup_session.session_data}")
+        print(f"[UPDATE] Completed steps: {setup_session.completed_steps}")
+        print(f"[UPDATE] Progress: {setup_session.setup_progress}%")
         
         # FIX: Use explicit commit and refresh
         db.commit()
         db.refresh(setup_session)
         
-        print(f"✅ AFTER COMMIT - session_data: {setup_session.session_data}")
+        print(f"[SUCCESS] AFTER COMMIT - session_data: {setup_session.session_data}")
         return setup_session
         
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"❌ Error updating setup step: {str(e)}")
+        print(f"[ERROR] Error updating setup step: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating setup step: {str(e)}"
@@ -213,11 +220,42 @@ async def complete_store_setup(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Missing required field: {field}"
                 )
-        
+
+        # Get or create agency for the user
+        agency = db.query(Agency).filter(Agency.owner_id == user.id).first()
+
+        if not agency:
+            # Create a new agency for the user based on store info
+            store_name = session_data['store_name']
+            # Create a URL-friendly slug from store name
+            slug_base = re.sub(r'[^a-z0-9]+', '-', store_name.lower()).strip('-')
+            slug = slug_base[:50]  # Limit length
+
+            # Ensure slug is unique
+            slug_counter = 1
+            original_slug = slug
+            while db.query(Agency).filter(Agency.slug == slug).first():
+                slug = f"{original_slug}-{slug_counter}"
+                slug_counter += 1
+
+            agency = Agency(
+                owner_id=user.id,
+                name=store_name,  # Use store name as agency name
+                slug=slug,
+                email=user.email,
+                phone=session_data.get('store_phone'),
+                description=f"Agency for {store_name}"
+            )
+            db.add(agency)
+            db.flush()  # Get the agency ID
+            print(f"[Agency] Created agency {agency.id} ({agency.name}) for user {user.id}")
+        else:
+            print(f"[Agency] Using existing agency {agency.id} ({agency.name}) for user {user.id}")
+
         # CREATE the actual store with all collected data
-        # In the complete_store_setup function, update the store_data dictionary:
         store_data = {
             'owner_id': user.id,
+            'agency_id': agency.id,  # Link store to agency
             'store_name': session_data['store_name'],
             'store_phone': session_data['store_phone'],
             'store_email': session_data.get('store_email'),  # ADDED
@@ -244,13 +282,36 @@ async def complete_store_setup(
         # Create the store
         db_store = Store(**store_data)
         db.add(db_store)
-        
+        db.flush()  # Get the store ID without committing
+
+        # Create FAQs from scraped data if available
+        scraped_faqs = session_data.get('scraped_faqs', [])
+        if scraped_faqs:
+            print(f"[FAQ] Creating {len(scraped_faqs)} FAQs for store {db_store.id}")
+            for i, faq_data in enumerate(scraped_faqs):
+                try:
+                    faq = FAQ(
+                        store_id=db_store.id,
+                        question=faq_data.get('question', ''),
+                        answer=faq_data.get('answer', ''),
+                        category=faq_data.get('category', 'general'),
+                        display_order=i,
+                        is_active=True,
+                        is_featured=i < 5  # Feature first 5 FAQs
+                    )
+                    db.add(faq)
+                except Exception as faq_err:
+                    print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
+                    # Continue with other FAQs if one fails
+
         # Deactivate the setup session
         setup_session.is_active = False
         setup_session.setup_progress = 100
-        
+
         db.commit()
         db.refresh(db_store)
+
+        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs")
         return db_store
         
     except HTTPException:
@@ -444,7 +505,8 @@ async def create_store(
     store_data: StoreCreate,
     db: Session = Depends(get_db)
 ):
-    """Create a new store directly (for adding additional stores)"""
+    """Create a new store directly (for adding additional stores).
+    Also creates FAQs if scraped_faqs is provided."""
     try:
         # Verify owner exists
         owner = db.query(User).filter(User.id == store_data.owner_id).first()
@@ -481,8 +543,32 @@ async def create_store(
         )
 
         db.add(db_store)
+        db.flush()  # Get the store ID without committing
+
+        # Create FAQs from scraped data if available
+        scraped_faqs = store_data.scraped_faqs or []
+        if scraped_faqs:
+            print(f"[FAQ] Creating {len(scraped_faqs)} FAQs for store {db_store.id}")
+            for i, faq_data in enumerate(scraped_faqs):
+                try:
+                    faq = FAQ(
+                        store_id=db_store.id,
+                        question=faq_data.get('question', ''),
+                        answer=faq_data.get('answer', ''),
+                        category=faq_data.get('category', 'general'),
+                        display_order=i,
+                        is_active=True,
+                        is_featured=i < 5  # Feature first 5 FAQs
+                    )
+                    db.add(faq)
+                except Exception as faq_err:
+                    print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
+                    # Continue with other FAQs if one fails
+
         db.commit()
         db.refresh(db_store)
+
+        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs")
         return db_store
 
     except HTTPException:
@@ -859,15 +945,19 @@ def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] =
     }
 
 @store_router.post("/scrape-website", status_code=status.HTTP_200_OK)
-async def scrape_website(request: ScrapeRequest):
+async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
     """
-    Scrape a website using Tavily and extract store information using AI.
+    Scrape a website using Tavily and extract store information using AI Agent.
+    Also extracts FAQs from the website content.
 
     Uses:
-    - Tavily for web content extraction
-    - OpenAI for parsing content into structured store data
+    - Tavily for multi-page web content extraction
+    - LangChain + OpenRouter/OpenAI for AI-powered extraction
+    - Extracts: store info, brand details, products/services, FAQs
+
+    If sessionId is provided, saves scraped data to the setup session.
     """
-    from modules.stores.scraping_service import extract_store_info_from_website
+    from modules.stores.store_scraping_agent import StoreScrapingAgent
 
     url = request.url.strip()
 
@@ -876,10 +966,58 @@ async def scrape_website(request: ScrapeRequest):
         url = 'https://' + url
 
     try:
-        # Extract store info using Tavily + AI agent
-        store_data = extract_store_info_from_website(url)
+        # Initialize the AI scraping agent
+        agent = StoreScrapingAgent()
+
+        # Extract store info using Tavily + LangChain AI agent
+        store_data = await agent.extract_store_info(url)
 
         print(f"[Scrape] Successfully extracted data for: {url}")
+        print(f"[Scrape] Store: {store_data.get('store_name')}")
+        print(f"[Scrape] Extracted {len(store_data.get('faqs', []))} FAQs")
+
+        # If session ID provided, save to session
+        if request.sessionId:
+            try:
+                session = db.query(StoreSetupSession).filter(
+                    StoreSetupSession.id == request.sessionId
+                ).first()
+
+                if session:
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    # Update session data with scraped info
+                    current_data = dict(session.session_data) if session.session_data else {}
+
+                    # Merge scraped data into session
+                    current_data["store_name"] = store_data.get("store_name") or current_data.get("store_name")
+                    current_data["store_email"] = store_data.get("store_email") or current_data.get("store_email")
+                    current_data["store_phone"] = store_data.get("store_phone") or current_data.get("store_phone")
+                    current_data["store_voice"] = store_data.get("store_voice") or current_data.get("store_voice")
+                    current_data["store_tone"] = store_data.get("store_tone") or current_data.get("store_tone")
+                    current_data["store_website"] = url
+                    current_data["services_products"] = store_data.get("services_products") or current_data.get("services_products")
+                    current_data["color_theme"] = store_data.get("color_theme") or current_data.get("color_theme")
+                    current_data["business_type"] = store_data.get("business_type") or current_data.get("business_type")
+                    current_data["logo_url"] = store_data.get("logo_url") or current_data.get("logo_url")
+                    current_data["brand_style"] = store_data.get("brand_style") or current_data.get("brand_style")
+                    current_data["store_link"] = store_data.get("store_link") or current_data.get("store_link")
+
+                    # Save FAQs to session for later insertion
+                    current_data["scraped_faqs"] = store_data.get("faqs", [])
+
+                    # Assign new dict to ensure SQLAlchemy detects the change
+                    session.session_data = current_data
+                    flag_modified(session, "session_data")
+                    db.commit()
+
+                    print(f"[Scrape] Saved scraped data to session {request.sessionId}")
+                    print(f"[Scrape] Session now has {len(current_data.get('scraped_faqs', []))} FAQs")
+
+            except Exception as session_err:
+                print(f"[Scrape] Warning: Failed to save to session: {session_err}")
+                # Continue - don't fail the request if session save fails
+
         return store_data
 
     except ValueError as e:
@@ -893,4 +1031,40 @@ async def scrape_website(request: ScrapeRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to scrape website: {str(e)}"
+        )
+
+
+# Scrape products/services from website
+@store_router.post("/scrape-products", status_code=status.HTTP_200_OK)
+async def scrape_products_from_website(
+    request: ScrapeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Scrape products/services from a website URL using AI.
+    Returns a list of products with name, description, price, and category.
+    """
+    from modules.stores.store_scraping_agent import StoreScrapingAgent
+
+    url = request.url
+    print(f"[ScrapeProducts] Starting products scrape for: {url}")
+
+    try:
+        agent = StoreScrapingAgent()
+        products_data = await agent.extract_products(url)
+
+        print(f"[ScrapeProducts] Successfully extracted {len(products_data.get('products', []))} products from: {url}")
+
+        return products_data
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"[ScrapeProducts] Error scraping products from {url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to scrape products: {str(e)}"
         )
