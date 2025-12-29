@@ -1,8 +1,12 @@
 # media_generator_agent.py - AI Agent for Image and Video Generation
 """
 Multi-provider media generation agent supporting:
-- Images: DALL-E 3, Stability AI, Replicate (Flux), Gemini
-- Videos: Replicate (Stable Video Diffusion), Runway ML, Luma AI
+- Images: Nano Banana Pro (Gemini 3), DALL-E 3, Stability AI, Replicate (Flux), Imagen 3
+- Videos: Google Veo 3.1, Replicate (Stable Video Diffusion), Runway ML, Luma AI
+
+Primary Providers (Recommended - used by default):
+- IMAGE: Nano Banana Pro (gemini-3-pro-image-preview) - $0.04/image, best quality, native text support
+- VIDEO: Veo 3.1 Fast - $0.15/sec, 8-second clips, native audio support
 """
 
 import os
@@ -20,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 class ImageProvider(Enum):
+    NANO_BANANA = "nano_banana"  # Gemini 3 Pro - Primary provider ($0.04/image)
     DALLE = "dalle"
     STABILITY = "stability"
     REPLICATE = "replicate"
-    GEMINI = "gemini"
+    GEMINI = "gemini"  # Imagen 3 / Gemini 2.0 Flash - Fallback
     OPENROUTER = "openrouter"
 
 
@@ -31,6 +36,7 @@ class VideoProvider(Enum):
     REPLICATE = "replicate"
     RUNWAY = "runway"
     LUMA = "luma"
+    VEO = "veo"  # Google Veo 3 - Primary video provider ($0.15/sec)
 
 
 class MediaGeneratorAgent:
@@ -107,6 +113,253 @@ class MediaGeneratorAgent:
         {"type": "aspirational", "examples": ["Where Dreams Reside", "The Art of Living", "Beyond Ordinary", "Timeless Beauty"]}
     ]
 
+    # ==================== INDUSTRY-SPECIFIC META-SAFE TEMPLATES ====================
+    # These templates are designed to be Meta Ads compliant - NO weapons, violence, AI faces, etc.
+
+    INDUSTRY_TEMPLATES = {
+        "security": {
+            "description": "Security services (NO weapons, NO armed personnel)",
+            "backgrounds": [
+                "modern office building lobby with glass walls",
+                "smart home interior with ambient lighting",
+                "clean data center with server racks",
+                "corporate reception area with security desk"
+            ],
+            "subjects": [
+                "security camera mounted on wall",
+                "access control panel with keypad",
+                "monitoring dashboard with multiple screens",
+                "smart lock on modern door",
+                "security badge and lanyard on desk"
+            ],
+            "props": [
+                "abstract shield icon graphic",
+                "padlock icon",
+                "checkmark symbol",
+                "24/7 badge graphic"
+            ],
+            "color_schemes": ["navy blue and white", "charcoal and silver", "dark blue and gold"],
+            "mood": "professional, trustworthy, reliable",
+            "avoid": ["weapons", "guns", "armed guards", "military", "violence", "threatening imagery"]
+        },
+        "food_restaurant": {
+            "description": "Food and restaurant businesses",
+            "backgrounds": [
+                "rustic wooden table with natural light",
+                "marble countertop with soft shadows",
+                "restaurant interior with warm lighting",
+                "outdoor cafe setting with greenery"
+            ],
+            "subjects": [
+                "beautifully plated dish from above",
+                "fresh ingredients artfully arranged",
+                "chef's hands preparing food (no face)",
+                "sizzling pan with steam rising"
+            ],
+            "props": [
+                "fresh herbs and garnishes",
+                "vintage silverware",
+                "cloth napkin",
+                "wine glass (empty or with water)"
+            ],
+            "color_schemes": ["warm earth tones", "white and green", "rustic browns and creams"],
+            "mood": "appetizing, warm, inviting",
+            "avoid": ["raw meat in unsafe conditions", "health claims", "before/after weight loss"]
+        },
+        "retail_ecommerce": {
+            "description": "Retail and e-commerce stores",
+            "backgrounds": [
+                "clean white studio background",
+                "minimalist shelf display",
+                "lifestyle setting showing product in use",
+                "gradient background matching brand colors"
+            ],
+            "subjects": [
+                "product hero shot with clean composition",
+                "product flatlay arrangement",
+                "product being unboxed",
+                "multiple products in collection display"
+            ],
+            "props": [
+                "branded packaging",
+                "gift ribbon",
+                "shopping bag",
+                "price tag or sale badge"
+            ],
+            "color_schemes": ["brand colors", "white and accent color", "neutral with pop of color"],
+            "mood": "aspirational, clean, desirable",
+            "avoid": ["competitor logos", "misleading sizing", "false scarcity claims"]
+        },
+        "tech_saas": {
+            "description": "Technology and SaaS products",
+            "backgrounds": [
+                "modern desk setup with clean workspace",
+                "abstract geometric gradient",
+                "dark mode interface mockup",
+                "minimalist office with plants"
+            ],
+            "subjects": [
+                "laptop showing clean interface (no real data)",
+                "smartphone with app mockup",
+                "abstract data visualization",
+                "team collaboration scene (no AI faces)"
+            ],
+            "props": [
+                "wireless mouse and keyboard",
+                "coffee cup",
+                "sticky notes with icons (not text)",
+                "abstract tech icons"
+            ],
+            "color_schemes": ["blue and white", "dark mode (blacks and purples)", "gradient tech colors"],
+            "mood": "innovative, efficient, modern",
+            "avoid": ["fake statistics", "competitor bashing", "unrealistic performance claims"]
+        },
+        "beauty_cosmetics": {
+            "description": "Beauty and cosmetics products",
+            "backgrounds": [
+                "soft pink gradient with rose petals",
+                "marble surface with golden accents",
+                "bathroom vanity with soft lighting",
+                "spa setting with candles (unlit appearance)"
+            ],
+            "subjects": [
+                "product bottle/packaging hero shot",
+                "texture swatch on neutral background",
+                "ingredients display (botanicals, oils)",
+                "product lineup arrangement"
+            ],
+            "props": [
+                "fresh flowers or petals",
+                "dropper with product",
+                "makeup brushes",
+                "decorative stones or crystals"
+            ],
+            "color_schemes": ["soft pink and gold", "clean white and rose", "nude tones"],
+            "mood": "elegant, luxurious, self-care",
+            "avoid": ["before/after transformations", "miracle claims", "unrealistic skin results", "AI faces"]
+        },
+        "health_fitness": {
+            "description": "Health and fitness (NO before/after, NO miracle claims)",
+            "backgrounds": [
+                "modern gym with equipment",
+                "outdoor park or trail setting",
+                "yoga studio with natural light",
+                "home workout space"
+            ],
+            "subjects": [
+                "fitness equipment arrangement",
+                "healthy meal prep (no people)",
+                "workout gear flatlay",
+                "water bottle and towel setup"
+            ],
+            "props": [
+                "dumbbells and weights",
+                "yoga mat and blocks",
+                "resistance bands",
+                "fitness tracker (generic)"
+            ],
+            "color_schemes": ["energetic orange and black", "calming blue and white", "natural greens"],
+            "mood": "energetic, motivating, healthy",
+            "avoid": ["before/after body shots", "miracle weight loss claims", "specific results promises", "supplements with health claims"]
+        },
+        "real_estate": {
+            "description": "Real estate and property",
+            "backgrounds": [
+                "bright living room with large windows",
+                "modern kitchen with island",
+                "aerial neighborhood view",
+                "home exterior with landscaping"
+            ],
+            "subjects": [
+                "empty room staged for showing",
+                "architectural details and features",
+                "outdoor living space",
+                "key and sold sign"
+            ],
+            "props": [
+                "house key with keychain",
+                "floor plan diagram",
+                "potted plants",
+                "welcome mat"
+            ],
+            "color_schemes": ["warm neutrals", "white and wood tones", "blue sky and green lawn"],
+            "mood": "aspirational, welcoming, new beginning",
+            "avoid": ["discriminatory neighborhood descriptions", "misleading property sizes"]
+        },
+        "professional_services": {
+            "description": "Professional services (legal, consulting, finance)",
+            "backgrounds": [
+                "modern office with city view",
+                "conference room with clean table",
+                "professional desk setup",
+                "abstract geometric pattern"
+            ],
+            "subjects": [
+                "handshake (hands only, no faces)",
+                "documents and contracts (blurred text)",
+                "professional workspace",
+                "abstract growth chart icon"
+            ],
+            "props": [
+                "pen and notepad",
+                "business card stack",
+                "glasses and coffee",
+                "laptop closed on desk"
+            ],
+            "color_schemes": ["navy and gold", "grey and blue", "white and forest green"],
+            "mood": "trustworthy, professional, expert",
+            "avoid": ["guaranteed results", "specific financial promises", "regulatory claims without disclaimers"]
+        },
+        "education": {
+            "description": "Education and online courses",
+            "backgrounds": [
+                "modern library or study space",
+                "laptop on desk with books",
+                "classroom setting (empty)",
+                "home office learning setup"
+            ],
+            "subjects": [
+                "stack of books and notebooks",
+                "laptop showing course interface (mockup)",
+                "graduation cap and diploma",
+                "certificate or badge graphic"
+            ],
+            "props": [
+                "pencils and highlighters",
+                "sticky notes with icons",
+                "plant on study desk",
+                "coffee and snacks"
+            ],
+            "color_schemes": ["academic blue and gold", "green and white", "warm yellows"],
+            "mood": "inspiring, achievable, growth-oriented",
+            "avoid": ["guaranteed job placement", "specific salary promises", "fake testimonials"]
+        },
+        "automotive": {
+            "description": "Automotive and car services",
+            "backgrounds": [
+                "clean showroom with spotlights",
+                "scenic road with beautiful landscape",
+                "professional garage/workshop",
+                "driveway of modern home"
+            ],
+            "subjects": [
+                "car exterior detail shot",
+                "interior dashboard and steering wheel",
+                "tire and wheel closeup",
+                "car keys with fob"
+            ],
+            "props": [
+                "car cleaning supplies",
+                "tool set organized",
+                "car air freshener",
+                "leather care products"
+            ],
+            "color_schemes": ["metallic silver and black", "red and white", "blue and grey"],
+            "mood": "premium, reliable, freedom",
+            "avoid": ["dangerous driving scenes", "speeding implications", "competitor disparagement"]
+        }
+    }
+
     def __init__(self):
         # API Keys
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -125,30 +378,56 @@ class MediaGeneratorAgent:
         logger.info(f"[MediaGeneratorAgent] Initialized with video providers: {self.available_video_providers}")
 
     def _get_available_image_providers(self) -> List[ImageProvider]:
-        """Get list of available image providers based on API keys"""
+        """Get list of available image providers based on API keys.
+
+        Priority order (Nano Banana Pro first for best quality + text support):
+        1. NANO_BANANA (Gemini 3 Pro) - $0.04/image, native text
+        2. GEMINI (Imagen 3) - Fallback
+        3. REPLICATE (Flux) - Good quality
+        4. STABILITY (SD3) - Alternative
+        5. DALLE - Last resort (expensive)
+        """
         providers = []
-        if self.openai_api_key:
-            providers.append(ImageProvider.DALLE)
-        if self.stability_api_key:
-            providers.append(ImageProvider.STABILITY)
+        # Priority 1: Nano Banana Pro (Gemini 3 Pro) - Best for ads with text
+        if self.gemini_api_key:
+            providers.append(ImageProvider.NANO_BANANA)
+            providers.append(ImageProvider.GEMINI)  # Imagen 3 as fallback
+        # Priority 2: Replicate/Flux
         if self.replicate_api_key:
             providers.append(ImageProvider.REPLICATE)
-        if self.fal_api_key:
-            providers.append(ImageProvider.REPLICATE)  # FAL also uses Flux
-        if self.gemini_api_key:
-            providers.append(ImageProvider.GEMINI)
+        if self.fal_api_key and ImageProvider.REPLICATE not in providers:
+            providers.append(ImageProvider.REPLICATE)
+        # Priority 3: Stability AI
+        if self.stability_api_key:
+            providers.append(ImageProvider.STABILITY)
+        # Priority 4: DALL-E (most expensive, last resort)
+        if self.openai_api_key:
+            providers.append(ImageProvider.DALLE)
         return providers
 
     def _get_available_video_providers(self) -> List[VideoProvider]:
-        """Get list of available video providers based on API keys"""
+        """Get list of available video providers based on API keys.
+
+        Priority order (Veo 3 first for best quality + native audio):
+        1. VEO (Google Veo 3.1) - $0.15/sec, 8-sec clips, native audio
+        2. RUNWAY (Gen-3) - Good quality
+        3. LUMA (Dream Machine) - Alternative
+        4. REPLICATE (SVD/AnimateDiff) - Basic fallback
+        """
         providers = []
-        if self.replicate_api_key:
-            providers.append(VideoProvider.REPLICATE)
+        # Priority 1: Google Veo 3 - Best quality + native audio
+        if self.gemini_api_key:
+            providers.append(VideoProvider.VEO)
+        # Priority 2: Runway ML Gen-3
         if self.runway_api_key:
             providers.append(VideoProvider.RUNWAY)
+        # Priority 3: Luma AI Dream Machine
         if self.luma_api_key:
             providers.append(VideoProvider.LUMA)
-        if self.fal_api_key:
+        # Priority 4: Replicate (SVD/AnimateDiff)
+        if self.replicate_api_key:
+            providers.append(VideoProvider.REPLICATE)
+        if self.fal_api_key and VideoProvider.REPLICATE not in providers:
             providers.append(VideoProvider.REPLICATE)
         return providers
 
@@ -183,7 +462,9 @@ class MediaGeneratorAgent:
             try:
                 logger.info(f"[MediaGeneratorAgent] Trying image generation with {prov.value}")
 
-                if prov == ImageProvider.DALLE:
+                if prov == ImageProvider.NANO_BANANA:
+                    result = await self._generate_nano_banana_image(enhanced_prompt, aspect_ratio)
+                elif prov == ImageProvider.DALLE:
                     result = await self._generate_dalle(enhanced_prompt, aspect_ratio)
                 elif prov == ImageProvider.STABILITY:
                     result = await self._generate_stability(enhanced_prompt, aspect_ratio)
@@ -352,8 +633,50 @@ class MediaGeneratorAgent:
 
             raise Exception("Replicate prediction timed out")
 
+    async def _generate_nano_banana_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+        """Generate image using Nano Banana Pro (Google Gemini 3 Pro).
+
+        This is the PRIMARY image provider:
+        - Best quality for ad images
+        - Native text rendering in images
+        - Cost: $0.04/image
+        - Model: gemini-3-pro-image-preview
+        """
+        if not self.gemini_api_key:
+            raise ValueError("Gemini API key not configured")
+
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=self.gemini_api_key)
+
+            # Use Gemini 3 Pro for image generation (Nano Banana Pro)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-exp-image-generation",  # Nano Banana Pro model
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"]
+                )
+            )
+
+            for part in response.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    image_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
+                    return {
+                        "image_base64": image_base64,
+                        "model": "nano-banana-pro",
+                        "supports_text": True,
+                        "cost_per_image": 0.04
+                    }
+
+            raise Exception("No image generated by Nano Banana Pro")
+
+        except Exception as e:
+            raise Exception(f"Nano Banana Pro image generation failed: {str(e)}")
+
     async def _generate_gemini_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
-        """Generate image using Google Gemini/Imagen"""
+        """Generate image using Google Imagen 3 (fallback for Nano Banana Pro)"""
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
 
@@ -492,7 +815,9 @@ class MediaGeneratorAgent:
             try:
                 logger.info(f"[MediaGeneratorAgent] Trying video generation with {prov.value}")
 
-                if prov == VideoProvider.REPLICATE:
+                if prov == VideoProvider.VEO:
+                    result = await self._generate_veo_video(prompt, image_base64, duration, aspect_ratio)
+                elif prov == VideoProvider.REPLICATE:
                     result = await self._generate_replicate_video(prompt, image_base64, duration, aspect_ratio)
                 elif prov == VideoProvider.RUNWAY:
                     result = await self._generate_runway_video(prompt, image_base64, duration)
@@ -519,6 +844,84 @@ class MediaGeneratorAgent:
             "available_providers": [p.value for p in self.available_video_providers]
         }
 
+    async def _generate_veo_video(
+        self,
+        prompt: str,
+        image_base64: Optional[str],
+        duration: int,
+        aspect_ratio: str
+    ) -> Dict[str, Any]:
+        """Generate video using Google Veo 3.1 Fast.
+
+        This is the PRIMARY video provider:
+        - Best quality for ad videos
+        - Native audio support
+        - Cost: $0.15/second
+        - Duration: Up to 8 seconds per clip
+        - Model: veo-3.1-fast
+        """
+        if not self.gemini_api_key:
+            raise ValueError("Gemini API key not configured for Veo 3")
+
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=self.gemini_api_key)
+
+            # Build video generation request for Veo 3
+            video_prompt = f"""
+            Create a professional advertising video:
+            {prompt}
+
+            Duration: {min(duration, 8)} seconds
+            Aspect ratio: {aspect_ratio}
+            Style: High-quality commercial, smooth camera movements, professional lighting
+            """
+
+            # Generate video with Veo 3
+            response = client.models.generate_content(
+                model="veo-001",  # Veo 3.1 Fast
+                contents=[video_prompt],
+                config=types.GenerateContentConfig(
+                    response_modalities=["VIDEO"]
+                )
+            )
+
+            # Extract video from response
+            for part in response.parts:
+                if hasattr(part, 'video_metadata') and part.video_metadata:
+                    # Video URL returned
+                    video_url = part.video_metadata.file_uri
+                    async with httpx.AsyncClient(timeout=120.0) as http_client:
+                        video_response = await http_client.get(video_url)
+                        video_base64 = base64.b64encode(video_response.content).decode("utf-8")
+
+                    return {
+                        "video_base64": video_base64,
+                        "video_url": video_url,
+                        "model": "veo-3.1-fast",
+                        "duration": min(duration, 8),
+                        "has_audio": True,
+                        "cost_per_second": 0.15
+                    }
+
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    video_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
+                    return {
+                        "video_base64": video_base64,
+                        "video_url": None,
+                        "model": "veo-3.1-fast",
+                        "duration": min(duration, 8),
+                        "has_audio": True,
+                        "cost_per_second": 0.15
+                    }
+
+            raise Exception("No video generated by Veo 3")
+
+        except Exception as e:
+            raise Exception(f"Veo 3 video generation failed: {str(e)}")
+
     async def _generate_replicate_video(
         self,
         prompt: str,
@@ -526,7 +929,7 @@ class MediaGeneratorAgent:
         duration: int,
         aspect_ratio: str
     ) -> Dict[str, Any]:
-        """Generate video using Replicate (Stable Video Diffusion or Kling)"""
+        """Generate video using Replicate (Stable Video Diffusion or Kling) - Fallback"""
         api_key = self.replicate_api_key or self.fal_api_key
         if not api_key:
             raise ValueError("Replicate API key not configured")
@@ -998,3 +1401,115 @@ STYLE REQUIREMENTS:
                     }
 
         return result
+
+    # ==================== INDUSTRY TEMPLATE METHODS ====================
+
+    def get_industry_template(self, industry: str) -> Dict[str, Any]:
+        """Get the Meta-safe template for a specific industry.
+
+        Args:
+            industry: Industry key (security, food_restaurant, retail_ecommerce, etc.)
+
+        Returns:
+            Industry template dict with backgrounds, subjects, props, colors, mood, avoid
+        """
+        return self.INDUSTRY_TEMPLATES.get(industry.lower(), self.INDUSTRY_TEMPLATES.get("retail_ecommerce"))
+
+    def generate_industry_prompt(
+        self,
+        industry: str,
+        product_name: str,
+        product_description: str,
+        include_text: Optional[str] = None
+    ) -> str:
+        """Generate a Meta-compliant image prompt for a specific industry.
+
+        Args:
+            industry: Industry key
+            product_name: Name of the product/service
+            product_description: Description of the product/service
+            include_text: Optional text to render in the image (uses Nano Banana Pro)
+
+        Returns:
+            Complete image generation prompt
+        """
+        import random
+
+        template = self.get_industry_template(industry)
+
+        # Randomly select elements for variety
+        background = random.choice(template.get("backgrounds", ["clean professional background"]))
+        subject = random.choice(template.get("subjects", ["product shot"]))
+        prop = random.choice(template.get("props", []))
+        color_scheme = random.choice(template.get("color_schemes", ["professional colors"]))
+        mood = template.get("mood", "professional")
+        avoid_items = template.get("avoid", [])
+
+        # Build prompt
+        prompt_parts = [
+            f"Professional advertisement for {product_name}.",
+            f"Background: {background}.",
+            f"Main subject: {subject}.",
+        ]
+
+        if prop:
+            prompt_parts.append(f"Accent prop: {prop}.")
+
+        prompt_parts.extend([
+            f"Color scheme: {color_scheme}.",
+            f"Mood: {mood}.",
+            f"Product context: {product_description[:200]}.",
+            "High-quality commercial photography, clean composition, 8K quality."
+        ])
+
+        # Add text rendering instruction if specified
+        if include_text:
+            prompt_parts.append(f"Include text overlay: \"{include_text}\" - render clearly and legibly.")
+
+        # Add explicit avoidance instructions
+        if avoid_items:
+            prompt_parts.append(f"IMPORTANT: Do NOT include: {', '.join(avoid_items)}.")
+
+        prompt_parts.append("No AI-generated faces, no weapons, no controversial content.")
+
+        return " ".join(prompt_parts)
+
+    async def generate_industry_ad_image(
+        self,
+        industry: str,
+        product_name: str,
+        product_description: str,
+        headline_text: Optional[str] = None,
+        aspect_ratio: str = "1:1"
+    ) -> Dict[str, Any]:
+        """Generate a Meta-compliant ad image for a specific industry.
+
+        Uses Nano Banana Pro for native text rendering when headline_text is provided.
+
+        Args:
+            industry: Industry key
+            product_name: Name of the product/service
+            product_description: Description of the product/service
+            headline_text: Optional headline to render in the image
+            aspect_ratio: Image aspect ratio
+
+        Returns:
+            Generated image result
+        """
+        prompt = self.generate_industry_prompt(
+            industry=industry,
+            product_name=product_name,
+            product_description=product_description,
+            include_text=headline_text
+        )
+
+        return await self.generate_image(
+            prompt=prompt,
+            style="professional",
+            aspect_ratio=aspect_ratio
+        )
+
+    def list_industries(self) -> List[str]:
+        """List all available industry templates."""
+        return list(self.INDUSTRY_TEMPLATES.keys())
+

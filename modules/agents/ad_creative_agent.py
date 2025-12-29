@@ -33,7 +33,7 @@ class AdCreativeAgent:
     def __init__(self):
         # Use OpenRouter with gpt-4o model
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.7
         )
         logger.info(f"[AdCreativeAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")

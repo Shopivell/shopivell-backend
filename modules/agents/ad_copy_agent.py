@@ -28,7 +28,7 @@ class AdCopyAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else "claude-3-sonnet-20240229",
             temperature=0.9  # Higher temperature for more creative outputs
         )
         logger.info(f"[AdCopyAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")

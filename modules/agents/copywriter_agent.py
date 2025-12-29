@@ -66,7 +66,7 @@ class CopywriterAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else os.getenv("OPENAI_MODEL", "gpt-4o"),
+            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else os.getenv("OPENAI_MODEL", "gpt-4o"),
             temperature=0.9  # Higher creativity for copy
         )
         logger.info(f"[CopywriterAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
