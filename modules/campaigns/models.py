@@ -8,6 +8,9 @@ import enum
 
 from database import Base
 
+# Note: Store and Asset models are imported in main.py before this module
+# to ensure SQLAlchemy can resolve the relationships properly
+
 
 class CampaignStatus(str, enum.Enum):
     DRAFT = "draft"

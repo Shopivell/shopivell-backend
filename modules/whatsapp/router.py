@@ -26,7 +26,8 @@ from .schemas import (
     WhatsAppWebhookVerification, WhatsAppWebhookPayload,
     BulkMessageRequest, BulkMessageResponse, BulkMessageResult,
     AdCampaignCreate, AdCampaignUpdate, AdCampaignResponse, AdCampaignListResponse,
-    AvailableStoresResponse, StoreSelectionOption
+    AvailableStoresResponse, StoreSelectionOption,
+    ConversationResponse, ConversationListResponse
 )
 from modules.business.models import FacebookBusinessAccount
 
@@ -1201,6 +1202,54 @@ def get_whatsapp_messages(
         messages=[WhatsAppMessageResponse.model_validate(msg) for msg in messages],
         total_count=total_count
     )
+
+
+# Conversations Endpoints
+@whatsapp_router.get("/accounts/{account_id}/conversations", response_model=ConversationListResponse)
+def get_conversations(
+    account_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status_filter: Optional[str] = Query(None, description="Filter by status: active, handoff, closed"),
+    db: Session = Depends(get_db)
+):
+    """Get all conversations for a WhatsApp account with profile pictures"""
+    # Verify account exists
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    
+    query = db.query(WhatsAppConversation).filter(
+        WhatsAppConversation.whatsapp_account_id == account_id
+    )
+    
+    if status_filter:
+        query = query.filter(WhatsAppConversation.status == status_filter)
+    
+    total = query.count()
+    
+    conversations = query.order_by(
+        WhatsAppConversation.last_message_at.desc().nullslast()
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    
+    # Generate profile pictures for conversations that don't have one
+    for conv in conversations:
+        if not conv.profile_picture_url:
+            conv.profile_picture_url = generate_avatar_url(
+                name=conv.customer_name,
+                phone_number=conv.phone_number
+            )
+            conv.profile_picture_updated_at = datetime.utcnow()
+    
+    db.commit()
+    
+    return ConversationListResponse(
+        conversations=[ConversationResponse.model_validate(conv) for conv in conversations],
+        total=total,
+        page=page,
+        page_size=page_size
+    )
+
 
 # WhatsApp Account Information Endpoints
 @whatsapp_router.get("/accounts/{account_id}/info")

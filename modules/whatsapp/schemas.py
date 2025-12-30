@@ -619,17 +619,17 @@ class ConversationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    store_id: UUID
+    store_id: Optional[UUID] = None
     phone_number: str
     customer_name: Optional[str] = None
     profile_picture_url: Optional[str] = None
     conversation_summary: Optional[str] = None
     topics_discussed: Optional[List[str]] = None
-    handoff_requested: bool
+    handoff_requested: Optional[bool] = False
     handoff_reason: Optional[str] = None
     assigned_to: Optional[UUID] = None
-    total_messages: int
-    fallback_count: int
+    total_messages: Optional[float] = 0
+    fallback_count: Optional[float] = 0
     status: str
     last_message_at: Optional[datetime] = None
     created_at: datetime

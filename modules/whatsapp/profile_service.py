@@ -105,9 +105,11 @@ def generate_avatar_url(
     size: int = 128
 ) -> str:
     """
-    Generate a fallback avatar URL using UI Avatars service.
+    Generate a professional avatar URL using UI Avatars API.
 
-    Uses name initials if available, otherwise uses last 2 digits of phone number.
+    Shows:
+    - Name initials if name is provided (e.g., "JD" for John Doe)
+    - Last 2 digits of phone number if no name (e.g., "99")
 
     Args:
         name: Customer name (optional)
@@ -117,47 +119,80 @@ def generate_avatar_url(
     Returns:
         URL to generated avatar image
     """
+    # Determine what to display
     if name:
-        # Use name initials
-        initials = "".join(word[0].upper() for word in name.split()[:2])
-        display_name = quote(name)
+        display_name = name.strip()
     elif phone_number:
-        # Use last 2 digits of phone number
-        clean_number = phone_number.replace("+", "").replace(" ", "")
-        initials = clean_number[-2:] if len(clean_number) >= 2 else clean_number
-        display_name = initials
+        clean_number = phone_number.replace("+", "").replace(" ", "").replace("-", "")
+        # Use last 2 digits as display
+        display_name = clean_number[-2:] if len(clean_number) >= 2 else clean_number
     else:
-        initials = "?"
-        display_name = "Unknown"
+        display_name = "?"
 
-    # Generate color based on name/number for consistency
-    if name:
-        color_seed = sum(ord(c) for c in name)
-    elif phone_number:
-        color_seed = sum(ord(c) for c in phone_number)
-    else:
-        color_seed = 0
-
-    # Generate a pleasant background color
-    colors = [
-        "667eea", "764ba2", "f093fb", "f5576c", "4facfe",
-        "00f2fe", "43e97b", "38f9d7", "fa709a", "fee140",
-        "30cfd0", "c471ed", "f64f59", "12c2e9", "c471ed"
+    # Modern WhatsApp-inspired color palette
+    background_colors = [
+        "25D366",  # WhatsApp green
+        "128C7E",  # WhatsApp teal
+        "075E54",  # WhatsApp dark green
+        "34B7F1",  # WhatsApp blue
+        "00A884",  # WhatsApp light green
+        "667eea",  # Purple blue
+        "764ba2",  # Purple
+        "f093fb",  # Pink
+        "4facfe",  # Sky blue
+        "43e97b",  # Green
+        "fa709a",  # Rose
+        "30cfd0",  # Cyan
+        "6366f1",  # Indigo
+        "8b5cf6",  # Violet
+        "ec4899",  # Pink
+        "14b8a6",  # Teal
+        "f59e0b",  # Amber
+        "ef4444",  # Red
     ]
-    bg_color = colors[color_seed % len(colors)]
 
-    # UI Avatars API - free avatar generation
+    # Generate consistent color based on name/phone
+    color_seed = sum(ord(c) for c in (name or phone_number or "unknown"))
+    bg_color = background_colors[color_seed % len(background_colors)]
+
+    # UI Avatars - shows initials (JD for John Doe, or 99 for phone ending in 99)
     avatar_url = (
         f"https://ui-avatars.com/api/"
-        f"?name={display_name}"
+        f"?name={quote(display_name)}"
         f"&size={size}"
         f"&background={bg_color}"
         f"&color=ffffff"
         f"&bold=true"
-        f"&format=png"
+        f"&rounded=true"
     )
 
     return avatar_url
+
+
+def generate_gravatar_url(
+    email: Optional[str] = None,
+    name: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    size: int = 128
+) -> str:
+    """
+    Generate Gravatar URL with DiceBear fallback.
+
+    If user has a Gravatar account, shows their real picture.
+    Otherwise falls back to DiceBear avatar.
+    """
+    import hashlib
+
+    if email:
+        # Generate Gravatar hash
+        email_hash = hashlib.md5(email.lower().strip().encode()).hexdigest()
+        # Use DiceBear as default fallback
+        fallback = generate_avatar_url(name=name, phone_number=phone_number, size=size)
+        fallback_encoded = quote(fallback, safe='')
+        return f"https://www.gravatar.com/avatar/{email_hash}?s={size}&d={fallback_encoded}"
+
+    # No email, use DiceBear directly
+    return generate_avatar_url(name=name, phone_number=phone_number, size=size)
 
 
 async def get_profile_picture(
@@ -194,7 +229,7 @@ async def get_profile_picture(
             # Check if it's a Meta URL (not our generated avatar)
             if "graph.facebook.com" in existing_url or "lookaside.fbsbx.com" in existing_url:
                 return existing_url, True
-            elif "ui-avatars.com" in existing_url:
+            elif "ui-avatars.com" in existing_url or "dicebear.com" in existing_url:
                 # Regenerate avatar if name might have changed
                 pass  # Fall through to regenerate
             else:

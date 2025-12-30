@@ -213,9 +213,13 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         print(f"[OK] VERIFICATION - DB contains: Name: '{verified_user.name}', Google ID: '{verified_user.google_id}', Profile Pic: '{verified_user.profile_picture}'")
 
         # Check store and setup session status
-        store = db.query(Store).filter(Store.owner_id == user.id).first()
-        # Only consider has_store=True if setup is actually completed
-        has_store = store is not None and store.is_setup_completed
+        # Get all stores ordered by created_at (first created = default)
+        stores = db.query(Store).filter(Store.owner_id == user.id).order_by(Store.created_at.asc()).all()
+        stores_count = len(stores)
+        # Get the first completed store as default
+        store = next((s for s in stores if s.is_setup_completed), None)
+        # Only consider has_store=True if there's at least one completed store
+        has_store = store is not None
 
         # Get or create user's agency using raw SQL to avoid mapper issues
         from sqlalchemy import text
@@ -300,6 +304,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             "user": user_dict,
             "store_id": str(store.id) if store else None,
             "agency_id": str(agency_id) if agency_id else None,
+            "stores_count": stores_count,  # Number of stores user owns
             "has_active_setup_session": setup_session is not None,
             "setup_session_id": str(setup_session.id) if setup_session else None,
             "setup_progress": setup_session.setup_progress if setup_session else 0,
@@ -516,9 +521,13 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             db.refresh(user)
 
         # Check store and setup session status
-        store = db.query(Store).filter(Store.owner_id == user.id).first()
-        # Only consider has_store=True if setup is actually completed
-        has_store = store is not None and store.is_setup_completed
+        # Get all stores ordered by created_at (first created = default)
+        stores = db.query(Store).filter(Store.owner_id == user.id).order_by(Store.created_at.asc()).all()
+        stores_count = len(stores)
+        # Get the first completed store as default
+        store = next((s for s in stores if s.is_setup_completed), None)
+        # Only consider has_store=True if there's at least one completed store
+        has_store = store is not None
 
         # Get or create agency for user using raw SQL
         from sqlalchemy import text
@@ -584,6 +593,7 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             user=user,
             store_id=store.id if store else None,
             agency_id=agency_id if agency_id else None,
+            stores_count=stores_count,  # Number of stores user owns
             has_active_setup_session=setup_session is not None,
             setup_session_id=setup_session.id if setup_session else None,
             setup_progress=setup_session.setup_progress if setup_session else 0,

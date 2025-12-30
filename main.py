@@ -4,7 +4,15 @@ from pathlib import Path
 from database import engine, init_db
 from utils.cache import cache, check_redis_health
 from middleware.cache_middleware import CacheMiddleware, CacheControlMiddleware
+
+# Import all models FIRST to ensure SQLAlchemy relationships are properly resolved
+# Order matters: base models first, then models that depend on them
+from modules.users.models import *  # User model
+from modules.stores.models import *  # Store model (depends on User)
+from modules.assets.models import *  # Asset model (depends on Store)
+from modules.campaigns.models import *  # UrlCampaign model (depends on Store, Asset)
 from modules.customers.models import *
+
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
 from modules.products.router import products_router

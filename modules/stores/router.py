@@ -204,13 +204,8 @@ async def complete_store_setup(
                 detail="User not found"
             )
         
-        existing_store = db.query(Store).filter(Store.owner_id == user.id).first()
-        if existing_store:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User already has a store"
-            )
-        
+        # Note: Users can have multiple stores - no single-store constraint
+
         # Validate required data
         session_data = setup_session.session_data
         required_fields = ['store_name', 'store_phone']
@@ -620,8 +615,8 @@ async def get_stores_by_owner(
                 detail="Owner not found"
             )
         
-        # Get stores for owner
-        query = db.query(Store).filter(Store.owner_id == owner_id)
+        # Get stores for owner, ordered by created_at (first created = default)
+        query = db.query(Store).filter(Store.owner_id == owner_id).order_by(Store.created_at.asc())
         total = query.count()
         stores = query.offset(skip).limit(limit).all()
         

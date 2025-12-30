@@ -28,6 +28,26 @@ try:
 except ImportError:
     FACEBOOK_AVAILABLE = False
 
+# Import Meta Ads functionality
+try:
+    from modules.marketing.router import (
+        create_meta_campaign, create_meta_adset, create_meta_ad
+    )
+    from modules.marketing.models import MetaAdAccount, MetaCampaign, MetaAdSet, MetaAd
+    from datetime import datetime
+    import json
+    META_ADS_AVAILABLE = True
+except ImportError:
+    META_ADS_AVAILABLE = False
+
+# Import Notification functionality
+try:
+    from modules.notifications.models import Notification
+    from modules.notifications.schemas import NotificationType, NotificationPriority
+    NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    NOTIFICATIONS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
@@ -286,6 +306,401 @@ def publish_campaign_to_facebook(
         "campaign_id": str(campaign_id),
         "page_name": page.page_name
     }
+
+
+@campaign_router.post("/{campaign_id}/publish-to-meta-ads")
+def publish_campaign_to_meta_ads(
+    campaign_id: uuid.UUID,
+    ad_account_id: uuid.UUID = Query(..., description="Meta Ad Account ID to publish to"),
+    page_id: Optional[uuid.UUID] = Query(None, description="Facebook Page ID to use for ads (optional, will use first available if not provided)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Publish campaign to Meta Ads Manager as paid advertising.
+
+    This endpoint creates actual paid ad campaigns in Meta Ads Manager:
+    1. Creates a Meta Campaign
+    2. Creates Meta Ad Sets for each selected ad set
+    3. Creates Meta Ads with the ad content
+
+    Args:
+        campaign_id: UUID of the URL campaign to publish
+        ad_account_id: UUID of the Meta Ad Account to use
+        page_id: Optional UUID of the Facebook Page (will use first available if not provided)
+
+    Returns:
+        Dictionary with success status, created IDs, and any errors
+    """
+    if not META_ADS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta Ads integration is not available"
+        )
+
+    # Get the URL campaign with ad sets and content
+    from sqlalchemy.orm import joinedload
+    campaign = db.query(Campaign).options(
+        joinedload(Campaign.ad_sets).joinedload(AdSet.ad_contents)
+    ).filter(Campaign.id == campaign_id).first()
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Get the Meta Ad Account
+    ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == ad_account_id).first()
+    if not ad_account:
+        raise HTTPException(status_code=404, detail="Meta Ad Account not found")
+
+    if not ad_account.is_connected:
+        raise HTTPException(
+            status_code=400,
+            detail="Meta Ad Account is not connected"
+        )
+
+    # Get Facebook Page ID for creating ads
+    facebook_page_id = None
+    if page_id:
+        fb_page = db.query(FacebookPage).filter(FacebookPage.id == page_id).first()
+        if fb_page:
+            facebook_page_id = fb_page.page_id
+
+    # If no page_id provided or found, try to get from ad_account.business_id or first available page
+    if not facebook_page_id:
+        if ad_account.business_id:
+            facebook_page_id = ad_account.business_id
+        else:
+            # Get the first connected Facebook page
+            first_page = db.query(FacebookPage).filter(
+                FacebookPage.is_connected == True,
+                FacebookPage.is_active == True
+            ).first()
+            if first_page:
+                facebook_page_id = first_page.page_id
+
+    if not facebook_page_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Facebook Page found. Please connect a Facebook Page first."
+        )
+
+    # Get selected ad sets
+    selected_ad_sets = [ad_set for ad_set in campaign.ad_sets if ad_set.is_selected]
+    if not selected_ad_sets:
+        raise HTTPException(
+            status_code=400,
+            detail="No ad sets selected for publishing"
+        )
+
+    results = {
+        "success": False,
+        "campaign_id": str(campaign_id),
+        "meta_campaign_id": None,
+        "meta_ad_sets": [],
+        "meta_ads": [],
+        "errors": []
+    }
+
+    try:
+        # Map URL campaign goal to Meta objective
+        goal_to_objective = {
+            "sales": "OUTCOME_SALES",
+            "leads": "OUTCOME_LEADS",
+            "traffic": "OUTCOME_TRAFFIC",
+            "awareness": "OUTCOME_AWARENESS",
+            "engagement": "OUTCOME_ENGAGEMENT"
+        }
+        objective = goal_to_objective.get(campaign.goal.value if hasattr(campaign.goal, 'value') else campaign.goal, "OUTCOME_TRAFFIC")
+
+        # 1. Create Meta Campaign
+        meta_campaign_data = {
+            "name": campaign.name,
+            "objective": objective,
+            "status": "PAUSED",  # Start as paused, user can activate later
+            "buying_type": "AUCTION",
+            "special_ad_categories": '["NONE"]'
+        }
+
+        # Add budget if set
+        if campaign.daily_budget:
+            meta_campaign_data["daily_budget"] = str(int(campaign.daily_budget * 100))  # Convert to cents
+
+        # Add schedule if set
+        if campaign.start_date:
+            meta_campaign_data["start_time"] = str(int(campaign.start_date.timestamp()))
+        if campaign.end_date:
+            meta_campaign_data["stop_time"] = str(int(campaign.end_date.timestamp()))
+
+        logger.info(f"[Meta Ads] Creating campaign: {meta_campaign_data}")
+        meta_campaign_result = create_meta_campaign(
+            ad_account.ad_account_id,
+            ad_account.access_token,
+            meta_campaign_data
+        )
+
+        meta_campaign_id = meta_campaign_result.get("id")
+        results["meta_campaign_id"] = meta_campaign_id
+
+        # Save Meta Campaign to database
+        db_meta_campaign = MetaCampaign(
+            campaign_id=meta_campaign_id,
+            ad_account_id=ad_account.id,
+            name=campaign.name,
+            objective=objective,
+            status="PAUSED",
+            special_ad_categories=["NONE"],
+            buying_type="AUCTION",
+            daily_budget=int(campaign.daily_budget * 100) if campaign.daily_budget else None,
+            start_time=campaign.start_date,
+            stop_time=campaign.end_date,
+            created_time=datetime.utcnow(),
+            updated_time=datetime.utcnow(),
+            effective_status="PAUSED",
+            is_draft=False,
+            is_active=True
+        )
+        db.add(db_meta_campaign)
+        db.commit()
+        db.refresh(db_meta_campaign)
+
+        # Country name to ISO code mapping
+        country_name_to_code = {
+            "zimbabwe": "ZW", "south africa": "ZA", "united states": "US", "usa": "US",
+            "united kingdom": "GB", "uk": "GB", "canada": "CA", "australia": "AU",
+            "germany": "DE", "france": "FR", "india": "IN", "china": "CN", "japan": "JP",
+            "brazil": "BR", "mexico": "MX", "nigeria": "NG", "kenya": "KE", "ghana": "GH",
+            "botswana": "BW", "zambia": "ZM", "mozambique": "MZ", "namibia": "NA",
+            "tanzania": "TZ", "uganda": "UG", "malawi": "MW", "ethiopia": "ET",
+        }
+
+        # Convert country names to codes
+        def get_country_codes(countries_list):
+            if not countries_list:
+                return ["ZW"]  # Default to Zimbabwe
+            codes = []
+            for country in countries_list:
+                country_lower = country.lower().strip()
+                if len(country_lower) == 2:
+                    # Already a code
+                    codes.append(country_lower.upper())
+                elif country_lower in country_name_to_code:
+                    codes.append(country_name_to_code[country_lower])
+                else:
+                    # Try to use first 2 letters as fallback (not ideal but better than failing)
+                    logger.warning(f"Unknown country: {country}, skipping")
+            return codes if codes else ["ZW"]
+
+        country_codes = get_country_codes(campaign.countries)
+
+        # 2. Create Meta Ad Sets for each selected ad set
+        for ad_set in selected_ad_sets:
+            try:
+                # Build targeting from campaign settings
+                targeting = {
+                    "geo_locations": {
+                        "countries": country_codes
+                    },
+                    "age_min": campaign.age_range.get("min", 18) if campaign.age_range else 18,
+                    "age_max": campaign.age_range.get("max", 65) if campaign.age_range else 65
+                }
+
+                # Add gender targeting if specified
+                if campaign.gender and campaign.gender != "all":
+                    if campaign.gender == "male":
+                        targeting["genders"] = [1]
+                    elif campaign.gender == "female":
+                        targeting["genders"] = [2]
+
+                meta_adset_data = {
+                    "name": ad_set.name,
+                    "campaign_id": meta_campaign_id,
+                    "status": "PAUSED",
+                    "optimization_goal": "LINK_CLICKS",
+                    "billing_event": "IMPRESSIONS",
+                    "targeting": json.dumps(targeting),
+                    "bid_amount": "100"  # $1.00 minimum bid
+                }
+
+                # Add schedule
+                if campaign.start_date:
+                    meta_adset_data["start_time"] = str(int(campaign.start_date.timestamp()))
+                if campaign.end_date:
+                    meta_adset_data["end_time"] = str(int(campaign.end_date.timestamp()))
+
+                logger.info(f"[Meta Ads] Creating ad set: {ad_set.name}")
+                meta_adset_result = create_meta_adset(
+                    ad_account.ad_account_id,
+                    ad_account.access_token,
+                    meta_adset_data
+                )
+
+                meta_adset_id = meta_adset_result.get("id")
+                results["meta_ad_sets"].append({
+                    "url_ad_set_id": str(ad_set.id),
+                    "url_ad_set_name": ad_set.name,
+                    "meta_adset_id": meta_adset_id
+                })
+
+                # Save Meta Ad Set to database
+                db_meta_adset = MetaAdSet(
+                    adset_id=meta_adset_id,
+                    ad_account_id=ad_account.id,
+                    campaign_id=db_meta_campaign.id,
+                    name=ad_set.name,
+                    status="PAUSED",
+                    optimization_goal="LINK_CLICKS",
+                    billing_event="IMPRESSIONS",
+                    targeting=targeting,
+                    bid_amount=100,
+                    start_time=campaign.start_date,
+                    end_time=campaign.end_date,
+                    created_time=datetime.utcnow(),
+                    updated_time=datetime.utcnow(),
+                    effective_status="PAUSED",
+                    is_active=True
+                )
+                db.add(db_meta_adset)
+                db.commit()
+                db.refresh(db_meta_adset)
+
+                # 3. Create Meta Ads for each ad content in this ad set
+                for ad_content in ad_set.ad_contents:
+                    if not ad_content.is_active:
+                        continue
+
+                    try:
+                        # Create ad with link creative
+                        meta_ad_data = {
+                            "name": f"{ad_set.name} - Ad",
+                            "adset_id": meta_adset_id,
+                            "status": "PAUSED",
+                            "creative": json.dumps({
+                                "object_story_spec": {
+                                    "page_id": facebook_page_id,
+                                    "link_data": {
+                                        "link": ad_content.destination_url or campaign.source_url,
+                                        "message": ad_content.primary_text or campaign.name,
+                                        "name": ad_content.headline or campaign.name,
+                                        "description": ad_content.description or "",
+                                        "call_to_action": {
+                                            "type": "LEARN_MORE",
+                                            "value": {
+                                                "link": ad_content.destination_url or campaign.source_url
+                                            }
+                                        }
+                                    }
+                                }
+                            })
+                        }
+
+                        logger.info(f"[Meta Ads] Creating ad for ad set: {ad_set.name}")
+                        meta_ad_result = create_meta_ad(
+                            ad_account.ad_account_id,
+                            ad_account.access_token,
+                            meta_ad_data
+                        )
+
+                        meta_ad_id = meta_ad_result.get("id")
+                        results["meta_ads"].append({
+                            "url_ad_content_id": str(ad_content.id),
+                            "meta_ad_id": meta_ad_id,
+                            "ad_set_name": ad_set.name
+                        })
+
+                        # Save Meta Ad to database
+                        db_meta_ad = MetaAd(
+                            ad_id=meta_ad_id,
+                            ad_account_id=ad_account.id,
+                            adset_id=db_meta_adset.id,
+                            campaign_id=db_meta_campaign.id,
+                            name=f"{ad_set.name} - Ad",
+                            status="PAUSED",
+                            effective_status="PAUSED",
+                            created_time=datetime.utcnow(),
+                            updated_time=datetime.utcnow(),
+                            is_active=True
+                        )
+                        db.add(db_meta_ad)
+
+                    except Exception as ad_error:
+                        results["errors"].append({
+                            "type": "ad",
+                            "ad_set_name": ad_set.name,
+                            "error": str(ad_error)
+                        })
+                        logger.error(f"[Meta Ads] Failed to create ad: {ad_error}")
+
+            except Exception as adset_error:
+                results["errors"].append({
+                    "type": "ad_set",
+                    "ad_set_name": ad_set.name,
+                    "error": str(adset_error)
+                })
+                logger.error(f"[Meta Ads] Failed to create ad set: {adset_error}")
+
+        # Update URL campaign with platform IDs
+        platform_ids = campaign.platform_campaign_ids or {}
+        platform_ids["meta"] = meta_campaign_id
+        campaign.platform_campaign_ids = platform_ids
+        campaign.status = CampaignStatus.ACTIVE
+        campaign.published_at = datetime.utcnow()
+
+        db.commit()
+
+        results["success"] = True
+        results["message"] = f"Published campaign to Meta Ads. Created {len(results['meta_ad_sets'])} ad sets and {len(results['meta_ads'])} ads."
+
+        logger.info(f"[Meta Ads] Successfully published campaign {campaign_id} to Meta Ads")
+
+        # Create system notification for campaign publish
+        if NOTIFICATIONS_AVAILABLE:
+            try:
+                ad_sets_count = len(results['meta_ad_sets'])
+                has_errors = len(results['errors']) > 0
+
+                notification_title = "Campaign Published to Meta Ads"
+                if has_errors:
+                    notification_title = "Campaign Published with Warnings"
+
+                notification_message = f"Your campaign '{campaign.name}' has been published to Meta Ads Manager with {ad_sets_count} ad sets."
+                if has_errors:
+                    error_types = set([e.get('type', 'unknown') for e in results['errors']])
+                    notification_message += f" Some items had issues: {', '.join(error_types)}. Check Meta Ads Manager for details."
+
+                notification = Notification(
+                    store_id=campaign.store_id,
+                    title=notification_title,
+                    message=notification_message,
+                    type=NotificationType.SYSTEM.value,
+                    priority=NotificationPriority.HIGH.value if has_errors else NotificationPriority.NORMAL.value,
+                    related_entity_type="campaign",
+                    related_entity_id=campaign.id,
+                    action_url=f"/marketing/campaigns",
+                    action_data={
+                        "campaign_id": str(campaign.id),
+                        "campaign_name": campaign.name,
+                        "meta_campaign_id": meta_campaign_id,
+                        "ad_sets_count": ad_sets_count,
+                        "has_errors": has_errors
+                    }
+                )
+                db.add(notification)
+                db.commit()
+                logger.info(f"[Notification] Created campaign publish notification for store {campaign.store_id}")
+            except Exception as notif_error:
+                logger.error(f"[Notification] Failed to create notification: {notif_error}")
+
+    except Exception as e:
+        results["errors"].append({
+            "type": "campaign",
+            "error": str(e)
+        })
+        logger.error(f"[Meta Ads] Failed to publish campaign: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to publish to Meta Ads: {str(e)}"
+        )
+
+    return results
 
 
 @campaign_router.post("/{campaign_id}/pause", response_model=CampaignResponse)

@@ -30,11 +30,11 @@ COLLECTION_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 # =============================================================================
 
 # GET all inventory items (all products with inventory data)
-@products_router.get("/inventory/items", response_model=InventoryListResponse)
+@products_router.get("/inventory/store/{store_id}/items", response_model=InventoryListResponse)
 async def get_inventory_items(
+    store_id: uuid.UUID,
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
-    store_id: Optional[uuid.UUID] = None,
     product_id: Optional[uuid.UUID] = None,
     sku: Optional[str] = None,
     search: Optional[str] = None,
@@ -42,12 +42,8 @@ async def get_inventory_items(
     db: Session = Depends(get_db)
 ):
     try:
-        # Build query with filters
-        query = db.query(Product)
-
-        # Filter by store_id (required for multi-tenant)
-        if store_id:
-            query = query.filter(Product.store_id == store_id)
+        # Build query with filters - store_id is REQUIRED for multi-tenant isolation
+        query = db.query(Product).filter(Product.store_id == store_id)
 
         if product_id:
             query = query.filter(Product.id == product_id)

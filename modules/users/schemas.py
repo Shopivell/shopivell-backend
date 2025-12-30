@@ -56,6 +56,7 @@ class LoginResponse(BaseModel):
     user: UserResponse
     store_id: Optional[uuid.UUID] = None
     agency_id: Optional[uuid.UUID] = None
+    stores_count: int = 0  # Number of stores user owns (for multi-store support)
     has_active_setup_session: bool = False
     setup_session_id: Optional[uuid.UUID] = None
     setup_progress: int = 0  # Changed to non-optional with default
