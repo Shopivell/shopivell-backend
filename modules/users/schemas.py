@@ -48,6 +48,7 @@ class LoginVerifyRequest(BaseModel):
 
 class GoogleSignupRequest(BaseModel):
     access_token: str
+    referral_code: Optional[str] = None  # Optional referral code for signup
     
 class LoginResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

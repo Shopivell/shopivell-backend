@@ -29,6 +29,7 @@ from modules.campaigns.router import campaign_router
 from modules.assets.router import asset_router
 from modules.ad_generator.router import ad_generator_router
 from modules.notifications.router import notification_router
+from modules.referral.router import referral_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -88,6 +89,7 @@ app.include_router(campaign_router, prefix="/v1")
 app.include_router(asset_router, prefix="/v1")
 app.include_router(ad_generator_router, prefix="/v1")
 app.include_router(notification_router, prefix="/v1")
+app.include_router(referral_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")

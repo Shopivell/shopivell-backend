@@ -221,7 +221,8 @@ async def initiate_payment(
             payment_method=payment_request.payment_method,
             package_name=payment_request.package_name,
             billing_period=payment_request.billing_period,
-            mobile_number=payment_request.mobile_number
+            mobile_number=payment_request.mobile_number,
+            tokens_to_redeem=payment_request.tokens_to_redeem
         )
         
         if error:

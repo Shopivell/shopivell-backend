@@ -94,6 +94,7 @@ class PaymentInitiateRequest(BaseModel):
     payment_method: PaymentMethod
     billing_period: str = "monthly"
     mobile_number: Optional[str] = None
+    tokens_to_redeem: int = 0  # Number of tokens to use for discount
 
 class PaymentWebhookData(BaseModel):
     reference: str

@@ -17,6 +17,8 @@ from modules.users.schemas import (
 )
 from modules.stores.models import Store, StoreSetupSession
 from utils.Verification_Codes_Services import VerificationCodeService
+from modules.referral.service import ReferralService
+from modules.referral.models import ReferralSource
 from utils.jwt_auth import jwt_auth, token_blacklist, get_current_user, CurrentUser
 
 
@@ -104,6 +106,75 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             db.commit()
             db.refresh(user)
             print(f"[OK] New user created: {user.email}")
+            
+            # Process referral if code was provided
+            if google_data.referral_code:
+                try:
+                    from modules.referral.models import UserReferralCode, Referral, UserTokenBalance, TokenTransaction, ReferralStatus, TokenTransactionType
+                    from modules.referral.constants import TOKENS_PER_REFERRAL
+                    from datetime import datetime
+                    
+                    # Validate referral code
+                    referrer_code = db.query(UserReferralCode).filter(
+                        UserReferralCode.referral_code == google_data.referral_code.upper()
+                    ).first()
+                    
+                    if referrer_code and referrer_code.is_active and referrer_code.user_id != user.id:
+                        # Create referral record
+                        referral = Referral(
+                            referrer_code_id=referrer_code.id,
+                            referred_user_id=user.id,
+                            status=ReferralStatus.REWARDED,
+                            source=ReferralSource.OTHER,
+                            referred_email=user.email,
+                            tokens_awarded=TOKENS_PER_REFERRAL,
+                            signed_up_at=datetime.utcnow(),
+                            rewarded_at=datetime.utcnow()
+                        )
+                        db.add(referral)
+                        
+                        # Update referrer code stats
+                        referrer_code.total_referrals += 1
+                        referrer_code.successful_referrals += 1
+                        referrer_code.total_tokens_earned += TOKENS_PER_REFERRAL
+                        
+                        # Get or create token balance for referrer
+                        token_balance = db.query(UserTokenBalance).filter(
+                            UserTokenBalance.user_id == referrer_code.user_id
+                        ).first()
+                        
+                        if not token_balance:
+                            token_balance = UserTokenBalance(
+                                user_id=referrer_code.user_id,
+                                available_tokens=0,
+                                total_earned=0,
+                                total_redeemed=0
+                            )
+                            db.add(token_balance)
+                            db.commit()
+                            db.refresh(token_balance)
+                        
+                        # Award tokens
+                        token_balance.available_tokens += TOKENS_PER_REFERRAL
+                        token_balance.total_earned += TOKENS_PER_REFERRAL
+                        
+                        # Create token transaction
+                        token_tx = TokenTransaction(
+                            token_balance_id=token_balance.id,
+                            transaction_type=TokenTransactionType.EARNED,
+                            amount=TOKENS_PER_REFERRAL,
+                            balance_after=token_balance.available_tokens,
+                            reference_type="referral",
+                            reference_id=referral.id,
+                            description=f"Earned for referring a new user"
+                        )
+                        db.add(token_tx)
+                        db.commit()
+                        
+                        print(f"[OK] Referral processed: {user.email} via code {google_data.referral_code}")
+                except Exception as ref_error:
+                    print(f"[WARN] Referral processing failed: {ref_error}")
+                    # Don't fail signup if referral fails
         else:
             # FIX: Update existing user with Google data - always update name and profile if available
             print(f"[UPDATE] Checking updates for existing user: {user.email}")

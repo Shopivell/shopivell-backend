@@ -206,6 +206,10 @@ class WhatsAppConversation(Base):
     topics_discussed = Column(ARRAY(String), nullable=True)
     customer_name = Column(String(255), nullable=True)
 
+    # Profile picture from WhatsApp
+    profile_picture_url = Column(Text, nullable=True)  # URL from Meta Graph API
+    profile_picture_updated_at = Column(DateTime, nullable=True)  # When last fetched
+
     # Handoff status
     handoff_requested = Column(Boolean, default=False)
     handoff_reason = Column(Text, nullable=True)

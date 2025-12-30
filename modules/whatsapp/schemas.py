@@ -622,6 +622,7 @@ class ConversationResponse(BaseModel):
     store_id: UUID
     phone_number: str
     customer_name: Optional[str] = None
+    profile_picture_url: Optional[str] = None
     conversation_summary: Optional[str] = None
     topics_discussed: Optional[List[str]] = None
     handoff_requested: bool

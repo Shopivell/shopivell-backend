@@ -18,6 +18,7 @@ from database import get_db
 from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer, MultiTenantSalesBot
 from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation
 from .store_router import StoreRouter
+from .profile_service import get_customer_name_from_contacts, generate_avatar_url, should_update_profile_picture
 from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
@@ -963,6 +964,24 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                 )
 
                 logger.info(f"Routing result: store_id={store_id}, method={routing_method}")
+
+                # Update conversation with customer name and profile picture
+                if conversation:
+                    # Extract customer name from contacts
+                    customer_name = get_customer_name_from_contacts(contacts)
+                    if customer_name and not conversation.customer_name:
+                        conversation.customer_name = customer_name
+                    
+                    # Set profile picture (generate avatar if not from Meta)
+                    if should_update_profile_picture(conversation.profile_picture_updated_at):
+                        profile_url = generate_avatar_url(
+                            name=conversation.customer_name or customer_name,
+                            phone_number=from_number_clean
+                        )
+                        conversation.profile_picture_url = profile_url
+                        conversation.profile_picture_updated_at = datetime.utcnow()
+                    
+                    db.commit()
 
                 # Handle case where no store is routed (needs selection)
                 if store_id is None:

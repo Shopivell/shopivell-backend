@@ -46,6 +46,10 @@ class User(Base):
     social_posts = relationship("SocialPost", back_populates="user", cascade="all, delete-orphan")
     agencies = relationship("Agency", back_populates="owner", cascade="all, delete-orphan")
 
+    # Referral system relationships
+    referral_code = relationship("UserReferralCode", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    token_balance = relationship("UserTokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
+
 class VerificationCode(Base):
     __tablename__ = "verification_codes"
 

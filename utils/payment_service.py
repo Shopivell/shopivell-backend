@@ -9,6 +9,8 @@ from modules.payment.models import (
     PaymentTransaction, PaymentStatus, PaymentMethod,
     SubscriptionPlan, StoreSubscription, PackagePricing
 )
+from modules.referral.models import UserTokenBalance, TokenTransaction, TokenTransactionType
+from modules.referral.constants import TOKEN_VALUE_USD, MAX_TOKENS_PER_PAYMENT
 import os
 
 logger = logging.getLogger(__name__)
@@ -58,7 +60,8 @@ class PaymentService:
         payment_method: PaymentMethod,
         package_name: SubscriptionPlan,
         billing_period: str = "monthly",
-        mobile_number: Optional[str] = None
+        mobile_number: Optional[str] = None,
+        tokens_to_redeem: int = 0
     ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
         """Create a new payment transaction"""
         try:
@@ -83,18 +86,56 @@ class PaymentService:
             if abs(amount - expected_amount) > 0.01:
                 return None, f"Amount does not match package price. Expected: ${expected_amount:.2f}"
             
+            # Apply token discount if tokens provided
+            token_discount = 0.0
+            actual_amount = amount
+            if tokens_to_redeem > 0:
+                # Validate token balance
+                token_balance = self.db.query(UserTokenBalance).filter(
+                    UserTokenBalance.user_id == user_id
+                ).first()
+                
+                if token_balance and token_balance.available_tokens >= tokens_to_redeem:
+                    # Calculate discount (capped at MAX_TOKENS_PER_PAYMENT and payment amount)
+                    max_tokens = min(
+                        tokens_to_redeem,
+                        MAX_TOKENS_PER_PAYMENT,
+                        int(amount / TOKEN_VALUE_USD)
+                    )
+                    token_discount = max_tokens * TOKEN_VALUE_USD
+                    actual_amount = max(0, amount - token_discount)
+                    
+                    # Deduct tokens
+                    token_balance.available_tokens -= max_tokens
+                    token_balance.total_redeemed += max_tokens
+                    
+                    # Create token transaction record
+                    token_tx = TokenTransaction(
+                        token_balance_id=token_balance.id,
+                        transaction_type=TokenTransactionType.REDEEMED,
+                        amount=-max_tokens,
+                        balance_after=token_balance.available_tokens,
+                        reference_type="payment",
+                        description=f"Redeemed for {package_name.value} subscription"
+                    )
+                    self.db.add(token_tx)
+                    logger.info(f"Applied {max_tokens} token discount (${token_discount:.2f}) for user {user_id}")
+                else:
+                    logger.warning(f"Insufficient tokens for user {user_id}: requested {tokens_to_redeem}, available {token_balance.available_tokens if token_balance else 0}")
+            
             # Create transaction
             transaction = PaymentTransaction(
                 store_id=store_id,
                 user_id=user_id,
                 reference=reference,
-                amount=amount,
+                amount=actual_amount,  # Amount after token discount
                 currency="USD",
                 payment_method=payment_method,
                 package_name=package_name,
                 billing_period=billing_period,
                 mobile_number=mobile_number,
                 status=PaymentStatus.PENDING,
+                payment_metadata={"token_discount": token_discount, "original_amount": amount},
                 initiated_at=datetime.utcnow(),
                 expires_at=datetime.utcnow() + timedelta(hours=24)
             )
