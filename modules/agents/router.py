@@ -21,6 +21,7 @@ from .creative_angles_agent import CreativeAnglesAgent
 from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
 from .media_generator_agent import MediaGeneratorAgent
+from .vision_compliance_service import vision_compliance_service
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1011,4 +1012,161 @@ async def generate_luxury_assets(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate luxury assets: {str(e)}"
+        )
+
+
+# ============ Vision Compliance Endpoints ============
+
+@agents_router.post("/compliance/check-image")
+async def check_image_compliance(
+    image_base64: str,
+    industry: Optional[str] = None,
+    brand_name: Optional[str] = None,
+    competitor_brands: Optional[List[str]] = None
+):
+    """
+    Manually check an image for advertising compliance issues using OpenAI Vision.
+
+    This endpoint analyzes images for:
+    - Nudity/sexual content
+    - Violence/weapons
+    - Brand risk (competitor logos, trademarks)
+    - Prohibited text content
+    - Political/controversial content
+    - Misleading claims
+    - Age-restricted content (alcohol, tobacco, gambling)
+
+    Args:
+        image_base64: Base64-encoded image data
+        industry: Optional industry context for more accurate checks (security, food, tech, etc.)
+        brand_name: The advertiser's brand name
+        competitor_brands: List of competitor brand names to check for
+
+    Returns:
+        Compliance result with issues, suggestions, and risk level
+    """
+    try:
+        logger.info(f"Running manual compliance check (industry: {industry})")
+
+        result = await vision_compliance_service.analyze_image(
+            image_base64=image_base64,
+            industry=industry,
+            brand_name=brand_name,
+            competitor_brands=competitor_brands
+        )
+
+        return {
+            "success": True,
+            "compliance": {
+                "is_compliant": result.is_compliant,
+                "risk_level": result.risk_level,
+                "confidence": result.confidence,
+                "analysis_time_ms": result.analysis_time_ms,
+                "issues": [
+                    {
+                        "category": issue.category,
+                        "severity": issue.severity,
+                        "description": issue.description,
+                        "location": issue.location
+                    }
+                    for issue in result.issues
+                ],
+                "detected_text": result.detected_text,
+                "detected_logos": result.detected_logos,
+                "suggestions": result.suggestions
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to check image compliance: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check image compliance: {str(e)}"
+        )
+
+
+@agents_router.post("/compliance/check-brand-safety")
+async def check_brand_safety(
+    image_base64: str,
+    brand_name: str,
+    competitor_brands: List[str]
+):
+    """
+    Check image specifically for brand safety issues.
+
+    Detects:
+    - Competitor logos in images
+    - Trademarked content
+    - Inappropriate brand associations
+    - Text mentioning competitor brands
+
+    Args:
+        image_base64: Base64-encoded image data
+        brand_name: The advertiser's brand name
+        competitor_brands: List of competitor brand names to check for
+
+    Returns:
+        Brand safety result with detected logos and risks
+    """
+    try:
+        logger.info(f"Running brand safety check for {brand_name}")
+
+        result = await vision_compliance_service.check_brand_safety(
+            image_base64=image_base64,
+            brand_name=brand_name,
+            competitor_brands=competitor_brands
+        )
+
+        return {
+            "success": True,
+            "brand_safety": {
+                "is_safe": result.is_safe,
+                "detected_logos": result.detected_logos,
+                "detected_text": result.detected_text,
+                "competitor_detected": result.competitor_detected,
+                "trademark_risk": result.trademark_risk,
+                "issues": result.issues
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to check brand safety: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check brand safety: {str(e)}"
+        )
+
+
+@agents_router.post("/compliance/extract-text")
+async def extract_image_text(image_base64: str):
+    """
+    Extract all visible text from an image using OCR via Vision API.
+
+    Useful for:
+    - Checking what text is in generated images
+    - Verifying headline rendering
+    - Finding prohibited words in images
+
+    Args:
+        image_base64: Base64-encoded image data
+
+    Returns:
+        List of text strings found in the image
+    """
+    try:
+        logger.info("Extracting text from image")
+
+        text_list = await vision_compliance_service.extract_text_from_image(image_base64)
+
+        return {
+            "success": True,
+            "extracted_text": text_list,
+            "text_count": len(text_list)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to extract text from image: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extract text from image: {str(e)}"
         )

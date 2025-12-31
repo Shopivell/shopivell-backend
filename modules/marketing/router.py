@@ -33,7 +33,9 @@ from .schemas import (
     MetaBulkUpdateRequest, SuccessMessage, ErrorMessage,
     CampaignObjective, CampaignStatus, AdSetStatus, AdStatus,
     MetaInsightsSummary, MetaPerformanceMetrics, MetaCampaignPerformance,
-    DraftItem, DraftListResponse, PublishDraftRequest, PublishDraftResponse
+    DraftItem, DraftListResponse, PublishDraftRequest, PublishDraftResponse,
+    # Best Ads Ranking
+    BestAdResponse, BestAdsListResponse, AdComparisonRequest, AdComparisonResponse
 )
 
 marketing_router = APIRouter(prefix="/api/marketing", tags=["marketing"])
@@ -2594,18 +2596,20 @@ def get_ads_from_library(
 
 @marketing_router.get("/drafts", response_model=DraftListResponse)
 def list_all_drafts(
+    store_id: uuid.UUID = Query(..., description="Store ID for multi-tenant filtering"),
     ad_account_id: Optional[uuid.UUID] = None,
     draft_type: Optional[str] = Query(None, description="Filter by type: campaign, adset, ad, url_campaign"),
     skip: int = 0,
     limit: int = 50,
     db: Session = Depends(get_db)
 ):
-    """List all drafts (campaigns, ad sets, ads, and URL campaigns)"""
+    """List all drafts (campaigns, ad sets, ads, and URL campaigns) for a specific store"""
     drafts = []
 
-    # Get URL campaigns that are not published (DRAFT, ANALYZING, READY status)
+    # Get URL campaigns that are not published (DRAFT, ANALYZING, READY status) - filtered by store_id
     if draft_type is None or draft_type == "campaign" or draft_type == "url_campaign":
         url_campaign_query = db.query(UrlCampaign).filter(
+            UrlCampaign.store_id == store_id,
             UrlCampaign.status.in_([
                 UrlCampaignStatus.DRAFT,
                 UrlCampaignStatus.ANALYZING,
@@ -2636,9 +2640,16 @@ def list_all_drafts(
                 ad_account_id=None
             ))
 
-    # Get Meta draft campaigns
+    # Get Meta draft campaigns - filter by store via ad_account -> business_account -> store_id
     if draft_type is None or draft_type == "campaign":
-        campaign_query = db.query(MetaCampaign).filter(MetaCampaign.is_draft == True)
+        campaign_query = db.query(MetaCampaign).join(
+            MetaAdAccount, MetaCampaign.ad_account_id == MetaAdAccount.id
+        ).join(
+            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+        ).filter(
+            MetaCampaign.is_draft == True,
+            FacebookBusinessAccount.store_id == store_id
+        )
         if ad_account_id:
             campaign_query = campaign_query.filter(MetaCampaign.ad_account_id == ad_account_id)
 
@@ -2655,9 +2666,16 @@ def list_all_drafts(
                 ad_account_id=campaign.ad_account_id
             ))
 
-    # Get draft ad sets
+    # Get draft ad sets - filter by store via ad_account -> business_account -> store_id
     if draft_type is None or draft_type == "adset":
-        adset_query = db.query(MetaAdSet).filter(MetaAdSet.is_draft == True)
+        adset_query = db.query(MetaAdSet).join(
+            MetaAdAccount, MetaAdSet.ad_account_id == MetaAdAccount.id
+        ).join(
+            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+        ).filter(
+            MetaAdSet.is_draft == True,
+            FacebookBusinessAccount.store_id == store_id
+        )
         if ad_account_id:
             adset_query = adset_query.filter(MetaAdSet.ad_account_id == ad_account_id)
 
@@ -2680,9 +2698,16 @@ def list_all_drafts(
                 campaign_name=campaign_name
             ))
 
-    # Get draft ads
+    # Get draft ads - filter by store via ad_account -> business_account -> store_id
     if draft_type is None or draft_type == "ad":
-        ad_query = db.query(MetaAd).filter(MetaAd.is_draft == True)
+        ad_query = db.query(MetaAd).join(
+            MetaAdAccount, MetaAd.ad_account_id == MetaAdAccount.id
+        ).join(
+            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+        ).filter(
+            MetaAd.is_draft == True,
+            FacebookBusinessAccount.store_id == store_id
+        )
         if ad_account_id:
             ad_query = ad_query.filter(MetaAd.ad_account_id == ad_account_id)
 
@@ -2957,4 +2982,449 @@ def delete_draft(
         success=True,
         message=f"Draft {draft_type} deleted successfully"
     )
+
+
+# ============================================
+# Best Ads Ranking Endpoints (Market Research)
+# ============================================
+
+@marketing_router.get("/campaigns/{campaign_id}/best-ads", response_model=BestAdsListResponse)
+def get_best_ads(
+    campaign_id: uuid.UUID,
+    metric: str = Query("ctr", description="Metric to rank by: ctr, roas, conversions, cpc, engagement"),
+    limit: int = Query(10, ge=1, le=50, description="Number of top ads to return"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the best performing ads in a campaign ranked by the selected metric.
+
+    Use this to identify winning ad creatives for market research and to inform new ad creation.
+
+    Metrics:
+    - ctr: Click-through rate (clicks/impressions)
+    - roas: Return on ad spend (revenue/spend)
+    - conversions: Total conversions
+    - cpc: Cost per click (lower is better)
+    - engagement: Total engagement (likes + comments + shares)
+    """
+    # Validate metric
+    valid_metrics = ["ctr", "roas", "conversions", "cpc", "engagement"]
+    if metric not in valid_metrics:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid metric. Must be one of: {', '.join(valid_metrics)}"
+        )
+
+    # Get campaign
+    campaign = db.query(MetaCampaign).filter(MetaCampaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found"
+        )
+
+    # Get ads with their insights (aggregated)
+    ads_with_insights = db.query(
+        MetaAd,
+        func.sum(MetaAdInsight.impressions).label('total_impressions'),
+        func.sum(MetaAdInsight.clicks).label('total_clicks'),
+        func.sum(MetaAdInsight.spend).label('total_spend'),
+        func.sum(MetaAdInsight.conversions).label('total_conversions'),
+        func.sum(MetaAdInsight.likes).label('total_likes'),
+        func.sum(MetaAdInsight.comments).label('total_comments'),
+        func.sum(MetaAdInsight.shares).label('total_shares'),
+        func.avg(MetaAdInsight.ctr).label('avg_ctr'),
+        func.avg(MetaAdInsight.cpc).label('avg_cpc'),
+        func.avg(MetaAdInsight.cpm).label('avg_cpm'),
+        func.avg(MetaAdInsight.cost_per_conversion).label('avg_cost_per_conversion'),
+        func.avg(MetaAdInsight.conversion_rate).label('avg_conversion_rate'),
+    ).join(
+        MetaAdInsight, MetaAd.id == MetaAdInsight.ad_id
+    ).filter(
+        MetaAd.campaign_id == campaign_id,
+        MetaAd.is_active == True
+    ).group_by(MetaAd.id).all()
+
+    if not ads_with_insights:
+        return BestAdsListResponse(
+            campaign_id=campaign_id,
+            campaign_name=campaign.name,
+            metric_used=metric,
+            ads=[],
+            total_ads=0,
+            date_range=None
+        )
+
+    # Build response list with calculated metrics
+    ads_data = []
+    for row in ads_with_insights:
+        ad = row[0]
+        total_impressions = row.total_impressions or 0
+        total_clicks = row.total_clicks or 0
+        total_spend = row.total_spend or 0.0
+        total_conversions = row.total_conversions or 0
+        total_likes = row.total_likes or 0
+        total_comments = row.total_comments or 0
+        total_shares = row.total_shares or 0
+
+        # Calculate metrics
+        ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
+        cpc = (total_spend / total_clicks) if total_clicks > 0 else 0
+        cpm = (total_spend / total_impressions * 1000) if total_impressions > 0 else 0
+        conversion_rate = (total_conversions / total_clicks * 100) if total_clicks > 0 else 0
+        cost_per_conversion = (total_spend / total_conversions) if total_conversions > 0 else 0
+        engagement = total_likes + total_comments + total_shares
+
+        # ROAS calculation (assuming $1 revenue per conversion for now - could be customized)
+        roas = (total_conversions / total_spend) if total_spend > 0 else 0
+
+        # Get creative info
+        creative = ad.creative
+        image_url = None
+        headline = None
+        description = None
+        if creative:
+            image_url = creative.image_url
+            headline = creative.title
+            description = creative.body
+
+        ads_data.append({
+            'ad': ad,
+            'impressions': total_impressions,
+            'clicks': total_clicks,
+            'spend': total_spend,
+            'conversions': total_conversions,
+            'ctr': ctr,
+            'cpc': cpc,
+            'cpm': cpm,
+            'conversion_rate': conversion_rate,
+            'cost_per_conversion': cost_per_conversion,
+            'roas': roas,
+            'engagement': engagement,
+            'likes': total_likes,
+            'comments': total_comments,
+            'shares': total_shares,
+            'image_url': image_url,
+            'headline': headline,
+            'description': description
+        })
+
+    # Sort by selected metric
+    if metric == "ctr":
+        ads_data.sort(key=lambda x: x['ctr'], reverse=True)
+    elif metric == "roas":
+        ads_data.sort(key=lambda x: x['roas'], reverse=True)
+    elif metric == "conversions":
+        ads_data.sort(key=lambda x: x['conversions'], reverse=True)
+    elif metric == "cpc":
+        ads_data.sort(key=lambda x: x['cpc'], reverse=False)  # Lower is better
+    elif metric == "engagement":
+        ads_data.sort(key=lambda x: x['engagement'], reverse=True)
+
+    # Calculate performance scores (0-100 normalized)
+    if ads_data:
+        if metric == "cpc":
+            # For CPC, lower is better, so invert the scoring
+            min_val = min(a[metric] for a in ads_data) or 0.01
+            max_val = max(a[metric] for a in ads_data) or 1
+            for a in ads_data:
+                if max_val > min_val:
+                    a['score'] = 100 - ((a[metric] - min_val) / (max_val - min_val) * 100)
+                else:
+                    a['score'] = 100
+        else:
+            max_val = max(a[metric] for a in ads_data) or 1
+            for a in ads_data:
+                a['score'] = (a[metric] / max_val * 100) if max_val > 0 else 0
+
+    # Limit results
+    ads_data = ads_data[:limit]
+
+    # Build response
+    best_ads = []
+    for rank, data in enumerate(ads_data, 1):
+        ad = data['ad']
+        best_ads.append(BestAdResponse(
+            ad_id=ad.id,
+            meta_ad_id=ad.ad_id,
+            ad_name=ad.name,
+            creative_url=None,  # Could be added if we have a preview URL
+            headline=data['headline'],
+            description=data['description'],
+            image_url=data['image_url'],
+            impressions=data['impressions'],
+            clicks=data['clicks'],
+            spend=data['spend'],
+            ctr=round(data['ctr'], 2),
+            cpc=round(data['cpc'], 2),
+            cpm=round(data['cpm'], 2),
+            conversions=data['conversions'],
+            cost_per_conversion=round(data['cost_per_conversion'], 2),
+            conversion_rate=round(data['conversion_rate'], 2),
+            roas=round(data['roas'], 2),
+            likes=data['likes'],
+            comments=data['comments'],
+            shares=data['shares'],
+            rank=rank,
+            performance_score=round(data['score'], 1)
+        ))
+
+    return BestAdsListResponse(
+        campaign_id=campaign_id,
+        campaign_name=campaign.name,
+        metric_used=metric,
+        ads=best_ads,
+        total_ads=len(ads_with_insights),
+        date_range=None  # Could add date filtering later
+    )
+
+
+@marketing_router.post("/ads/compare", response_model=AdComparisonResponse)
+def compare_ads(
+    request: AdComparisonRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Compare multiple ads side-by-side with performance metrics.
+
+    Returns the winner based on overall performance and provides insights.
+    """
+    ad_ids = request.ad_ids
+
+    # Get ads with their aggregated insights
+    ads_with_insights = db.query(
+        MetaAd,
+        func.sum(MetaAdInsight.impressions).label('total_impressions'),
+        func.sum(MetaAdInsight.clicks).label('total_clicks'),
+        func.sum(MetaAdInsight.spend).label('total_spend'),
+        func.sum(MetaAdInsight.conversions).label('total_conversions'),
+        func.sum(MetaAdInsight.likes).label('total_likes'),
+        func.sum(MetaAdInsight.comments).label('total_comments'),
+        func.sum(MetaAdInsight.shares).label('total_shares'),
+    ).join(
+        MetaAdInsight, MetaAd.id == MetaAdInsight.ad_id
+    ).filter(
+        MetaAd.id.in_(ad_ids),
+        MetaAd.is_active == True
+    ).group_by(MetaAd.id).all()
+
+    if not ads_with_insights:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No ads found with performance data"
+        )
+
+    # Build comparison data
+    comparison_ads = []
+    for row in ads_with_insights:
+        ad = row[0]
+        total_impressions = row.total_impressions or 0
+        total_clicks = row.total_clicks or 0
+        total_spend = row.total_spend or 0.0
+        total_conversions = row.total_conversions or 0
+
+        ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
+        cpc = (total_spend / total_clicks) if total_clicks > 0 else 0
+        cpm = (total_spend / total_impressions * 1000) if total_impressions > 0 else 0
+        roas = (total_conversions / total_spend) if total_spend > 0 else 0
+
+        # Get creative info
+        creative = ad.creative
+        image_url = creative.image_url if creative else None
+        headline = creative.title if creative else None
+        description = creative.body if creative else None
+
+        comparison_ads.append(BestAdResponse(
+            ad_id=ad.id,
+            meta_ad_id=ad.ad_id,
+            ad_name=ad.name,
+            headline=headline,
+            description=description,
+            image_url=image_url,
+            impressions=total_impressions,
+            clicks=total_clicks,
+            spend=total_spend,
+            ctr=round(ctr, 2),
+            cpc=round(cpc, 2),
+            cpm=round(cpm, 2),
+            conversions=total_conversions,
+            roas=round(roas, 2),
+            likes=row.total_likes or 0,
+            comments=row.total_comments or 0,
+            shares=row.total_shares or 0,
+            rank=0,
+            performance_score=0
+        ))
+
+    # Determine winner based on CTR (primary metric)
+    winner = None
+    winner_metric = "ctr"
+    if comparison_ads:
+        best = max(comparison_ads, key=lambda x: x.ctr)
+        if best.ctr > 0:
+            winner = best.ad_id
+
+            # Calculate confidence based on sample size
+            total_impressions = sum(a.impressions for a in comparison_ads)
+            confidence = min(0.95, total_impressions / 10000)  # Max 95% at 10k impressions
+        else:
+            confidence = 0
+
+    # Generate insights
+    insights = []
+    if len(comparison_ads) >= 2:
+        best_ctr = max(comparison_ads, key=lambda x: x.ctr)
+        worst_ctr = min(comparison_ads, key=lambda x: x.ctr)
+        if best_ctr.ctr > worst_ctr.ctr:
+            diff = ((best_ctr.ctr - worst_ctr.ctr) / worst_ctr.ctr * 100) if worst_ctr.ctr > 0 else 100
+            insights.append(f"'{best_ctr.ad_name}' has {diff:.0f}% higher CTR than '{worst_ctr.ad_name}'")
+
+        best_conv = max(comparison_ads, key=lambda x: x.conversions)
+        if best_conv.conversions > 0:
+            insights.append(f"'{best_conv.ad_name}' has the most conversions ({best_conv.conversions})")
+
+        lowest_cpc = min(comparison_ads, key=lambda x: x.cpc if x.cpc > 0 else float('inf'))
+        if lowest_cpc.cpc > 0:
+            insights.append(f"'{lowest_cpc.ad_name}' has the lowest CPC (${lowest_cpc.cpc:.2f})")
+
+    return AdComparisonResponse(
+        ads=comparison_ads,
+        winner=winner,
+        winner_metric=winner_metric,
+        confidence=round(confidence, 2) if comparison_ads else 0,
+        insights=insights,
+        comparison_summary={
+            "total_ads": len(comparison_ads),
+            "total_impressions": sum(a.impressions for a in comparison_ads),
+            "total_spend": sum(a.spend for a in comparison_ads),
+            "avg_ctr": sum(a.ctr for a in comparison_ads) / len(comparison_ads) if comparison_ads else 0
+        }
+    )
+
+
+@marketing_router.get("/best-ad-template")
+def get_best_ad_template(
+    ad_account_id: Optional[uuid.UUID] = Query(None, description="Filter by ad account"),
+    campaign_id: Optional[uuid.UUID] = Query(None, description="Filter by campaign"),
+    metric: str = Query("ctr", description="Metric to rank by"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the best performing ad to use as a template for creating new ads.
+
+    This endpoint helps market researchers by providing the top performing ad
+    that can be used as inspiration or a template for new ad creation.
+
+    Returns the best ad's creative elements (headline, description, image, etc.)
+    that can be used to inform new ad creation.
+    """
+    # Build query for ads with insights
+    query = db.query(
+        MetaAd,
+        MetaAdCreative,
+        func.sum(MetaAdInsight.impressions).label('total_impressions'),
+        func.sum(MetaAdInsight.clicks).label('total_clicks'),
+        func.sum(MetaAdInsight.spend).label('total_spend'),
+        func.sum(MetaAdInsight.conversions).label('total_conversions'),
+    ).join(
+        MetaAdInsight, MetaAd.id == MetaAdInsight.ad_id
+    ).outerjoin(
+        MetaAdCreative, MetaAd.creative_id == MetaAdCreative.id
+    ).filter(
+        MetaAd.is_active == True
+    )
+
+    if ad_account_id:
+        query = query.filter(MetaAd.ad_account_id == ad_account_id)
+
+    if campaign_id:
+        query = query.filter(MetaAd.campaign_id == campaign_id)
+
+    query = query.group_by(MetaAd.id, MetaAdCreative.id)
+
+    results = query.all()
+
+    if not results:
+        return {
+            "success": False,
+            "message": "No ads with performance data found",
+            "template": None
+        }
+
+    # Calculate metrics and find best
+    best_ad = None
+    best_score = -1
+
+    for row in results:
+        ad = row[0]
+        creative = row[1]
+        impressions = row.total_impressions or 0
+        clicks = row.total_clicks or 0
+        spend = row.total_spend or 0.0
+        conversions = row.total_conversions or 0
+
+        if metric == "ctr":
+            score = (clicks / impressions * 100) if impressions > 0 else 0
+        elif metric == "conversions":
+            score = conversions
+        elif metric == "roas":
+            score = (conversions / spend) if spend > 0 else 0
+        elif metric == "cpc":
+            score = -(spend / clicks) if clicks > 0 else float('-inf')  # Negative because lower is better
+        else:
+            score = (clicks / impressions * 100) if impressions > 0 else 0
+
+        if score > best_score:
+            best_score = score
+            best_ad = {
+                'ad': ad,
+                'creative': creative,
+                'impressions': impressions,
+                'clicks': clicks,
+                'spend': spend,
+                'conversions': conversions,
+                'ctr': (clicks / impressions * 100) if impressions > 0 else 0,
+                'cpc': (spend / clicks) if clicks > 0 else 0
+            }
+
+    if not best_ad:
+        return {
+            "success": False,
+            "message": "Could not determine best ad",
+            "template": None
+        }
+
+    ad = best_ad['ad']
+    creative = best_ad['creative']
+
+    return {
+        "success": True,
+        "message": f"Best performing ad based on {metric}",
+        "template": {
+            "ad_id": str(ad.id),
+            "ad_name": ad.name,
+            "ad_format": ad.ad_format,
+            # Creative elements for new ad creation
+            "headline": creative.title if creative else None,
+            "description": creative.body if creative else None,
+            "call_to_action": creative.call_to_action_type if creative else None,
+            "image_url": creative.image_url if creative else None,
+            "video_url": creative.video_url if creative else None,
+            "destination_url": creative.url if creative else None,
+            # Performance metrics for reference
+            "performance": {
+                "impressions": best_ad['impressions'],
+                "clicks": best_ad['clicks'],
+                "ctr": round(best_ad['ctr'], 2),
+                "conversions": best_ad['conversions'],
+                "spend": round(best_ad['spend'], 2),
+                "cpc": round(best_ad['cpc'], 2)
+            }
+        },
+        "suggestions": [
+            f"This ad achieved {best_ad['ctr']:.2f}% CTR - consider using similar headline style",
+            f"The ad generated {best_ad['conversions']} conversions - analyze what makes it effective",
+            "Use similar visual style and messaging tone for new ads"
+        ]
+    }
 

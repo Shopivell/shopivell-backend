@@ -594,6 +594,67 @@ class PublishDraftResponse(BaseModel):
     meta_id: Optional[str] = None  # The ID returned from Meta API
     published_at: Optional[datetime] = None
 
+# ============================================
+# Best Ads Ranking Models (for Market Research)
+# ============================================
+
+class BestAdResponse(BaseModel):
+    """Individual ad with performance metrics for ranking"""
+    model_config = ConfigDict(from_attributes=True)
+
+    ad_id: uuid.UUID
+    meta_ad_id: str  # The Meta platform ad ID
+    ad_name: str
+    creative_url: Optional[str] = None
+    headline: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+
+    # Performance metrics
+    impressions: int = 0
+    clicks: int = 0
+    spend: float = 0.0
+    ctr: float = 0.0  # Click-through rate
+    cpc: float = 0.0  # Cost per click
+    cpm: float = 0.0  # Cost per 1000 impressions
+    conversions: int = 0
+    cost_per_conversion: float = 0.0
+    conversion_rate: float = 0.0
+    roas: float = 0.0  # Return on ad spend
+
+    # Engagement
+    likes: int = 0
+    comments: int = 0
+    shares: int = 0
+
+    # Ranking info
+    rank: int = 0
+    performance_score: float = 0.0  # Normalized 0-100 based on selected metric
+
+class BestAdsListResponse(BaseModel):
+    """Response for best ads ranking endpoint"""
+    campaign_id: uuid.UUID
+    campaign_name: str
+    metric_used: str  # ctr, roas, conversions, cpc
+    ads: List[BestAdResponse]
+    total_ads: int
+    date_range: Optional[Dict[str, Any]] = None
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class AdComparisonRequest(BaseModel):
+    """Request to compare specific ads"""
+    ad_ids: List[uuid.UUID] = Field(..., min_length=2, max_length=10)
+
+class AdComparisonResponse(BaseModel):
+    """Response for ad comparison endpoint"""
+    ads: List[BestAdResponse]
+    winner: Optional[uuid.UUID] = None
+    winner_metric: Optional[str] = None
+    confidence: float = 0.0  # Statistical significance (0-1)
+    insights: List[str] = []  # AI-generated insights
+    comparison_summary: Optional[Dict[str, Any]] = None
+
+
 # Update forward references if needed
 MetaCampaignResponse.model_rebuild()
 MetaAdSetResponse.model_rebuild()

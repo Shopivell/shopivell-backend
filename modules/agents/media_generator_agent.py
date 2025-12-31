@@ -19,6 +19,9 @@ from enum import Enum
 from io import BytesIO
 from dotenv import load_dotenv
 
+# Import vision compliance service for image moderation
+from .vision_compliance_service import vision_compliance_service, VisionComplianceResult
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -478,6 +481,70 @@ class MediaGeneratorAgent:
                 if result and result.get("image_base64"):
                     result["provider_used"] = prov.value
                     logger.info(f"[MediaGeneratorAgent] Successfully generated image with {prov.value}")
+
+                    # Run vision compliance check on AI-generated images
+                    try:
+                        logger.info("[MediaGeneratorAgent] Running vision compliance check...")
+                        compliance_result = await vision_compliance_service.analyze_image(
+                            image_base64=result["image_base64"],
+                            industry=None  # Can be enhanced to pass industry context
+                        )
+
+                        # Add compliance info to result
+                        result["compliance_check"] = {
+                            "is_compliant": compliance_result.is_compliant,
+                            "risk_level": compliance_result.risk_level,
+                            "confidence": compliance_result.confidence,
+                            "analysis_time_ms": compliance_result.analysis_time_ms
+                        }
+
+                        # Handle compliance results
+                        if not compliance_result.is_compliant:
+                            if compliance_result.risk_level == "critical":
+                                # Block critical violations - don't return the image
+                                logger.warning(f"[MediaGeneratorAgent] Image blocked due to critical compliance violation: {[i.description for i in compliance_result.issues]}")
+                                return {
+                                    "image_base64": None,
+                                    "blocked": True,
+                                    "block_reason": "Critical compliance violation detected",
+                                    "compliance_issues": [
+                                        {
+                                            "category": issue.category,
+                                            "severity": issue.severity,
+                                            "description": issue.description,
+                                            "location": issue.location
+                                        }
+                                        for issue in compliance_result.issues
+                                    ],
+                                    "suggestions": compliance_result.suggestions,
+                                    "provider_used": prov.value
+                                }
+                            else:
+                                # Flag for review but allow (medium/high risk)
+                                result["requires_review"] = True
+                                result["compliance_warnings"] = [
+                                    {
+                                        "category": issue.category,
+                                        "severity": issue.severity,
+                                        "description": issue.description,
+                                        "location": issue.location
+                                    }
+                                    for issue in compliance_result.issues
+                                ]
+                                result["compliance_suggestions"] = compliance_result.suggestions
+                                logger.warning(f"[MediaGeneratorAgent] Image flagged for review: {[i.category for i in compliance_result.issues]}")
+                        else:
+                            logger.info(f"[MediaGeneratorAgent] Image passed compliance check (risk: {compliance_result.risk_level})")
+
+                    except Exception as compliance_error:
+                        # Log compliance check failure but don't block image
+                        logger.warning(f"[MediaGeneratorAgent] Compliance check failed: {str(compliance_error)}")
+                        result["compliance_check"] = {
+                            "error": str(compliance_error),
+                            "status": "check_failed",
+                            "requires_manual_review": True
+                        }
+
                     return result
 
             except Exception as e:
