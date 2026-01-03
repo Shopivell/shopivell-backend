@@ -22,6 +22,8 @@ from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
 from .media_generator_agent import MediaGeneratorAgent
 from .vision_compliance_service import vision_compliance_service
+from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType
+from .scheduler import rules_scheduler, start_rules_scheduler, stop_rules_scheduler
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1169,4 +1171,512 @@ async def extract_image_text(image_base64: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to extract text from image: {str(e)}"
+        )
+
+
+# ============ Automated Rules Endpoints ============
+
+@agents_router.get("/rules/templates")
+async def get_rule_templates():
+    """
+    Get all available automated rule templates.
+
+    Templates include:
+    - scale_winner: +20% budget when ROAS ≥ target × 1.25 for 3 consecutive days
+    - kill_loser: -50% budget when CPA > 2× target AND 0 purchases after ≥2000 impressions
+    - pause_no_spend: Pause ad sets with zero spend after 24 hours
+    - scale_high_ctr: +15% budget when CTR > 3% for 2 consecutive days
+    - reduce_high_cpc: -25% budget when CPC > $5 for 2 consecutive days
+    """
+    return {
+        "success": True,
+        "templates": automated_rules_engine.get_rule_templates()
+    }
+
+
+@agents_router.post("/rules/create-from-template")
+async def create_rule_from_template(
+    template_name: str,
+    target_roas: Optional[float] = None,
+    target_cpa: Optional[float] = None
+):
+    """
+    Create an automated rule from a predefined template.
+
+    Args:
+        template_name: Name of the template (scale_winner, kill_loser, etc.)
+        target_roas: Target ROAS for scaling rules (e.g., 3.0 for 300%)
+        target_cpa: Target CPA for killing rules (e.g., 50.0 for $50)
+
+    Example:
+        - template_name: "scale_winner", target_roas: 3.0
+        - template_name: "kill_loser", target_cpa: 50.0
+    """
+    try:
+        rule = automated_rules_engine.create_rule_from_template(
+            template_name=template_name,
+            target_roas=target_roas,
+            target_cpa=target_cpa
+        )
+        automated_rules_engine.add_rule(rule)
+
+        return {
+            "success": True,
+            "message": f"Rule '{rule.name}' created and activated",
+            "rule": {
+                "id": rule.id,
+                "name": rule.name,
+                "description": rule.description,
+                "conditions": [c.model_dump() for c in rule.conditions],
+                "action": rule.action.model_dump(),
+                "target_roas": rule.target_roas,
+                "target_cpa": rule.target_cpa,
+                "is_enabled": rule.is_enabled
+            }
+        }
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to create rule: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create rule: {str(e)}"
+        )
+
+
+@agents_router.post("/rules/create-custom")
+async def create_custom_rule(
+    name: str,
+    description: Optional[str] = None,
+    entity_type: str = "adset",
+    conditions: List[dict] = [],
+    action_type: str = "scale_up",
+    adjustment_percent: Optional[float] = None,
+    max_budget: Optional[float] = None,
+    min_budget: Optional[float] = None,
+    target_roas: Optional[float] = None,
+    target_cpa: Optional[float] = None
+):
+    """
+    Create a custom automated rule with specific conditions and actions.
+
+    Args:
+        name: Rule name
+        description: Rule description
+        entity_type: "campaign", "adset", or "ad"
+        conditions: List of condition objects with:
+            - metric: roas, cpa, ctr, impressions, conversions, spend, cpc
+            - operator: gt, gte, lt, lte, eq, neq
+            - value: Threshold value
+            - consecutive_days: Days condition must be met (default 1)
+        action_type: scale_up, scale_down, pause, unpause, notify
+        adjustment_percent: Budget adjustment percentage (for scale actions)
+        max_budget: Maximum budget cap (for scale_up)
+        min_budget: Minimum budget floor (for scale_down)
+        target_roas: Target ROAS for reference
+        target_cpa: Target CPA for reference
+
+    Example:
+        {
+            "name": "My Custom Rule",
+            "conditions": [
+                {"metric": "roas", "operator": "gte", "value": 4.0, "consecutive_days": 2}
+            ],
+            "action_type": "scale_up",
+            "adjustment_percent": 25,
+            "max_budget": 500
+        }
+    """
+    try:
+        # Parse conditions
+        parsed_conditions = []
+        for cond in conditions:
+            parsed_conditions.append(RuleCondition(
+                metric=cond.get("metric", "ctr"),
+                operator=cond.get("operator", "gt"),
+                value=cond.get("value", 0),
+                consecutive_days=cond.get("consecutive_days", 1)
+            ))
+
+        # Create action
+        action = RuleAction(
+            type=RuleType(action_type),
+            adjustment_percent=adjustment_percent,
+            max_budget=max_budget,
+            min_budget=min_budget
+        )
+
+        # Create rule
+        rule = AutomatedRule(
+            name=name,
+            description=description,
+            entity_type=entity_type,
+            conditions=parsed_conditions,
+            action=action,
+            target_roas=target_roas,
+            target_cpa=target_cpa
+        )
+
+        automated_rules_engine.add_rule(rule)
+
+        return {
+            "success": True,
+            "message": f"Custom rule '{rule.name}' created and activated",
+            "rule": {
+                "id": rule.id,
+                "name": rule.name,
+                "description": rule.description,
+                "entity_type": rule.entity_type,
+                "conditions": [c.model_dump() for c in rule.conditions],
+                "action": rule.action.model_dump(),
+                "is_enabled": rule.is_enabled
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to create custom rule: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create custom rule: {str(e)}"
+        )
+
+
+@agents_router.get("/rules")
+async def get_active_rules():
+    """
+    Get all active automated rules.
+
+    Returns list of all rules currently loaded in the engine.
+    """
+    return {
+        "success": True,
+        "total_rules": len(automated_rules_engine.rules),
+        "rules": [
+            {
+                "id": rule.id,
+                "name": rule.name,
+                "description": rule.description,
+                "entity_type": rule.entity_type,
+                "is_enabled": rule.is_enabled,
+                "conditions": [c.model_dump() for c in rule.conditions],
+                "action": rule.action.model_dump(),
+                "target_roas": rule.target_roas,
+                "target_cpa": rule.target_cpa,
+                "trigger_count": rule.trigger_count,
+                "last_triggered": rule.last_triggered.isoformat() if rule.last_triggered else None
+            }
+            for rule in automated_rules_engine.rules
+        ]
+    }
+
+
+@agents_router.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: str):
+    """Delete an automated rule by ID"""
+    success = automated_rules_engine.remove_rule(rule_id)
+
+    if success:
+        return {"success": True, "message": f"Rule {rule_id} deleted"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Rule {rule_id} not found"
+        )
+
+
+@agents_router.post("/rules/{rule_id}/toggle")
+async def toggle_rule(rule_id: str, enabled: bool = True):
+    """Enable or disable an automated rule"""
+    for rule in automated_rules_engine.rules:
+        if rule.id == rule_id:
+            rule.is_enabled = enabled
+            return {
+                "success": True,
+                "message": f"Rule {'enabled' if enabled else 'disabled'}",
+                "rule_id": rule_id,
+                "is_enabled": enabled
+            }
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Rule {rule_id} not found"
+    )
+
+
+@agents_router.post("/rules/run/{ad_account_id}")
+async def run_rules_for_account(ad_account_id: str):
+    """
+    Manually trigger rule execution for an ad account.
+
+    This runs all enabled rules against all active ad sets in the account.
+    In production, this runs automatically on a schedule (every 15 minutes or hourly).
+
+    Returns:
+        - Number of rules evaluated
+        - Number of rules triggered
+        - Actions taken (budget changes, pauses, etc.)
+        - Any errors encountered
+    """
+    try:
+        result = await automated_rules_engine.run_all_rules(ad_account_id)
+
+        return {
+            "success": True,
+            **result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to run rules: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to run rules: {str(e)}"
+        )
+
+
+@agents_router.get("/rules/history")
+async def get_rule_execution_history(limit: int = 100):
+    """
+    Get history of rule executions.
+
+    Shows recent actions taken by automated rules including:
+    - Which rule was triggered
+    - What entity was affected
+    - What action was taken (budget change, pause, etc.)
+    - Old and new values
+    - Success/failure status
+    """
+    history = automated_rules_engine.get_execution_history(limit=limit)
+
+    return {
+        "success": True,
+        "total_executions": len(history),
+        "executions": history
+    }
+
+
+@agents_router.post("/rules/setup-defaults")
+async def setup_default_rules(
+    target_roas: float = 3.0,
+    target_cpa: float = 50.0
+):
+    """
+    Quick setup: Create the two main automated rules with your targets.
+
+    Creates:
+    1. Scale Winners: +20% budget when ROAS ≥ target × 1.25 for 3 days
+    2. Kill Losers: -50% budget when CPA > 2× target AND 0 purchases after 2000 impressions
+
+    Args:
+        target_roas: Your target ROAS (e.g., 3.0 for 300% return)
+        target_cpa: Your target CPA in dollars (e.g., 50.0 for $50)
+    """
+    try:
+        rules_created = []
+
+        # Create Scale Winners rule
+        scale_rule = automated_rules_engine.create_rule_from_template(
+            template_name="scale_winner",
+            target_roas=target_roas
+        )
+        automated_rules_engine.add_rule(scale_rule)
+        rules_created.append({
+            "id": scale_rule.id,
+            "name": scale_rule.name,
+            "trigger_condition": f"ROAS ≥ {target_roas * 1.25:.2f} for 3 consecutive days",
+            "action": "+20% budget (max $10,000)"
+        })
+
+        # Create Kill Losers rule
+        kill_rule = automated_rules_engine.create_rule_from_template(
+            template_name="kill_loser",
+            target_cpa=target_cpa
+        )
+        automated_rules_engine.add_rule(kill_rule)
+        rules_created.append({
+            "id": kill_rule.id,
+            "name": kill_rule.name,
+            "trigger_condition": f"CPA > ${target_cpa * 2:.2f} AND 0 conversions after 2000+ impressions",
+            "action": "-50% budget (min $5)"
+        })
+
+        return {
+            "success": True,
+            "message": "Default automated rules created and activated",
+            "target_roas": target_roas,
+            "target_cpa": target_cpa,
+            "rules_created": rules_created,
+            "next_steps": [
+                f"Rules will automatically run when you call POST /api/agents/rules/run/{{ad_account_id}}",
+                "Set up a cron job or scheduler to call this endpoint every 15-60 minutes for 24/7 automation"
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to setup default rules: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to setup default rules: {str(e)}"
+        )
+
+
+# ============ Scheduler Endpoints (24/7 Automation) ============
+
+@agents_router.post("/scheduler/start")
+async def start_scheduler(
+    interval_minutes: int = 15,
+    ad_account_ids: Optional[List[str]] = None
+):
+    """
+    Start the 24/7 automated rules scheduler.
+
+    The scheduler runs in the background and executes all enabled rules
+    for configured ad accounts at the specified interval.
+
+    Args:
+        interval_minutes: How often to run rules (default: 15 minutes, recommended: 15-60)
+        ad_account_ids: List of Meta ad account IDs to process
+
+    Example:
+        POST /api/agents/scheduler/start?interval_minutes=30
+        Body: {"ad_account_ids": ["act_123456789"]}
+    """
+    try:
+        # Add ad accounts if provided
+        if ad_account_ids:
+            for account_id in ad_account_ids:
+                rules_scheduler.add_ad_account(account_id)
+
+        # Start scheduler
+        success = start_rules_scheduler(interval_minutes=interval_minutes)
+
+        if success:
+            return {
+                "success": True,
+                "message": f"Scheduler started with {interval_minutes} minute interval",
+                "status": rules_scheduler.get_status()
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Scheduler already running",
+                "status": rules_scheduler.get_status()
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start scheduler: {str(e)}"
+        )
+
+
+@agents_router.post("/scheduler/stop")
+async def stop_scheduler():
+    """
+    Stop the 24/7 automated rules scheduler.
+
+    Gracefully shuts down the background scheduler.
+    """
+    try:
+        success = stop_rules_scheduler()
+
+        if success:
+            return {
+                "success": True,
+                "message": "Scheduler stopped"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Scheduler was not running"
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to stop scheduler: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop scheduler: {str(e)}"
+        )
+
+
+@agents_router.get("/scheduler/status")
+async def get_scheduler_status():
+    """
+    Get the current status of the automated rules scheduler.
+
+    Returns:
+        - running: Whether scheduler is active
+        - interval_minutes: Current run interval
+        - ad_accounts: List of accounts being processed
+        - last_run: Timestamp of last execution
+        - total_runs: Number of completed cycles
+        - active_rules: Number of rules configured
+    """
+    return {
+        "success": True,
+        "scheduler": rules_scheduler.get_status()
+    }
+
+
+@agents_router.post("/scheduler/add-account")
+async def add_account_to_scheduler(ad_account_id: str):
+    """
+    Add an ad account to the scheduler for 24/7 monitoring.
+
+    The scheduler will run all enabled rules for this account
+    at each scheduled interval.
+    """
+    rules_scheduler.add_ad_account(ad_account_id)
+
+    return {
+        "success": True,
+        "message": f"Account {ad_account_id} added to scheduler",
+        "accounts": rules_scheduler.get_status()["ad_accounts"]
+    }
+
+
+@agents_router.delete("/scheduler/remove-account/{ad_account_id}")
+async def remove_account_from_scheduler(ad_account_id: str):
+    """Remove an ad account from the scheduler"""
+    success = rules_scheduler.remove_ad_account(ad_account_id)
+
+    if success:
+        return {
+            "success": True,
+            "message": f"Account {ad_account_id} removed from scheduler",
+            "accounts": rules_scheduler.get_status()["ad_accounts"]
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {ad_account_id} not found in scheduler"
+        )
+
+
+@agents_router.post("/scheduler/run-now")
+async def trigger_immediate_run():
+    """
+    Manually trigger an immediate rule execution cycle.
+
+    Runs all enabled rules for all configured ad accounts immediately,
+    without waiting for the next scheduled interval.
+    """
+    try:
+        result = await rules_scheduler.run_now()
+
+        return {
+            "success": True,
+            "message": "Manual execution completed",
+            "result": result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to run immediate cycle: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to run immediate cycle: {str(e)}"
         )
