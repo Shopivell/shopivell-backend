@@ -256,10 +256,10 @@ async def get_dashboard_overview(
     db: Session = Depends(get_db)
 ):
     """Get dashboard overview metrics."""
-    # Count agencies (check both cases for status)
+    # Count agencies (cast ENUM to String before using upper)
     total_agencies = db.query(func.count(Agency.id)).scalar() or 0
     active_agencies = db.query(func.count(Agency.id)).filter(
-        func.upper(Agency.status) == "ACTIVE"
+        func.upper(func.cast(Agency.status, String)) == "ACTIVE"
     ).scalar() or 0
 
     # Count stores
@@ -268,9 +268,9 @@ async def get_dashboard_overview(
     # Count users
     total_users = db.query(func.count(User.id)).scalar() or 0
 
-    # Count active campaigns (check both cases)
+    # Count active campaigns (cast ENUM to String before using upper)
     active_campaigns = db.query(func.count(UrlCampaign.id)).filter(
-        func.upper(UrlCampaign.status) == "ACTIVE"
+        func.upper(func.cast(UrlCampaign.status, String)) == "ACTIVE"
     ).scalar() or 0
 
     # Calculate revenue (check both cases for status)
@@ -312,7 +312,7 @@ async def get_revenue_data(
     for i in range(days - 1, -1, -1):
         date = today - timedelta(days=i)
         revenue = db.query(func.sum(PaymentTransaction.amount)).filter(
-            func.date(PaymentTransaction.created_at) == date,
+            func.date(PaymentTransaction.initiated_at) == date,
             func.upper(func.cast(PaymentTransaction.status, String)) == "COMPLETED"
         ).scalar() or 0
 
@@ -356,7 +356,7 @@ async def list_agencies(
             owner_name=f"{owner.first_name or ''} {owner.last_name or ''}".strip() if owner else "Unknown",
             owner_email=owner.email if owner else "Unknown",
             stores_count=stores_count,
-            status=agency.status,
+            status=agency.status.value if hasattr(agency.status, 'value') else str(agency.status),
             total_revenue=0,  # TODO: Calculate from payments
             created_at=agency.created_at
         ))
@@ -462,7 +462,7 @@ async def list_campaigns(
             name=campaign.name,
             store_name=store.store_name if store else "Unknown",
             platform="facebook",  # TODO: Get from campaign
-            status=campaign.status,
+            status=campaign.status.value if hasattr(campaign.status, 'value') else str(campaign.status),
             budget=float(campaign.total_budget or 0),
             spent=0,  # TODO: Calculate from insights
             impressions=0,
@@ -486,7 +486,8 @@ async def get_running_campaigns(
     db: Session = Depends(get_db)
 ):
     """Get currently running campaigns."""
-    campaigns = db.query(UrlCampaign).filter(func.upper(UrlCampaign.status) == "ACTIVE").all()
+    # Cast ENUM to String before using upper()
+    campaigns = db.query(UrlCampaign).filter(func.upper(func.cast(UrlCampaign.status, String)) == "ACTIVE").all()
 
     result = []
     for campaign in campaigns:
@@ -530,8 +531,8 @@ async def list_assets(
             id=asset.id,
             name=asset.name,
             store_name=store.store_name if store else "Unknown",
-            file_type=asset.file_type,
-            url=asset.secure_url or asset.url or "",
+            file_type=asset.file_type.value if hasattr(asset.file_type, 'value') else str(asset.file_type) if asset.file_type else "unknown",
+            url=asset.cloudinary_secure_url or asset.cloudinary_url or "",
             source=asset.source or "upload",
             created_at=asset.created_at
         ))
@@ -798,7 +799,7 @@ async def list_payments(
     total = query.count()
     total_pages = (total + page_size - 1) // page_size
 
-    payments = query.order_by(PaymentTransaction.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    payments = query.order_by(PaymentTransaction.initiated_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
     for payment in payments:
@@ -809,10 +810,10 @@ async def list_payments(
             store_name=store.store_name if store else "Unknown",
             amount=float(payment.amount),
             currency=payment.currency,
-            payment_method=payment.payment_method,
-            package_name=payment.package_name or "N/A",
-            status=payment.status,
-            created_at=payment.created_at
+            payment_method=payment.payment_method.value if hasattr(payment.payment_method, 'value') else str(payment.payment_method),
+            package_name=payment.package_name.value if hasattr(payment.package_name, 'value') else str(payment.package_name) if payment.package_name else "N/A",
+            status=payment.status.value if hasattr(payment.status, 'value') else str(payment.status),
+            created_at=payment.initiated_at
         ))
 
     return PaymentListResponse(
@@ -839,7 +840,7 @@ async def get_income_stats(
     month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     monthly_revenue = db.query(func.sum(PaymentTransaction.amount)).filter(
         func.upper(func.cast(PaymentTransaction.status, String)) == "COMPLETED",
-        PaymentTransaction.created_at >= month_start
+        PaymentTransaction.initiated_at >= month_start
     ).scalar() or 0
 
     # By package

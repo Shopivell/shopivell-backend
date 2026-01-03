@@ -302,5 +302,30 @@ class RespondToFeedbackRequest(BaseModel):
     admin_response: str = Field(..., min_length=1)
 
 
+# ============ Store CRUD Schemas ============
+
+class CreateStoreRequest(BaseModel):
+    store_name: str = Field(..., min_length=2, max_length=100)
+    owner_email: EmailStr
+    agency_id: Optional[UUID] = None
+
+
+class UpdateStoreStatusRequest(BaseModel):
+    status: str = Field(..., pattern="^(active|suspended|pending)$")
+
+
+# ============ Agency CRUD Schemas ============
+
+class CreateAgencyRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=100)
+    owner_email: EmailStr
+
+
+# ============ User CRUD Schemas ============
+
+class UpdateUserStatusRequest(BaseModel):
+    is_active: bool
+
+
 # Update forward reference
 AdminLoginResponse.model_rebuild()
