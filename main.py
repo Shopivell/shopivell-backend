@@ -12,6 +12,7 @@ from modules.stores.models import *  # Store model (depends on User)
 from modules.assets.models import *  # Asset model (depends on Store)
 from modules.campaigns.models import *  # UrlCampaign model (depends on Store, Asset)
 from modules.customers.models import *
+from modules.admin.models import *  # Admin models (depends on User)
 
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -38,6 +39,8 @@ from modules.assets.router import asset_router
 from modules.ad_generator.router import ad_generator_router
 from modules.notifications.router import notification_router
 from modules.referral.router import referral_router
+from modules.feedback.router import feedback_router
+from modules.admin.router import admin_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -98,6 +101,8 @@ app.include_router(asset_router, prefix="/v1")
 app.include_router(ad_generator_router, prefix="/v1")
 app.include_router(notification_router, prefix="/v1")
 app.include_router(referral_router, prefix="/v1")
+app.include_router(feedback_router, prefix="/v1/api")
+app.include_router(admin_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")

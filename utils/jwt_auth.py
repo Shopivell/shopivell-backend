@@ -483,3 +483,50 @@ async def get_current_user_with_blacklist(
         store_id=payload.get("store_id"),
         agency_id=payload.get("agency_id")
     )
+
+
+# ============ Convenience Functions ============
+# These wrapper functions allow importing directly without using the class
+
+import bcrypt
+
+
+def create_access_token(
+    user_id: str,
+    email: str,
+    role: str,
+    store_id: Optional[str] = None,
+    agency_id: Optional[str] = None
+) -> str:
+    """Create an access token."""
+    return jwt_auth.create_access_token(user_id, email, role, store_id, agency_id)
+
+
+def create_refresh_token(user_id: str, email: str) -> str:
+    """Create a refresh token."""
+    return jwt_auth.create_refresh_token(user_id, email)
+
+
+def decode_token(token: str) -> Optional[Dict[str, Any]]:
+    """Decode and verify a token."""
+    try:
+        return jwt_auth.verify_token(token, token_type="access")
+    except HTTPException:
+        return None
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its hash."""
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode('utf-8'),
+            hashed_password.encode('utf-8')
+        )
+    except Exception:
+        return False
+
+
+def get_password_hash(password: str) -> str:
+    """Hash a password using bcrypt."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
