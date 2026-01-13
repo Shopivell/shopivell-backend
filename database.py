@@ -47,6 +47,16 @@ def get_db():
 
 def init_db():
     """Initializes the database by creating all tables defined in Base."""
+    from sqlalchemy import text
+
+    # Create pgvector extension if it doesn't exist
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.commit()
+        except Exception as e:
+            print(f"Warning: Could not create vector extension: {e}")
+
     # Import models here so SQLAlchemy is aware of them
     from modules.customers import models as customer_models
     from modules.orders import models as order_models
