@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-from sqlalchemy import String, Float, DateTime, ForeignKey, Text, Integer, Boolean, JSON
+from sqlalchemy import String, Float, DateTime, Date, ForeignKey, Text, Integer, Boolean, JSON
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, date
@@ -25,7 +25,7 @@ class PlatformData(Base):
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     platform_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("analytics_platforms.id"), nullable=False)
     data_type: Mapped[str] = mapped_column(String(50), nullable=False)  # sessions, pageviews, conversions, impressions, etc.
-    date: Mapped[date] = mapped_column(DateTime, nullable=False, index=True)
+    data_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     metrics: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)  # Flexible metric storage
     dimensions: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=True)  # Flexible dimension storage
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
