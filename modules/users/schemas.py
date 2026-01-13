@@ -47,7 +47,8 @@ class LoginVerifyRequest(BaseModel):
     code: str
 
 class GoogleSignupRequest(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None  # OAuth access token (from Google Login button)
+    credential: Optional[str] = None  # JWT credential (from Google One Tap)
     referral_code: Optional[str] = None  # Optional referral code for signup
     
 class LoginResponse(BaseModel):

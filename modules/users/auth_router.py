@@ -54,23 +54,51 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 @auth_router.post("/google", response_model=LoginResponse)
 async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(get_db)):
     try:
-        print(f"Received Google access token: {google_data.access_token[:20]}...")
-        
-        # Use access_token to get user info from Google
-        userinfo_response = requests.get(
-            'https://www.googleapis.com/oauth2/v3/userinfo',
-            headers={'Authorization': f'Bearer {google_data.access_token}'}
-        )
-        
-        if userinfo_response.status_code != 200:
-            print(f"Google API returned error: {userinfo_response.status_code} - {userinfo_response.text}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid Google access token"
+        user_info = None
+
+        # Handle JWT credential (from Google One Tap)
+        if google_data.credential:
+            print(f"Received Google credential (JWT)...")
+            try:
+                # Verify the JWT credential
+                user_info = id_token.verify_oauth2_token(
+                    google_data.credential,
+                    google_requests.Request(),
+                    GOOGLE_CLIENT_ID
+                )
+                print(f"Google JWT verified: {user_info}")
+            except ValueError as e:
+                print(f"JWT verification failed: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Google credential"
+                )
+
+        # Handle access_token (from Google Login button)
+        elif google_data.access_token:
+            print(f"Received Google access token: {google_data.access_token[:20]}...")
+
+            # Use access_token to get user info from Google
+            userinfo_response = requests.get(
+                'https://www.googleapis.com/oauth2/v3/userinfo',
+                headers={'Authorization': f'Bearer {google_data.access_token}'}
             )
-        
-        user_info = userinfo_response.json()
-        print(f"Google user info: {user_info}")
+
+            if userinfo_response.status_code != 200:
+                print(f"Google API returned error: {userinfo_response.status_code} - {userinfo_response.text}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid Google access token"
+                )
+
+            user_info = userinfo_response.json()
+            print(f"Google user info: {user_info}")
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either access_token or credential must be provided"
+            )
         
         # Extract user information from Google API response
         google_id = user_info['sub']
