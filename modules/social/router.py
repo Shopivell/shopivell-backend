@@ -22,13 +22,14 @@ from modules.social.schemas import (
 
 # Configuration for localhost development
 FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "882284284358539")
-FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET")  # Make sure this is set!
+FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
 FACEBOOK_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "http://localhost:8000/v1/api/social/facebook/callback")
 FACEBOOK_API_VERSION = os.getenv("FACEBOOK_API_VERSION", "v24.0")
 
-# Validate configuration
+# Log warning if Facebook is not configured
 if not FACEBOOK_APP_SECRET:
-    raise ValueError("FACEBOOK_APP_SECRET environment variable is required")
+    import logging
+    logging.warning("FACEBOOK_APP_SECRET not set - Facebook integration will be disabled")
 
 social_router = APIRouter(prefix="/api/social", tags=["social"])
 
