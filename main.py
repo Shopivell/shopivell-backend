@@ -121,6 +121,121 @@ async def health_check():
     }
 
 
+@app.post("/seed-test-users")
+async def seed_test_users():
+    """
+    Seed test users for development/testing.
+
+    Creates:
+    - Regular User: testuser@shopivell.com / Test@1234
+    - Admin User: admin@shopivell.com / Admin@1234
+    """
+    import bcrypt
+    from datetime import datetime
+    from database import SessionLocal
+    from modules.users.models import User, UserRole
+    from modules.admin.models import AdminUser, AdminRole
+
+    def hash_password(password: str) -> str:
+        salt = bcrypt.gensalt()
+        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+    db = SessionLocal()
+    results = {"users_created": [], "errors": []}
+
+    try:
+        # Test user credentials
+        test_users = [
+            {
+                "email": "testuser@shopivell.com",
+                "password": "Test@1234",
+                "name": "Test User",
+                "role": UserRole.OWNER,
+                "is_admin": False
+            },
+            {
+                "email": "admin@shopivell.com",
+                "password": "Admin@1234",
+                "name": "Admin User",
+                "role": UserRole.ADMIN,
+                "is_admin": True
+            }
+        ]
+
+        for user_data in test_users:
+            existing_user = db.query(User).filter(User.email == user_data["email"]).first()
+
+            if existing_user:
+                # Update password
+                existing_user.password_hash = hash_password(user_data["password"])
+                db.commit()
+                results["users_created"].append({
+                    "email": user_data["email"],
+                    "status": "password_updated"
+                })
+                user = existing_user
+            else:
+                # Create new user
+                user = User(
+                    email=user_data["email"],
+                    password_hash=hash_password(user_data["password"]),
+                    name=user_data["name"],
+                    role=user_data["role"],
+                    is_verified=True,
+                    is_active=True,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                results["users_created"].append({
+                    "email": user_data["email"],
+                    "status": "created"
+                })
+
+            # Create admin profile if needed
+            if user_data["is_admin"]:
+                existing_admin = db.query(AdminUser).filter(AdminUser.user_id == user.id).first()
+                if not existing_admin:
+                    admin_user = AdminUser(
+                        user_id=user.id,
+                        role=AdminRole.SUPERADMIN,
+                        permissions={"all": True},
+                        is_active=True,
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(admin_user)
+                    db.commit()
+
+        return {
+            "success": True,
+            "message": "Test users seeded successfully",
+            "results": results,
+            "credentials": {
+                "regular_user": {
+                    "email": "testuser@shopivell.com",
+                    "password": "Test@1234"
+                },
+                "admin_user": {
+                    "email": "admin@shopivell.com",
+                    "password": "Admin@1234"
+                }
+            }
+        }
+
+    except Exception as e:
+        db.rollback()
+        results["errors"].append(str(e))
+        return {
+            "success": False,
+            "message": f"Error seeding users: {str(e)}",
+            "results": results
+        }
+    finally:
+        db.close()
+
+
 # Run server
 if __name__ == "__main__":
     import uvicorn
