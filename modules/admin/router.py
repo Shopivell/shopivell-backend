@@ -47,6 +47,7 @@ from .schemas import (
     UpdateAgencyStatusRequest,
     StoreListItem,
     StoreListResponse,
+    CreateStoreRequest,
     CampaignListItem,
     CampaignListResponse,
     AssetListItem,
@@ -935,12 +936,11 @@ async def respond_to_feedback(
 
 @admin_router.post("/stores")
 async def create_store(
-    request: "CreateStoreRequest",
+    request: CreateStoreRequest,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """Create a new store."""
-    from .schemas import CreateStoreRequest
 
     # Find or create owner
     owner = db.query(User).filter(User.email == request.owner_email).first()
