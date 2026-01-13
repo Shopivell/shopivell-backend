@@ -48,17 +48,18 @@ def generate_unique_slug(db: Session, base_name: str) -> str:
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 # Google OAuth configuration
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "272390387474-pjmoiv7324dden6h6glu93d8pnapsnnl.apps.googleusercontent.com")
 
 # Google Signup/Login
 @auth_router.post("/google", response_model=LoginResponse)
 async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(get_db)):
     try:
         user_info = None
+        print(f"[GOOGLE AUTH] Received request - access_token: {bool(google_data.access_token)}, credential: {bool(google_data.credential)}")
 
         # Handle JWT credential (from Google One Tap)
         if google_data.credential:
-            print(f"Received Google credential (JWT)...")
+            print(f"[GOOGLE AUTH] Processing JWT credential...")
             try:
                 # Verify the JWT credential
                 user_info = id_token.verify_oauth2_token(
@@ -66,17 +67,23 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
                     google_requests.Request(),
                     GOOGLE_CLIENT_ID
                 )
-                print(f"Google JWT verified: {user_info}")
+                print(f"[GOOGLE AUTH] JWT verified successfully: {user_info.get('email', 'N/A')}")
             except ValueError as e:
-                print(f"JWT verification failed: {e}")
+                print(f"[GOOGLE AUTH] JWT verification failed: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Google credential"
+                    detail=f"Invalid Google credential: {str(e)}"
+                )
+            except Exception as e:
+                print(f"[GOOGLE AUTH] Unexpected error during JWT verification: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Google authentication error: {str(e)}"
                 )
 
         # Handle access_token (from Google Login button)
         elif google_data.access_token:
-            print(f"Received Google access token: {google_data.access_token[:20]}...")
+            print(f"[GOOGLE AUTH] Processing access token: {google_data.access_token[:20]}...")
 
             # Use access_token to get user info from Google
             userinfo_response = requests.get(
@@ -85,16 +92,17 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             )
 
             if userinfo_response.status_code != 200:
-                print(f"Google API returned error: {userinfo_response.status_code} - {userinfo_response.text}")
+                print(f"[GOOGLE AUTH] Google API error: {userinfo_response.status_code} - {userinfo_response.text}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Google access token"
+                    detail=f"Invalid Google access token: {userinfo_response.text}"
                 )
 
             user_info = userinfo_response.json()
-            print(f"Google user info: {user_info}")
+            print(f"[GOOGLE AUTH] Access token verified: {user_info.get('email', 'N/A')}")
 
         else:
+            print("[GOOGLE AUTH] No token provided")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Either access_token or credential must be provided"
