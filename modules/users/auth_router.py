@@ -366,34 +366,48 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             detail="Authentication failed"
         )
     
-# Send login code
+# Send login code (also handles signup for new users)
 @auth_router.post("/login", status_code=status.HTTP_200_OK)
 async def send_login_code(login_data: LoginRequest, db: Session = Depends(get_db)):
     try:
         # Find user by email
         user = db.query(User).filter(User.email == login_data.email).first()
-        
+
+        is_new_user = False
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
+            # Create new user for email signup
+            user = User(
+                name="",  # Will be updated during onboarding
+                email=login_data.email,
+                phone_number=None,
+                role=UserRole.OWNER,
+                is_verified=False,
+                is_active=True
             )
-        
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            is_new_user = True
+            print(f"[OK] New user created via email: {login_data.email}")
+
         # Send verification code
         success = VerificationCodeService.send_verification_code(
             db=db,
             email=login_data.email,
             code_type="email_verification"
         )
-        
+
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to send verification code"
             )
-        
-        return {"message": "Verification code sent successfully"}
-        
+
+        return {
+            "message": "Verification code sent successfully",
+            "is_new_user": is_new_user
+        }
+
     except HTTPException:
         raise
     except Exception as e:
