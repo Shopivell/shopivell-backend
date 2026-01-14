@@ -69,6 +69,7 @@ app.add_middleware(
         "http://localhost:3000",
         "https://shopivell.com",
         "https://www.shopivell.com",
+        "https://admin.shopivell.com",
         "https://shopivell-frontend.onrender.com",
         "https://shopivell-admin.onrender.com",
     ],
