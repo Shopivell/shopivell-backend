@@ -23,7 +23,7 @@ class VerificationCodeService:
             # Load email configuration from environment variables
             cls.email_username = os.getenv('EMAIL_USERNAME')
             cls.email_password = os.getenv('EMAIL_PASSWORD')
-            cls.smtp_server = os.getenv('SMTP_SERVER', 'mail.draycesystems.com')
+            cls.smtp_server = os.getenv('SMTP_SERVER', 'mail.privateemail.com')
             cls.smtp_port = int(os.getenv('SMTP_PORT', '465'))
             
             # Load Twilio configuration from environment variables
@@ -237,12 +237,12 @@ class VerificationCodeService:
             
             if delivery_method == "sms" and user.phone_number:
                 # Send via SMS
-                body = f"Drayce Farm Management System: Your {code_type.replace('_', ' ')} code is {verification_code.code}. Expires at {expiration_time}."
+                body = f"Shopivell: Your {code_type.replace('_', ' ')} code is {verification_code.code}. Expires at {expiration_time}."
                 return cls.send_sms(user.phone_number, body)
             
             else:
                 # Send via Email (default) - USING ASCII-ONLY CHARACTERS
-                subject = f"Verification Code - Drayce Farm Management System"
+                subject = f"Verification Code - Shopivell"
                 body = f"""
 Hello {user.name},
 
@@ -255,7 +255,7 @@ This code will expire at {expiration_time} (30 minutes from now).
 If you didn't request this, please ignore this message.
 
 Best regards,
-Drayce Farm Management System Team
+Shopivell Team
                 """
                 return cls.send_email(email, subject, body.strip())
                 
@@ -292,12 +292,12 @@ Drayce Farm Management System Team
             
             if delivery_method == "sms" and user.phone_number:
                 # Send via SMS
-                body = f"Drayce Farm Management Password Reset: Use code {verification_code.code} to reset your password. Expires {expiration_time}."
+                body = f"Shopivell Password Reset: Use code {verification_code.code} to reset your password. Expires {expiration_time}."
                 return cls.send_sms(user.phone_number, body)
             
             else:
                 # Send via Email - USING ASCII-ONLY CHARACTERS
-                subject = "Password Reset Code - Drayce Farm Management System"
+                subject = "Password Reset Code - Shopivell"
                 body = f"""
 Hello {user.name},
 
@@ -310,7 +310,7 @@ This code expires at {expiration_time} (30 minutes from now).
 If you didn't request this reset, please ignore this email.
 
 Best regards,
-Farm Management System Team
+Shopivell Team
                 """
                 return cls.send_email(email, subject, body.strip())
                 

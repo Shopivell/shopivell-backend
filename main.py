@@ -129,6 +129,42 @@ async def health_check():
     }
 
 
+@app.post("/test-email")
+async def test_email(to_email: str = "farairhato@gmail.com"):
+    """
+    Test email sending functionality.
+
+    Sends a test email to verify SMTP configuration is working.
+    """
+    from utils.Verification_Codes_Services import VerificationCodeService
+
+    subject = "Shopivell - Test Email"
+    body = """Hello!
+
+This is a test email from Shopivell to verify that email sending is working correctly.
+
+If you received this email, the email configuration is set up properly.
+
+Best regards,
+Shopivell Team
+support@shopivell.com
+"""
+
+    try:
+        success = VerificationCodeService.send_email(to_email, subject, body.strip())
+        return {
+            "success": success,
+            "message": f"Test email sent to {to_email}" if success else "Failed to send email",
+            "to": to_email
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}",
+            "to": to_email
+        }
+
+
 @app.post("/seed-test-users")
 async def seed_test_users():
     """
