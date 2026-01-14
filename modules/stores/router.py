@@ -494,6 +494,140 @@ async def force_restart_setup(
             detail=f"Error force restarting store setup: {str(e)}"
         )
 
+
+# ============================================
+# SCRAPING ENDPOINTS - Must be before /{store_id} routes
+# ============================================
+
+@store_router.post("/scrape-website", status_code=status.HTTP_200_OK)
+async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
+    """
+    Scrape a website using Tavily and extract store information using AI Agent.
+    Also extracts FAQs from the website content.
+
+    Uses:
+    - Tavily for multi-page web content extraction
+    - LangChain + OpenRouter/OpenAI for AI-powered extraction
+    - Extracts: store info, brand details, products/services, FAQs
+
+    If sessionId is provided, saves scraped data to the setup session.
+    """
+    from modules.stores.store_scraping_agent import StoreScrapingAgent
+
+    url = request.url.strip()
+
+    # Ensure URL has protocol
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+
+    try:
+        # Initialize the AI scraping agent
+        agent = StoreScrapingAgent()
+
+        # Extract store info using Tavily + LangChain AI agent
+        store_data = await agent.extract_store_info(url)
+
+        print(f"[Scrape] Successfully extracted data for: {url}")
+        print(f"[Scrape] Store: {store_data.get('store_name')}")
+        print(f"[Scrape] Extracted {len(store_data.get('faqs', []))} FAQs")
+
+        # If session ID provided, save to session
+        if request.sessionId:
+            try:
+                session = db.query(StoreSetupSession).filter(
+                    StoreSetupSession.id == request.sessionId
+                ).first()
+
+                if session:
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    # Update session data with scraped info
+                    current_data = dict(session.session_data) if session.session_data else {}
+
+                    # Merge scraped data into session
+                    current_data["store_name"] = store_data.get("store_name") or current_data.get("store_name")
+                    current_data["store_email"] = store_data.get("store_email") or current_data.get("store_email")
+                    current_data["store_phone"] = store_data.get("store_phone") or current_data.get("store_phone")
+                    current_data["store_voice"] = store_data.get("store_voice") or current_data.get("store_voice")
+                    current_data["store_tone"] = store_data.get("store_tone") or current_data.get("store_tone")
+                    current_data["store_website"] = url
+                    current_data["services_products"] = store_data.get("services_products") or current_data.get("services_products")
+                    current_data["color_theme"] = store_data.get("color_theme") or current_data.get("color_theme")
+                    current_data["business_type"] = store_data.get("business_type") or current_data.get("business_type")
+                    current_data["logo_url"] = store_data.get("logo_url") or current_data.get("logo_url")
+                    current_data["brand_style"] = store_data.get("brand_style") or current_data.get("brand_style")
+                    current_data["store_link"] = store_data.get("store_link") or current_data.get("store_link")
+
+                    # Save FAQs to session for later insertion
+                    current_data["scraped_faqs"] = store_data.get("faqs", [])
+
+                    # Assign new dict to ensure SQLAlchemy detects the change
+                    session.session_data = current_data
+                    flag_modified(session, "session_data")
+                    db.commit()
+
+                    print(f"[Scrape] Saved scraped data to session {request.sessionId}")
+                    print(f"[Scrape] Session now has {len(current_data.get('scraped_faqs', []))} FAQs")
+
+            except Exception as session_err:
+                print(f"[Scrape] Warning: Failed to save to session: {session_err}")
+                # Continue - don't fail the request if session save fails
+
+        return store_data
+
+    except ValueError as e:
+        # API key not configured
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"[Scrape] Error scraping {url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to scrape website: {str(e)}"
+        )
+
+
+@store_router.post("/scrape-products", status_code=status.HTTP_200_OK)
+async def scrape_products_from_website(
+    request: ScrapeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Scrape products/services from a website URL using AI.
+    Returns a list of products with name, description, price, and category.
+    """
+    from modules.stores.store_scraping_agent import StoreScrapingAgent
+
+    url = request.url
+    print(f"[ScrapeProducts] Starting products scrape for: {url}")
+
+    try:
+        agent = StoreScrapingAgent()
+        products_data = await agent.extract_products(url)
+
+        print(f"[ScrapeProducts] Successfully extracted {len(products_data.get('products', []))} products from: {url}")
+
+        return products_data
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"[ScrapeProducts] Error scraping products from {url}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to scrape products: {str(e)}"
+        )
+
+
+# ============================================
+# STORE CRUD ENDPOINTS
+# ============================================
+
 # CREATE store directly (without setup wizard)
 @store_router.post("/", response_model=StoreResponse)
 async def create_store(
@@ -938,128 +1072,3 @@ def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] =
             }
         }
     }
-
-@store_router.post("/scrape-website", status_code=status.HTTP_200_OK)
-async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
-    """
-    Scrape a website using Tavily and extract store information using AI Agent.
-    Also extracts FAQs from the website content.
-
-    Uses:
-    - Tavily for multi-page web content extraction
-    - LangChain + OpenRouter/OpenAI for AI-powered extraction
-    - Extracts: store info, brand details, products/services, FAQs
-
-    If sessionId is provided, saves scraped data to the setup session.
-    """
-    from modules.stores.store_scraping_agent import StoreScrapingAgent
-
-    url = request.url.strip()
-
-    # Ensure URL has protocol
-    if not url.startswith('http://') and not url.startswith('https://'):
-        url = 'https://' + url
-
-    try:
-        # Initialize the AI scraping agent
-        agent = StoreScrapingAgent()
-
-        # Extract store info using Tavily + LangChain AI agent
-        store_data = await agent.extract_store_info(url)
-
-        print(f"[Scrape] Successfully extracted data for: {url}")
-        print(f"[Scrape] Store: {store_data.get('store_name')}")
-        print(f"[Scrape] Extracted {len(store_data.get('faqs', []))} FAQs")
-
-        # If session ID provided, save to session
-        if request.sessionId:
-            try:
-                session = db.query(StoreSetupSession).filter(
-                    StoreSetupSession.id == request.sessionId
-                ).first()
-
-                if session:
-                    from sqlalchemy.orm.attributes import flag_modified
-
-                    # Update session data with scraped info
-                    current_data = dict(session.session_data) if session.session_data else {}
-
-                    # Merge scraped data into session
-                    current_data["store_name"] = store_data.get("store_name") or current_data.get("store_name")
-                    current_data["store_email"] = store_data.get("store_email") or current_data.get("store_email")
-                    current_data["store_phone"] = store_data.get("store_phone") or current_data.get("store_phone")
-                    current_data["store_voice"] = store_data.get("store_voice") or current_data.get("store_voice")
-                    current_data["store_tone"] = store_data.get("store_tone") or current_data.get("store_tone")
-                    current_data["store_website"] = url
-                    current_data["services_products"] = store_data.get("services_products") or current_data.get("services_products")
-                    current_data["color_theme"] = store_data.get("color_theme") or current_data.get("color_theme")
-                    current_data["business_type"] = store_data.get("business_type") or current_data.get("business_type")
-                    current_data["logo_url"] = store_data.get("logo_url") or current_data.get("logo_url")
-                    current_data["brand_style"] = store_data.get("brand_style") or current_data.get("brand_style")
-                    current_data["store_link"] = store_data.get("store_link") or current_data.get("store_link")
-
-                    # Save FAQs to session for later insertion
-                    current_data["scraped_faqs"] = store_data.get("faqs", [])
-
-                    # Assign new dict to ensure SQLAlchemy detects the change
-                    session.session_data = current_data
-                    flag_modified(session, "session_data")
-                    db.commit()
-
-                    print(f"[Scrape] Saved scraped data to session {request.sessionId}")
-                    print(f"[Scrape] Session now has {len(current_data.get('scraped_faqs', []))} FAQs")
-
-            except Exception as session_err:
-                print(f"[Scrape] Warning: Failed to save to session: {session_err}")
-                # Continue - don't fail the request if session save fails
-
-        return store_data
-
-    except ValueError as e:
-        # API key not configured
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e)
-        )
-    except Exception as e:
-        print(f"[Scrape] Error scraping {url}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to scrape website: {str(e)}"
-        )
-
-
-# Scrape products/services from website
-@store_router.post("/scrape-products", status_code=status.HTTP_200_OK)
-async def scrape_products_from_website(
-    request: ScrapeRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Scrape products/services from a website URL using AI.
-    Returns a list of products with name, description, price, and category.
-    """
-    from modules.stores.store_scraping_agent import StoreScrapingAgent
-
-    url = request.url
-    print(f"[ScrapeProducts] Starting products scrape for: {url}")
-
-    try:
-        agent = StoreScrapingAgent()
-        products_data = await agent.extract_products(url)
-
-        print(f"[ScrapeProducts] Successfully extracted {len(products_data.get('products', []))} products from: {url}")
-
-        return products_data
-
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e)
-        )
-    except Exception as e:
-        print(f"[ScrapeProducts] Error scraping products from {url}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to scrape products: {str(e)}"
-        )
