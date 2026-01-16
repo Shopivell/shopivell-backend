@@ -2604,145 +2604,168 @@ def list_all_drafts(
     db: Session = Depends(get_db)
 ):
     """List all drafts (campaigns, ad sets, ads, and URL campaigns) for a specific store"""
-    drafts = []
+    import logging
+    logger = logging.getLogger(__name__)
 
-    # Get URL campaigns that are not published (DRAFT, ANALYZING, READY status) - filtered by store_id
-    if draft_type is None or draft_type == "campaign" or draft_type == "url_campaign":
-        url_campaign_query = db.query(UrlCampaign).filter(
-            UrlCampaign.store_id == store_id,
-            UrlCampaign.status.in_([
-                UrlCampaignStatus.DRAFT,
-                UrlCampaignStatus.ANALYZING,
-                UrlCampaignStatus.READY
-            ])
+    try:
+        drafts = []
+
+        # Get URL campaigns that are not published (DRAFT, ANALYZING, READY status) - filtered by store_id
+        try:
+            if draft_type is None or draft_type == "campaign" or draft_type == "url_campaign":
+                url_campaign_query = db.query(UrlCampaign).filter(
+                    UrlCampaign.store_id == store_id,
+                    UrlCampaign.status.in_([
+                        UrlCampaignStatus.DRAFT,
+                        UrlCampaignStatus.ANALYZING,
+                        UrlCampaignStatus.READY
+                    ])
+                )
+
+                for url_campaign in url_campaign_query.all():
+                    # Build draft_data with campaign details for resuming
+                    draft_data = {
+                        "source_url": url_campaign.source_url,
+                        "scraped_data": url_campaign.scraped_data,
+                        "goal": url_campaign.goal.value if url_campaign.goal else None,
+                        "daily_budget": url_campaign.daily_budget,
+                        "countries": url_campaign.countries,
+                        "ad_sets_count": len(url_campaign.ad_sets) if url_campaign.ad_sets else 0
+                    }
+
+                    drafts.append(DraftItem(
+                        id=url_campaign.id,
+                        type="campaign",
+                        name=url_campaign.name or "Untitled Campaign",
+                        status=url_campaign.status.value.upper() if url_campaign.status else "DRAFT",
+                        notes=f"URL: {url_campaign.source_url}" if url_campaign.source_url else None,
+                        draft_data=draft_data,
+                        created_at=url_campaign.created_at or datetime.utcnow(),
+                        updated_at=url_campaign.updated_at or datetime.utcnow(),
+                        ad_account_id=None
+                    ))
+        except Exception as e:
+            logger.warning(f"Error fetching URL campaigns: {str(e)}")
+
+        # Get Meta draft campaigns - filter by store via ad_account -> business_account -> store_id
+        try:
+            if draft_type is None or draft_type == "campaign":
+                campaign_query = db.query(MetaCampaign).join(
+                    MetaAdAccount, MetaCampaign.ad_account_id == MetaAdAccount.id
+                ).join(
+                    FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+                ).filter(
+                    MetaCampaign.is_draft == True,
+                    FacebookBusinessAccount.store_id == store_id
+                )
+                if ad_account_id:
+                    campaign_query = campaign_query.filter(MetaCampaign.ad_account_id == ad_account_id)
+
+                for campaign in campaign_query.all():
+                    drafts.append(DraftItem(
+                        id=campaign.id,
+                        type="campaign",
+                        name=campaign.name or "Untitled Campaign",
+                        status=campaign.status or "DRAFT",
+                        notes=campaign.notes,
+                        draft_data=campaign.draft_data,
+                        created_at=campaign.created_at or datetime.utcnow(),
+                        updated_at=campaign.updated_at or datetime.utcnow(),
+                        ad_account_id=campaign.ad_account_id
+                    ))
+        except Exception as e:
+            logger.warning(f"Error fetching Meta campaigns: {str(e)}")
+
+        # Get draft ad sets - filter by store via ad_account -> business_account -> store_id
+        try:
+            if draft_type is None or draft_type == "adset":
+                adset_query = db.query(MetaAdSet).join(
+                    MetaAdAccount, MetaAdSet.ad_account_id == MetaAdAccount.id
+                ).join(
+                    FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+                ).filter(
+                    MetaAdSet.is_draft == True,
+                    FacebookBusinessAccount.store_id == store_id
+                )
+                if ad_account_id:
+                    adset_query = adset_query.filter(MetaAdSet.ad_account_id == ad_account_id)
+
+                for adset in adset_query.all():
+                    campaign_name = None
+                    if adset.campaign:
+                        campaign_name = adset.campaign.name
+
+                    drafts.append(DraftItem(
+                        id=adset.id,
+                        type="adset",
+                        name=adset.name or "Untitled Ad Set",
+                        status=adset.status or "DRAFT",
+                        notes=adset.notes,
+                        draft_data=adset.draft_data,
+                        created_at=adset.created_at or datetime.utcnow(),
+                        updated_at=adset.updated_at or datetime.utcnow(),
+                        ad_account_id=adset.ad_account_id,
+                        campaign_id=adset.campaign_id,
+                        campaign_name=campaign_name
+                    ))
+        except Exception as e:
+            logger.warning(f"Error fetching ad sets: {str(e)}")
+
+        # Get draft ads - filter by store via ad_account -> business_account -> store_id
+        try:
+            if draft_type is None or draft_type == "ad":
+                ad_query = db.query(MetaAd).join(
+                    MetaAdAccount, MetaAd.ad_account_id == MetaAdAccount.id
+                ).join(
+                    FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
+                ).filter(
+                    MetaAd.is_draft == True,
+                    FacebookBusinessAccount.store_id == store_id
+                )
+                if ad_account_id:
+                    ad_query = ad_query.filter(MetaAd.ad_account_id == ad_account_id)
+
+                for ad in ad_query.all():
+                    campaign_name = None
+                    adset_name = None
+                    if ad.campaign:
+                        campaign_name = ad.campaign.name
+                    if ad.ad_set:
+                        adset_name = ad.ad_set.name
+
+                    drafts.append(DraftItem(
+                        id=ad.id,
+                        type="ad",
+                        name=ad.name or "Untitled Ad",
+                        status=ad.status or "DRAFT",
+                        notes=ad.notes,
+                        draft_data=ad.draft_data,
+                        created_at=ad.created_at or datetime.utcnow(),
+                        updated_at=ad.updated_at or datetime.utcnow(),
+                        ad_account_id=ad.ad_account_id,
+                        campaign_id=ad.campaign_id,
+                        campaign_name=campaign_name,
+                        adset_id=ad.adset_id,
+                        adset_name=adset_name
+                    ))
+        except Exception as e:
+            logger.warning(f"Error fetching ads: {str(e)}")
+
+        # Sort by created_at descending (handle None values)
+        drafts.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
+
+        # Apply pagination
+        total_count = len(drafts)
+        drafts = drafts[skip:skip + limit]
+
+        return DraftListResponse(drafts=drafts, total_count=total_count)
+
+    except Exception as e:
+        logger.error(f"Error in list_all_drafts: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch drafts: {str(e)}"
         )
-
-        for url_campaign in url_campaign_query.all():
-            # Build draft_data with campaign details for resuming
-            draft_data = {
-                "source_url": url_campaign.source_url,
-                "scraped_data": url_campaign.scraped_data,
-                "goal": url_campaign.goal.value if url_campaign.goal else None,
-                "daily_budget": url_campaign.daily_budget,
-                "countries": url_campaign.countries,
-                "ad_sets_count": len(url_campaign.ad_sets) if url_campaign.ad_sets else 0
-            }
-
-            drafts.append(DraftItem(
-                id=url_campaign.id,
-                type="campaign",
-                name=url_campaign.name,
-                status=url_campaign.status.value.upper() if url_campaign.status else "DRAFT",
-                notes=f"URL: {url_campaign.source_url}" if url_campaign.source_url else None,
-                draft_data=draft_data,
-                created_at=url_campaign.created_at,
-                updated_at=url_campaign.updated_at,
-                ad_account_id=None
-            ))
-
-    # Get Meta draft campaigns - filter by store via ad_account -> business_account -> store_id
-    if draft_type is None or draft_type == "campaign":
-        campaign_query = db.query(MetaCampaign).join(
-            MetaAdAccount, MetaCampaign.ad_account_id == MetaAdAccount.id
-        ).join(
-            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
-        ).filter(
-            MetaCampaign.is_draft == True,
-            FacebookBusinessAccount.store_id == store_id
-        )
-        if ad_account_id:
-            campaign_query = campaign_query.filter(MetaCampaign.ad_account_id == ad_account_id)
-
-        for campaign in campaign_query.all():
-            drafts.append(DraftItem(
-                id=campaign.id,
-                type="campaign",
-                name=campaign.name,
-                status=campaign.status or "DRAFT",
-                notes=campaign.notes,
-                draft_data=campaign.draft_data,
-                created_at=campaign.created_at,
-                updated_at=campaign.updated_at,
-                ad_account_id=campaign.ad_account_id
-            ))
-
-    # Get draft ad sets - filter by store via ad_account -> business_account -> store_id
-    if draft_type is None or draft_type == "adset":
-        adset_query = db.query(MetaAdSet).join(
-            MetaAdAccount, MetaAdSet.ad_account_id == MetaAdAccount.id
-        ).join(
-            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
-        ).filter(
-            MetaAdSet.is_draft == True,
-            FacebookBusinessAccount.store_id == store_id
-        )
-        if ad_account_id:
-            adset_query = adset_query.filter(MetaAdSet.ad_account_id == ad_account_id)
-
-        for adset in adset_query.all():
-            campaign_name = None
-            if adset.campaign:
-                campaign_name = adset.campaign.name
-
-            drafts.append(DraftItem(
-                id=adset.id,
-                type="adset",
-                name=adset.name,
-                status=adset.status or "DRAFT",
-                notes=adset.notes,
-                draft_data=adset.draft_data,
-                created_at=adset.created_at,
-                updated_at=adset.updated_at,
-                ad_account_id=adset.ad_account_id,
-                campaign_id=adset.campaign_id,
-                campaign_name=campaign_name
-            ))
-
-    # Get draft ads - filter by store via ad_account -> business_account -> store_id
-    if draft_type is None or draft_type == "ad":
-        ad_query = db.query(MetaAd).join(
-            MetaAdAccount, MetaAd.ad_account_id == MetaAdAccount.id
-        ).join(
-            FacebookBusinessAccount, MetaAdAccount.business_account_id == FacebookBusinessAccount.id
-        ).filter(
-            MetaAd.is_draft == True,
-            FacebookBusinessAccount.store_id == store_id
-        )
-        if ad_account_id:
-            ad_query = ad_query.filter(MetaAd.ad_account_id == ad_account_id)
-
-        for ad in ad_query.all():
-            campaign_name = None
-            adset_name = None
-            if ad.campaign:
-                campaign_name = ad.campaign.name
-            if ad.ad_set:
-                adset_name = ad.ad_set.name
-
-            drafts.append(DraftItem(
-                id=ad.id,
-                type="ad",
-                name=ad.name,
-                status=ad.status or "DRAFT",
-                notes=ad.notes,
-                draft_data=ad.draft_data,
-                created_at=ad.created_at,
-                updated_at=ad.updated_at,
-                ad_account_id=ad.ad_account_id,
-                campaign_id=ad.campaign_id,
-                campaign_name=campaign_name,
-                adset_id=ad.adset_id,
-                adset_name=adset_name
-            ))
-
-    # Sort by created_at descending (handle None values)
-    drafts.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
-
-    # Apply pagination
-    total_count = len(drafts)
-    drafts = drafts[skip:skip + limit]
-
-    return DraftListResponse(drafts=drafts, total_count=total_count)
 
 
 @marketing_router.post("/campaigns/{campaign_id}/publish-draft", response_model=PublishDraftResponse)
