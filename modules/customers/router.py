@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 import csv
 import io
 from datetime import datetime, timedelta
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 from database import get_db
 from .models import Customer, CustomerSegment, CustomerSegmentMembership, CustomerRequest
@@ -401,26 +404,177 @@ def bulk_create_customers(customer_data: BulkCustomerCreate, db: Session = Depen
         created_customers=created_customers
     )
 
+@customer_router.get("/template/download")
+async def download_customer_template():
+    """Download Excel template for customer import"""
+    # Create a new workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Customers"
+
+    # Define headers
+    headers = [
+        "first_name", "last_name", "email", "phone", "date_of_birth",
+        "gender", "address", "city", "state", "country", "postal_code",
+        "customer_type", "status", "notes"
+    ]
+
+    # Define header styles
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="374151", end_color="374151", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # Write headers with styling
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+        # Auto-adjust column width
+        ws.column_dimensions[cell.column_letter].width = max(15, len(header) + 5)
+
+    # Add sample data row
+    sample_data = [
+        "John", "Doe", "john.doe@example.com", "+263771234567", "1990-01-15",
+        "Male", "123 Main Street", "Harare", "Harare", "Zimbabwe", "00263",
+        "regular", "active", "Sample customer note"
+    ]
+
+    for col, value in enumerate(sample_data, 1):
+        cell = ws.cell(row=2, column=col, value=value)
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    # Add instructions sheet
+    instructions_ws = wb.create_sheet(title="Instructions")
+    instructions = [
+        ("Column", "Description", "Required", "Example"),
+        ("first_name", "Customer's first name", "Yes", "John"),
+        ("last_name", "Customer's last name", "Yes", "Doe"),
+        ("email", "Customer's email address (must be unique)", "Yes", "john@example.com"),
+        ("phone", "Phone number with country code", "No", "+263771234567"),
+        ("date_of_birth", "Date of birth (YYYY-MM-DD format)", "No", "1990-01-15"),
+        ("gender", "Gender (Male/Female/Other)", "No", "Male"),
+        ("address", "Street address", "No", "123 Main Street"),
+        ("city", "City name", "No", "Harare"),
+        ("state", "State/Province", "No", "Harare"),
+        ("country", "Country name", "No", "Zimbabwe"),
+        ("postal_code", "Postal/ZIP code", "No", "00263"),
+        ("customer_type", "Customer type (regular/premium/vip)", "No", "regular"),
+        ("status", "Customer status (active/inactive)", "No", "active"),
+        ("notes", "Additional notes about the customer", "No", "VIP customer")
+    ]
+
+    # Style instructions header
+    for col, value in enumerate(instructions[0], 1):
+        cell = instructions_ws.cell(row=1, column=col, value=value)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    # Write instructions data
+    for row_idx, row_data in enumerate(instructions[1:], 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = instructions_ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            # Highlight required fields
+            if col_idx == 3 and value == "Yes":
+                cell.fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+
+    # Adjust column widths for instructions sheet
+    instructions_ws.column_dimensions['A'].width = 15
+    instructions_ws.column_dimensions['B'].width = 45
+    instructions_ws.column_dimensions['C'].width = 10
+    instructions_ws.column_dimensions['D'].width = 20
+
+    # Save to BytesIO
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    # Return as streaming response
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=customer_import_template.xlsx"
+        }
+    )
+
+
 @customer_router.post("/bulk-upload", response_model=BulkCustomerResponse)
 async def bulk_upload_customers(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """Bulk upload customers from CSV file"""
-    if not file.filename.endswith('.csv'):
+    """Bulk upload customers from CSV or Excel file"""
+    filename = file.filename.lower()
+
+    if not (filename.endswith('.csv') or filename.endswith('.xlsx') or filename.endswith('.xls')):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only CSV files are supported"
+            detail="Only CSV and Excel (.xlsx, .xls) files are supported"
         )
-    
+
     content = await file.read()
-    csv_content = io.StringIO(content.decode('utf-8'))
-    csv_reader = csv.DictReader(csv_content)
-    
     created_customers = []
     failed_customers = []
-    
-    for row_num, row in enumerate(csv_reader, start=2):
+    rows_to_process = []
+
+    # Parse file based on type
+    if filename.endswith('.csv'):
+        csv_content = io.StringIO(content.decode('utf-8'))
+        csv_reader = csv.DictReader(csv_content)
+        for row_num, row in enumerate(csv_reader, start=2):
+            rows_to_process.append((row_num, row))
+    else:
+        # Excel file
+        try:
+            excel_content = io.BytesIO(content)
+            workbook = load_workbook(excel_content, read_only=True)
+            ws = workbook.active
+
+            # Get headers from first row
+            headers = []
+            for cell in ws[1]:
+                headers.append(cell.value.lower().strip() if cell.value else '')
+
+            # Process data rows (skip header and sample row if it matches template)
+            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                # Skip empty rows
+                if not any(row):
+                    continue
+
+                # Convert row to dictionary
+                row_dict = {}
+                for col_idx, value in enumerate(row):
+                    if col_idx < len(headers) and headers[col_idx]:
+                        # Convert value to string if not None
+                        row_dict[headers[col_idx]] = str(value) if value is not None else None
+
+                # Skip sample row from template
+                if row_dict.get('email') == 'john.doe@example.com':
+                    continue
+
+                rows_to_process.append((row_num, row_dict))
+
+            workbook.close()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error parsing Excel file: {str(e)}"
+            )
+
+    # Process all rows
+    for row_num, row in rows_to_process:
         try:
             # Validate required fields
             if not row.get('email') or not row.get('first_name') or not row.get('last_name'):
@@ -430,7 +584,7 @@ async def bulk_upload_customers(
                     "error": "Missing required fields (email, first_name, last_name)"
                 })
                 continue
-            
+
             # Check if email already exists
             existing_customer = db.query(Customer).filter(Customer.email == row['email']).first()
             if existing_customer:
@@ -440,7 +594,7 @@ async def bulk_upload_customers(
                     "error": "Email already registered"
                 })
                 continue
-            
+
             # Create customer data
             customer_data = {
                 'first_name': row['first_name'],
@@ -459,13 +613,13 @@ async def bulk_upload_customers(
                 'profile_image': row.get('profile_image'),
                 'notes': row.get('notes')
             }
-            
+
             # Create customer
             customer = Customer(**customer_data)
-            
+
             db.add(customer)
             created_customers.append(customer)
-            
+
         except Exception as e:
             failed_customers.append({
                 "row": row_num,
