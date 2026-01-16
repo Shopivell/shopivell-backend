@@ -29,3 +29,4 @@ lxml
 redis>=5.0.0
 hiredis>=2.0.0
 twilio
+openpyxl>=3.1.0
