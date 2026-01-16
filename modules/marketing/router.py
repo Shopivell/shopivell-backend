@@ -2735,8 +2735,8 @@ def list_all_drafts(
                 adset_name=adset_name
             ))
 
-    # Sort by created_at descending
-    drafts.sort(key=lambda x: x.created_at, reverse=True)
+    # Sort by created_at descending (handle None values)
+    drafts.sort(key=lambda x: x.created_at or datetime.min, reverse=True)
 
     # Apply pagination
     total_count = len(drafts)
