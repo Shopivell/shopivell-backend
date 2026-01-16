@@ -48,19 +48,23 @@ logger = logging.getLogger(__name__)
 faq_router = APIRouter(prefix="/api/whatsapp", tags=["FAQ & Knowledge"])
 
 
-def check_store_access(db: Session, user: User, store_id: UUID) -> bool:
+def check_store_access(db: Session, user, store_id: UUID) -> bool:
     """Check if user has access to a store (owns it or owns the agency that owns it)"""
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         return False
+
+    # Convert user.id to UUID if it's a string (from CurrentUser JWT payload)
+    user_id = UUID(user.id) if isinstance(user.id, str) else user.id
+
     # User owns the store directly
-    if store.owner_id == user.id:
+    if store.owner_id == user_id:
         return True
     # User owns the agency that owns the store
     if store.agency_id:
         from modules.agency.models import Agency
         agency = db.query(Agency).filter(Agency.id == store.agency_id).first()
-        if agency and agency.owner_id == user.id:
+        if agency and agency.owner_id == user_id:
             return True
     return False
 
