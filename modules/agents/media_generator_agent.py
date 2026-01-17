@@ -1,12 +1,12 @@
 # media_generator_agent.py - AI Agent for Image and Video Generation
 """
 Multi-provider media generation agent supporting:
-- Images: Nano Banana Pro (Gemini 3), DALL-E 3, Stability AI, Replicate (Flux), Imagen 3
-- Videos: Google Veo 3.1, Replicate (Stable Video Diffusion), Runway ML, Luma AI
+- Images: Gemini Banana Pro, Imagen 3, DALL-E 3, Stability AI, Replicate (Flux)
+- Videos: Google Veo 2, Replicate (Stable Video Diffusion), Runway ML, Luma AI
 
-Primary Providers (Recommended - used by default):
-- IMAGE: Nano Banana Pro (gemini-3-pro-image-preview) - $0.04/image, best quality, native text support
-- VIDEO: Veo 3.1 Fast - $0.15/sec, 8-second clips, native audio support
+Primary Providers:
+- IMAGE: Gemini Banana Pro (gemini-2.0-flash-preview-image-generation) - Best quality with native text
+- VIDEO: Veo 2 (veo-2.0-generate-001) - Up to 8-second clips with audio
 """
 
 import os
@@ -14,6 +14,7 @@ import base64
 import logging
 import httpx
 import asyncio
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
 from io import BytesIO
@@ -22,24 +23,54 @@ from dotenv import load_dotenv
 # Import vision compliance service for image moderation
 from .vision_compliance_service import vision_compliance_service, VisionComplianceResult
 
+# Cloudinary imports
+try:
+    import cloudinary
+    import cloudinary.uploader
+    CLOUDINARY_AVAILABLE = True
+except ImportError:
+    CLOUDINARY_AVAILABLE = False
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Cloudinary configuration
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+CLOUDINARY_CONFIGURED = (
+    CLOUDINARY_AVAILABLE and
+    CLOUDINARY_CLOUD_NAME and
+    CLOUDINARY_API_KEY and
+    CLOUDINARY_API_SECRET and
+    CLOUDINARY_CLOUD_NAME != "your_cloud_name"
+)
+
+if CLOUDINARY_CONFIGURED:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True
+    )
+    logger.info("[MediaGeneratorAgent] Cloudinary configured successfully")
+
 
 class ImageProvider(Enum):
-    NANO_BANANA = "nano_banana"  # Gemini 3 Pro - Primary provider ($0.04/image)
-    DALLE = "dalle"
-    STABILITY = "stability"
-    REPLICATE = "replicate"
-    GEMINI = "gemini"  # Imagen 3 / Gemini 2.0 Flash - Fallback
-    OPENROUTER = "openrouter"
+    GEMINI_BANANA = "gemini_banana"  # Gemini Banana Pro - Primary (native image gen + text)
+    IMAGEN = "imagen"                # Imagen 3 - Fallback
+    DALLE = "dalle"                  # OpenAI DALL-E 3
+    STABILITY = "stability"          # Stability AI SD3
+    REPLICATE = "replicate"          # Replicate Flux
+    OPENROUTER = "openrouter"        # OpenRouter models
 
 
 class VideoProvider(Enum):
-    REPLICATE = "replicate"
-    RUNWAY = "runway"
-    LUMA = "luma"
-    VEO = "veo"  # Google Veo 3 - Primary video provider ($0.15/sec)
+    VEO = "veo"                  # Google Veo 2 - Primary video provider
+    REPLICATE = "replicate"      # Replicate SVD/AnimateDiff
+    RUNWAY = "runway"            # Runway Gen-3
+    LUMA = "luma"                # Luma Dream Machine
 
 
 class MediaGeneratorAgent:
@@ -383,38 +414,38 @@ class MediaGeneratorAgent:
     def _get_available_image_providers(self) -> List[ImageProvider]:
         """Get list of available image providers based on API keys.
 
-        Priority order (Nano Banana Pro first for best quality + text support):
-        1. NANO_BANANA (Gemini 3 Pro) - $0.04/image, native text
-        2. GEMINI (Imagen 3) - Fallback
-        3. REPLICATE (Flux) - Good quality
-        4. STABILITY (SD3) - Alternative
-        5. DALLE - Last resort (expensive)
+        Priority order:
+        1. GEMINI_BANANA (Gemini Banana Pro) - Best quality with native text rendering
+        2. IMAGEN (Imagen 3) - High-quality fallback
+        3. DALLE (DALL-E 3) - OpenAI alternative
+        4. REPLICATE (Flux) - Good quality
+        5. STABILITY (SD3) - Stable Diffusion
         """
         providers = []
-        # Priority 1: Nano Banana Pro (Gemini 3 Pro) - Best for ads with text
+        # Priority 1: Gemini Banana Pro - Best for ads with text
         if self.gemini_api_key:
-            providers.append(ImageProvider.NANO_BANANA)
-            providers.append(ImageProvider.GEMINI)  # Imagen 3 as fallback
-        # Priority 2: Replicate/Flux
+            providers.append(ImageProvider.GEMINI_BANANA)
+            providers.append(ImageProvider.IMAGEN)  # Imagen 3 as fallback
+        # Priority 2: DALL-E 3
+        if self.openai_api_key:
+            providers.append(ImageProvider.DALLE)
+        # Priority 3: Replicate/Flux
         if self.replicate_api_key:
             providers.append(ImageProvider.REPLICATE)
         if self.fal_api_key and ImageProvider.REPLICATE not in providers:
             providers.append(ImageProvider.REPLICATE)
-        # Priority 3: Stability AI
+        # Priority 4: Stability AI
         if self.stability_api_key:
             providers.append(ImageProvider.STABILITY)
-        # Priority 4: DALL-E (most expensive, last resort)
-        if self.openai_api_key:
-            providers.append(ImageProvider.DALLE)
         return providers
 
     def _get_available_video_providers(self) -> List[VideoProvider]:
         """Get list of available video providers based on API keys.
 
-        Priority order (Veo 3 first for best quality + native audio):
-        1. VEO (Google Veo 3.1) - $0.15/sec, 8-sec clips, native audio
-        2. RUNWAY (Gen-3) - Good quality
-        3. LUMA (Dream Machine) - Alternative
+        Priority order:
+        1. VEO (Google Veo 2) - Up to 8-sec clips with native audio
+        2. RUNWAY (Gen-3) - High quality video generation
+        3. LUMA (Dream Machine) - Alternative provider
         4. REPLICATE (SVD/AnimateDiff) - Basic fallback
         """
         providers = []
@@ -434,6 +465,115 @@ class MediaGeneratorAgent:
             providers.append(VideoProvider.REPLICATE)
         return providers
 
+    # ==================== CLOUDINARY UPLOAD ====================
+
+    def upload_to_cloudinary(
+        self,
+        image_base64: str,
+        folder: str = "shopivell/generated",
+        resource_type: str = "image"
+    ) -> Dict[str, Any]:
+        """
+        Upload a base64 image to Cloudinary.
+
+        Args:
+            image_base64: Base64 encoded image data
+            folder: Cloudinary folder path
+            resource_type: 'image' or 'video'
+
+        Returns:
+            Dict with cloudinary_url, public_id, and metadata
+        """
+        if not CLOUDINARY_CONFIGURED:
+            logger.warning("[MediaGeneratorAgent] Cloudinary not configured, skipping upload")
+            return {
+                "uploaded": False,
+                "error": "Cloudinary not configured"
+            }
+
+        try:
+            # Prepare the data URI
+            data_uri = f"data:image/png;base64,{image_base64}"
+
+            # Upload to Cloudinary
+            result = cloudinary.uploader.upload(
+                data_uri,
+                folder=folder,
+                resource_type=resource_type,
+                public_id=f"generated_{uuid.uuid4().hex[:12]}",
+                overwrite=True,
+                eager=[
+                    {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}  # Thumbnail
+                ],
+                eager_async=False
+            )
+
+            # Extract thumbnail URL
+            thumbnail_url = None
+            if result.get("eager") and len(result["eager"]) > 0:
+                thumbnail_url = result["eager"][0].get("secure_url")
+
+            logger.info(f"[MediaGeneratorAgent] Uploaded to Cloudinary: {result.get('secure_url')}")
+
+            return {
+                "uploaded": True,
+                "public_id": result.get("public_id"),
+                "url": result.get("url"),
+                "secure_url": result.get("secure_url"),
+                "cloudinary_url": result.get("secure_url"),
+                "thumbnail_url": thumbnail_url,
+                "width": result.get("width"),
+                "height": result.get("height"),
+                "format": result.get("format"),
+                "bytes": result.get("bytes")
+            }
+
+        except Exception as e:
+            logger.error(f"[MediaGeneratorAgent] Cloudinary upload error: {str(e)}")
+            return {
+                "uploaded": False,
+                "error": str(e)
+            }
+
+    async def upload_video_to_cloudinary(
+        self,
+        video_base64: str,
+        folder: str = "shopivell/generated/videos"
+    ) -> Dict[str, Any]:
+        """Upload a base64 video to Cloudinary."""
+        if not CLOUDINARY_CONFIGURED:
+            return {"uploaded": False, "error": "Cloudinary not configured"}
+
+        try:
+            data_uri = f"data:video/mp4;base64,{video_base64}"
+
+            result = cloudinary.uploader.upload(
+                data_uri,
+                folder=folder,
+                resource_type="video",
+                public_id=f"video_{uuid.uuid4().hex[:12]}",
+                overwrite=True
+            )
+
+            logger.info(f"[MediaGeneratorAgent] Video uploaded to Cloudinary: {result.get('secure_url')}")
+
+            return {
+                "uploaded": True,
+                "public_id": result.get("public_id"),
+                "url": result.get("url"),
+                "secure_url": result.get("secure_url"),
+                "cloudinary_url": result.get("secure_url"),
+                "duration": result.get("duration"),
+                "width": result.get("width"),
+                "height": result.get("height"),
+                "format": result.get("format"),
+                "bytes": result.get("bytes")
+            }
+
+        except Exception as e:
+            logger.error(f"[MediaGeneratorAgent] Cloudinary video upload error: {str(e)}")
+            return {"uploaded": False, "error": str(e)}
+
     # ==================== IMAGE GENERATION ====================
 
     async def generate_image(
@@ -441,7 +581,9 @@ class MediaGeneratorAgent:
         prompt: str,
         style: str = "professional",
         aspect_ratio: str = "1:1",
-        provider: Optional[ImageProvider] = None
+        provider: Optional[ImageProvider] = None,
+        upload_to_cloud: bool = True,
+        cloudinary_folder: str = "shopivell/generated/ads"
     ) -> Dict[str, Any]:
         """
         Generate an image using available providers with automatic fallback.
@@ -451,9 +593,11 @@ class MediaGeneratorAgent:
             style: Visual style (professional, vibrant, minimal, etc.)
             aspect_ratio: Image aspect ratio (1:1, 16:9, 9:16, 4:5)
             provider: Specific provider to use, or None for auto-selection
+            upload_to_cloud: Whether to upload to Cloudinary (default: True)
+            cloudinary_folder: Folder path in Cloudinary
 
         Returns:
-            Dict with image_base64, provider_used, and metadata
+            Dict with image_base64, cloudinary_url, provider_used, and metadata
         """
         # Enhance prompt with style
         enhanced_prompt = self._enhance_image_prompt(prompt, style)
@@ -465,16 +609,16 @@ class MediaGeneratorAgent:
             try:
                 logger.info(f"[MediaGeneratorAgent] Trying image generation with {prov.value}")
 
-                if prov == ImageProvider.NANO_BANANA:
-                    result = await self._generate_nano_banana_image(enhanced_prompt, aspect_ratio)
+                if prov == ImageProvider.GEMINI_BANANA:
+                    result = await self._generate_gemini_banana_image(enhanced_prompt, aspect_ratio)
+                elif prov == ImageProvider.IMAGEN:
+                    result = await self._generate_imagen_image(enhanced_prompt, aspect_ratio)
                 elif prov == ImageProvider.DALLE:
                     result = await self._generate_dalle(enhanced_prompt, aspect_ratio)
                 elif prov == ImageProvider.STABILITY:
                     result = await self._generate_stability(enhanced_prompt, aspect_ratio)
                 elif prov == ImageProvider.REPLICATE:
                     result = await self._generate_replicate_image(enhanced_prompt, aspect_ratio)
-                elif prov == ImageProvider.GEMINI:
-                    result = await self._generate_gemini_image(enhanced_prompt, aspect_ratio)
                 else:
                     continue
 
@@ -544,6 +688,22 @@ class MediaGeneratorAgent:
                             "status": "check_failed",
                             "requires_manual_review": True
                         }
+
+                    # Upload to Cloudinary if enabled
+                    if upload_to_cloud and result.get("image_base64"):
+                        logger.info("[MediaGeneratorAgent] Uploading image to Cloudinary...")
+                        cloudinary_result = self.upload_to_cloudinary(
+                            image_base64=result["image_base64"],
+                            folder=cloudinary_folder
+                        )
+                        if cloudinary_result.get("uploaded"):
+                            result["cloudinary"] = cloudinary_result
+                            result["cloudinary_url"] = cloudinary_result.get("secure_url")
+                            result["thumbnail_url"] = cloudinary_result.get("thumbnail_url")
+                            logger.info(f"[MediaGeneratorAgent] Image uploaded: {result['cloudinary_url']}")
+                        else:
+                            result["cloudinary"] = cloudinary_result
+                            logger.warning(f"[MediaGeneratorAgent] Cloudinary upload failed: {cloudinary_result.get('error')}")
 
                     return result
 
@@ -700,14 +860,13 @@ class MediaGeneratorAgent:
 
             raise Exception("Replicate prediction timed out")
 
-    async def _generate_nano_banana_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
-        """Generate image using Nano Banana Pro (Google Gemini 3 Pro).
+    async def _generate_gemini_banana_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+        """Generate image using Gemini Banana Pro (native image generation).
 
         This is the PRIMARY image provider:
-        - Best quality for ad images
+        - Best quality for ad images with text
         - Native text rendering in images
-        - Cost: $0.04/image
-        - Model: gemini-3-pro-image-preview
+        - Model: gemini-2.0-flash-preview-image-generation
         """
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
@@ -718,32 +877,47 @@ class MediaGeneratorAgent:
 
             client = genai.Client(api_key=self.gemini_api_key)
 
-            # Use Gemini 3 Pro for image generation (Nano Banana Pro)
+            # Enhanced prompt for better ad image generation
+            enhanced_prompt = f"""Create a high-quality advertisement image:
+
+{prompt}
+
+Requirements:
+- Professional commercial photography quality
+- Clean composition with clear focal point
+- Aspect ratio: {aspect_ratio}
+- No watermarks or stock photo indicators
+- Premium, sophisticated aesthetic
+- Photorealistic, 8K quality"""
+
+            logger.info("[MediaGeneratorAgent] Generating with Gemini Banana Pro...")
+
+            # Use Gemini Banana Pro for image generation
             response = client.models.generate_content(
-                model="gemini-2.0-flash-exp-image-generation",  # Nano Banana Pro model
-                contents=[prompt],
+                model="gemini-2.0-flash-preview-image-generation",
+                contents=[enhanced_prompt],
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"]
                 )
             )
 
-            for part in response.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data is not None:
                     image_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
+                    logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful")
                     return {
                         "image_base64": image_base64,
-                        "model": "nano-banana-pro",
-                        "supports_text": True,
-                        "cost_per_image": 0.04
+                        "model": "gemini-banana-pro",
+                        "supports_text": True
                     }
 
-            raise Exception("No image generated by Nano Banana Pro")
+            raise Exception("No image generated by Gemini Banana Pro")
 
         except Exception as e:
-            raise Exception(f"Nano Banana Pro image generation failed: {str(e)}")
+            raise Exception(f"Gemini Banana Pro image generation failed: {str(e)}")
 
-    async def _generate_gemini_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
-        """Generate image using Google Imagen 3 (fallback for Nano Banana Pro)"""
+    async def _generate_imagen_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+        """Generate image using Google Imagen 3 (fallback provider)"""
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
 
@@ -753,49 +927,43 @@ class MediaGeneratorAgent:
 
             client = genai.Client(api_key=self.gemini_api_key)
 
-            # Try Imagen 3 first
-            try:
-                response = client.models.generate_images(
-                    model="imagen-3.0-generate-002",
-                    prompt=prompt,
-                    config=types.GenerateImagesConfig(
-                        number_of_images=1,
-                        aspect_ratio=aspect_ratio.replace(":", ":"),
-                        safety_filter_level="BLOCK_MEDIUM_AND_ABOVE"
-                    )
-                )
+            # Map aspect ratio format
+            ar_map = {
+                "1:1": "1:1",
+                "16:9": "16:9",
+                "9:16": "9:16",
+                "4:5": "4:5",
+                "4:3": "4:3",
+                "3:4": "3:4"
+            }
+            mapped_ar = ar_map.get(aspect_ratio, "1:1")
 
-                if response.generated_images:
-                    image = response.generated_images[0]
-                    image_base64 = base64.b64encode(image.image.image_bytes).decode("utf-8")
-                    return {
-                        "image_base64": image_base64,
-                        "model": "imagen-3"
-                    }
-            except Exception as e:
-                logger.warning(f"Imagen 3 failed: {e}, trying Gemini 2.0")
+            logger.info(f"[MediaGeneratorAgent] Generating with Imagen 3, aspect ratio: {mapped_ar}")
 
-            # Fallback to Gemini 2.0 Flash with image output
-            response = client.models.generate_content(
-                model="gemini-2.0-flash-exp",
-                contents=[prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"]
+            # Use Imagen 3 for high-quality image generation
+            response = client.models.generate_images(
+                model="imagen-3.0-generate-002",
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio=mapped_ar,
+                    safety_filter_level="BLOCK_MEDIUM_AND_ABOVE"
                 )
             )
 
-            for part in response.parts:
-                if hasattr(part, 'inline_data') and part.inline_data:
-                    image_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
-                    return {
-                        "image_base64": image_base64,
-                        "model": "gemini-2.0-flash"
-                    }
+            if response.generated_images:
+                image = response.generated_images[0]
+                image_base64 = base64.b64encode(image.image.image_bytes).decode("utf-8")
+                logger.info("[MediaGeneratorAgent] Imagen 3 generation successful")
+                return {
+                    "image_base64": image_base64,
+                    "model": "imagen-3.0-generate-002"
+                }
 
-            raise Exception("No image generated")
+            raise Exception("No image generated by Imagen 3")
 
         except Exception as e:
-            raise Exception(f"Gemini image generation failed: {str(e)}")
+            raise Exception(f"Imagen 3 image generation failed: {str(e)}")
 
     def _generate_placeholder_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate a placeholder image when all providers fail"""
@@ -918,17 +1086,16 @@ class MediaGeneratorAgent:
         duration: int,
         aspect_ratio: str
     ) -> Dict[str, Any]:
-        """Generate video using Google Veo 3.1 Fast.
+        """Generate video using Google Veo 2.
 
         This is the PRIMARY video provider:
         - Best quality for ad videos
         - Native audio support
-        - Cost: $0.15/second
         - Duration: Up to 8 seconds per clip
-        - Model: veo-3.1-fast
+        - Model: veo-2.0-generate-001
         """
         if not self.gemini_api_key:
-            raise ValueError("Gemini API key not configured for Veo 3")
+            raise ValueError("Gemini API key not configured for Veo")
 
         try:
             from google import genai
@@ -936,58 +1103,71 @@ class MediaGeneratorAgent:
 
             client = genai.Client(api_key=self.gemini_api_key)
 
-            # Build video generation request for Veo 3
-            video_prompt = f"""
-            Create a professional advertising video:
-            {prompt}
+            # Build video generation request for Veo 2
+            video_prompt = f"""Create a professional advertising video:
 
-            Duration: {min(duration, 8)} seconds
-            Aspect ratio: {aspect_ratio}
-            Style: High-quality commercial, smooth camera movements, professional lighting
-            """
+{prompt}
 
-            # Generate video with Veo 3
-            response = client.models.generate_content(
-                model="veo-001",  # Veo 3.1 Fast
-                contents=[video_prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=["VIDEO"]
+Requirements:
+- Duration: {min(duration, 8)} seconds
+- Aspect ratio: {aspect_ratio}
+- Style: High-quality commercial, smooth camera movements, professional lighting
+- No text overlays or watermarks
+- Cinematic quality with dynamic visuals"""
+
+            logger.info(f"[MediaGeneratorAgent] Generating video with Veo 2, duration: {min(duration, 8)}s")
+
+            # Try Veo 2 for video generation
+            try:
+                # Generate video with Veo 2 model
+                operation = client.models.generate_videos(
+                    model="veo-2.0-generate-001",
+                    prompt=video_prompt,
+                    config=types.GenerateVideosConfig(
+                        aspect_ratio=aspect_ratio,
+                        number_of_videos=1,
+                        duration_seconds=min(duration, 8),
+                        person_generation="dont_allow"  # Safe for ads
+                    )
                 )
-            )
 
-            # Extract video from response
-            for part in response.parts:
-                if hasattr(part, 'video_metadata') and part.video_metadata:
-                    # Video URL returned
-                    video_url = part.video_metadata.file_uri
-                    async with httpx.AsyncClient(timeout=120.0) as http_client:
-                        video_response = await http_client.get(video_url)
-                        video_base64 = base64.b64encode(video_response.content).decode("utf-8")
+                # Wait for the operation to complete
+                logger.info("[MediaGeneratorAgent] Waiting for Veo 2 video generation...")
 
-                    return {
-                        "video_base64": video_base64,
-                        "video_url": video_url,
-                        "model": "veo-3.1-fast",
-                        "duration": min(duration, 8),
-                        "has_audio": True,
-                        "cost_per_second": 0.15
-                    }
+                # Poll for completion (video generation can take 1-3 minutes)
+                for attempt in range(60):  # Max 5 minutes
+                    await asyncio.sleep(5)
 
-                if hasattr(part, 'inline_data') and part.inline_data:
-                    video_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
-                    return {
-                        "video_base64": video_base64,
-                        "video_url": None,
-                        "model": "veo-3.1-fast",
-                        "duration": min(duration, 8),
-                        "has_audio": True,
-                        "cost_per_second": 0.15
-                    }
+                    # Check if operation is complete
+                    result = operation.result(timeout=5)
+                    if result and result.generated_videos:
+                        video = result.generated_videos[0]
 
-            raise Exception("No video generated by Veo 3")
+                        # Get video data
+                        if hasattr(video, 'video') and video.video:
+                            video_bytes = video.video.video_bytes
+                            video_base64 = base64.b64encode(video_bytes).decode("utf-8")
+
+                            logger.info("[MediaGeneratorAgent] Veo 2 video generation successful")
+                            return {
+                                "video_base64": video_base64,
+                                "video_url": None,
+                                "model": "veo-2.0-generate-001",
+                                "duration": min(duration, 8),
+                                "has_audio": True
+                            }
+
+                raise Exception("Veo 2 video generation timed out")
+
+            except Exception as veo_error:
+                logger.warning(f"[MediaGeneratorAgent] Veo 2 failed: {veo_error}")
+
+                # Fallback: Try using Gemini with video prompt for creative direction
+                # This won't generate actual video but provides video concept
+                raise Exception(f"Veo 2 video generation failed: {str(veo_error)}")
 
         except Exception as e:
-            raise Exception(f"Veo 3 video generation failed: {str(e)}")
+            raise Exception(f"Veo video generation failed: {str(e)}")
 
     async def _generate_replicate_video(
         self,

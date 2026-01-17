@@ -261,18 +261,18 @@ class AdGeneratorService:
         return None
 
     async def _generate_with_gemini(self, request: GenerateAdRequest, prompt: str) -> GenerateAdResponse:
-        """Generate an ad image using Gemini API"""
+        """Generate an ad image using Gemini Banana Pro"""
         try:
-            logger.info("[AdGenerator] Generating with Gemini...")
+            logger.info("[AdGenerator] Generating with Gemini Banana Pro...")
 
-            # Generate the image using Gemini
+            # Generate the image using Gemini Banana Pro
             from google.genai import types
 
             response = self.client.models.generate_content(
-                model="gemini-2.0-flash-exp",
+                model="gemini-2.0-flash-preview-image-generation",
                 contents=[prompt],
                 config=types.GenerateContentConfig(
-                    response_modalities=["TEXT", "IMAGE"]
+                    response_modalities=["IMAGE", "TEXT"]
                 )
             )
 
@@ -280,14 +280,17 @@ class AdGeneratorService:
             image_base64 = None
             generated_text = None
 
-            for part in response.parts:
-                if hasattr(part, 'text') and part.text is not None:
-                    generated_text = part.text
-                elif hasattr(part, 'inline_data') and part.inline_data is not None:
-                    image_data = part.inline_data.data
-                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+            # Access through candidates for proper response structure
+            if response.candidates and response.candidates[0].content:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text is not None:
+                        generated_text = part.text
+                    elif hasattr(part, 'inline_data') and part.inline_data is not None:
+                        image_data = part.inline_data.data
+                        image_base64 = base64.b64encode(image_data).decode('utf-8')
 
             if image_base64:
+                logger.info("[AdGenerator] Gemini Banana Pro image generation successful")
                 return GenerateAdResponse(
                     success=True,
                     image_base64=image_base64,
@@ -297,12 +300,12 @@ class AdGeneratorService:
                 )
             else:
                 # Try with Imagen model
-                logger.warning("[AdGenerator] No image from Gemini, trying Imagen")
+                logger.warning("[AdGenerator] No image from Gemini Banana Pro, trying Imagen 3")
                 return await self._generate_with_imagen(request, prompt)
 
         except Exception as e:
             error_str = str(e)
-            logger.error(f"[AdGenerator] Gemini error: {error_str}", exc_info=True)
+            logger.error(f"[AdGenerator] Gemini Banana Pro error: {error_str}", exc_info=True)
 
             if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower():
                 logger.info("[AdGenerator] API quota exhausted")
@@ -314,9 +317,25 @@ class AdGeneratorService:
             )
 
     async def _generate_with_imagen(self, request: GenerateAdRequest, prompt: str) -> GenerateAdResponse:
-        """Fallback to Imagen model for image generation"""
+        """Fallback to Imagen 3 model for image generation"""
         try:
             from google.genai import types
+
+            logger.info("[AdGenerator] Generating with Imagen 3...")
+
+            # Map format to aspect ratio
+            format_to_ar = {
+                "1:1": "1:1",
+                "square": "1:1",
+                "9:16": "9:16",
+                "portrait": "9:16",
+                "16:9": "16:9",
+                "landscape": "16:9",
+                "4:5": "4:5",
+                "facebook_ad": "4:5",
+                "banner": "16:9"
+            }
+            aspect_ratio = format_to_ar.get(request.format.value, "1:1")
 
             # Use Imagen 3 model
             response = self.client.models.generate_images(
@@ -324,7 +343,7 @@ class AdGeneratorService:
                 prompt=prompt,
                 config=types.GenerateImagesConfig(
                     number_of_images=1,
-                    aspect_ratio=request.format.value,
+                    aspect_ratio=aspect_ratio,
                     safety_filter_level="BLOCK_MEDIUM_AND_ABOVE"
                 )
             )
@@ -333,6 +352,7 @@ class AdGeneratorService:
                 image = response.generated_images[0]
                 image_base64 = base64.b64encode(image.image.image_bytes).decode('utf-8')
 
+                logger.info("[AdGenerator] Imagen 3 image generation successful")
                 return GenerateAdResponse(
                     success=True,
                     image_base64=image_base64,
@@ -343,12 +363,12 @@ class AdGeneratorService:
             else:
                 return GenerateAdResponse(
                     success=False,
-                    error="No image was generated",
+                    error="No image was generated by Imagen 3",
                     format=request.format.value
                 )
 
         except Exception as e:
-            logger.error(f"Error with Imagen generation: {str(e)}", exc_info=True)
+            logger.error(f"[AdGenerator] Imagen 3 error: {str(e)}", exc_info=True)
             return GenerateAdResponse(
                 success=False,
                 error=str(e),

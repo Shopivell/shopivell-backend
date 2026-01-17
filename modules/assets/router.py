@@ -164,3 +164,82 @@ def get_campaign_assets(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
         Asset.is_active == True
     ).all()
     return [AssetResponse.model_validate(a) for a in assets]
+
+
+# ============================================
+# SIMPLE IMAGE UPLOAD (No Asset record)
+# ============================================
+
+@asset_router.post("/upload-image")
+async def upload_image_simple(
+    file: UploadFile = File(...),
+    folder: str = Form("shopivell/uploads")
+):
+    """
+    Simple image upload to Cloudinary - returns URL only.
+    Use this for store logos, profile pictures, etc.
+    No asset record is created.
+    """
+    import cloudinary
+    import cloudinary.uploader
+    import os
+
+    # Check Cloudinary configuration
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+    api_key = os.getenv("CLOUDINARY_API_KEY")
+    api_secret = os.getenv("CLOUDINARY_API_SECRET")
+
+    if not all([cloud_name, api_key, api_secret]) or cloud_name == "your_cloud_name":
+        raise HTTPException(status_code=503, detail="Cloudinary not configured")
+
+    # Configure Cloudinary
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True
+    )
+
+    # Validate file type
+    content_type = file.content_type or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed")
+
+    # Read file data
+    file_data = await file.read()
+
+    if len(file_data) > 10 * 1024 * 1024:  # 10MB limit for simple uploads
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
+
+    try:
+        # Upload to Cloudinary
+        result = cloudinary.uploader.upload(
+            file_data,
+            folder=folder,
+            resource_type="image",
+            overwrite=True,
+            eager=[
+                {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}
+            ],
+            eager_async=False
+        )
+
+        # Get thumbnail URL
+        thumbnail_url = None
+        if result.get("eager") and len(result["eager"]) > 0:
+            thumbnail_url = result["eager"][0].get("secure_url")
+
+        return {
+            "success": True,
+            "url": result.get("secure_url"),
+            "public_id": result.get("public_id"),
+            "thumbnail_url": thumbnail_url,
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "format": result.get("format"),
+            "bytes": result.get("bytes")
+        }
+
+    except Exception as e:
+        print(f"[Upload] Cloudinary error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
