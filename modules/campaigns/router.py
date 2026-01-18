@@ -760,8 +760,19 @@ def regenerate_ads(
         ).delete(synchronize_session=False)
         db.query(AdSet).filter(AdSet.campaign_id == campaign_id).delete(synchronize_session=False)
 
-    # Generate new ad content
-    ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url)
+    # Get store context for ad generation
+    store = campaign.store
+    store_context = None
+    if store:
+        store_context = {
+            "store_name": store.store_name,
+            "business_type": store.business_type,
+            "store_description": store.store_description,
+            "services_products": getattr(store, 'services_products', None),
+        }
+
+    # Generate new ad content with store context
+    ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url, store_context)
     if ad_content:
         campaign.generated_headlines = ad_content.get("headlines", [])
         campaign.generated_descriptions = ad_content.get("descriptions", [])

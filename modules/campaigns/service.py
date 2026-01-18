@@ -123,8 +123,20 @@ class CampaignService:
                 scraped_data["user_asset_ids"] = [str(aid) for aid in asset_ids]
                 campaign.scraped_data = scraped_data
 
-            # Generate ad content
-            ad_content = self._generate_ad_content(scraped_data, url)
+            # Get store information for context-aware ad generation
+            store = campaign.store
+            store_context = None
+            if store:
+                store_context = {
+                    "store_name": store.store_name,
+                    "business_type": store.business_type,
+                    "store_description": store.store_description,
+                    "services_products": store.services_products if hasattr(store, 'services_products') else None,
+                }
+                logger.info(f"[CampaignService] Using store context: {store_context.get('business_type')}")
+
+            # Generate ad content with store context
+            ad_content = self._generate_ad_content(scraped_data, url, store_context)
             if ad_content:
                 campaign.generated_headlines = ad_content.get("headlines", [])
                 campaign.generated_descriptions = ad_content.get("descriptions", [])
@@ -245,20 +257,46 @@ class CampaignService:
             print(f"[Scraping] Error: {e}")
             return self._mock_scrape_data(url)
 
-    def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str) -> Optional[Dict[str, Any]]:
-        """Generate ad content using OpenRouter (preferred) or OpenAI."""
+    def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str, store_context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Generate ad content using OpenRouter (preferred) or OpenAI.
+
+        Args:
+            scraped_data: Data scraped from the website
+            url: The source URL
+            store_context: Optional dict with store_name, business_type, store_description, services_products
+        """
         content = scraped_data.get("content", "")
         domain = scraped_data.get("domain", "")
         pages_extracted = scraped_data.get("pages_extracted", 1)
 
-        prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this website content and create compelling Facebook/Instagram ad campaigns.
+        # Build store context section if available
+        store_info_section = ""
+        if store_context:
+            store_name = store_context.get("store_name", "")
+            business_type = store_context.get("business_type", "")
+            store_description = store_context.get("store_description", "")
+            services_products = store_context.get("services_products", "")
 
+            store_info_section = f"""
+KNOWN STORE INFORMATION (USE THIS AS PRIMARY CONTEXT):
+- Store Name: {store_name}
+- Business Type: {business_type}
+- Store Description: {store_description}
+- Services/Products: {services_products}
+
+IMPORTANT: This is a {business_type.upper() if business_type else 'BUSINESS'}.
+Generate ALL ad content specifically for this industry.
+Audience tags, headlines, and ad copy MUST be relevant to {business_type or 'the business'}.
+"""
+
+        prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this business and create compelling Facebook/Instagram ad campaigns.
+{store_info_section}
 CRITICAL INSTRUCTIONS:
 1. FIRST, identify what this business ACTUALLY SELLS or OFFERS (products, services, brands)
-2. Look beyond corporate messaging - find the actual products, services, brands, menu items, offerings
-3. Focus on what customers would actually buy or use
-4. If this is a company with multiple brands (like a holding company), identify all the consumer-facing brands
-5. Generate ads that promote the actual products/services, NOT corporate values
+2. Use the store information above as the PRIMARY source of truth about what this business does
+3. Generate ads that are SPECIFIC to the industry/business type - NOT generic marketing content
+4. All audience tags must be relevant to potential customers for THIS SPECIFIC business type
+5. Headlines and descriptions must mention the actual products/services offered
 
 Website URL: {url}
 Domain: {domain}
@@ -365,7 +403,7 @@ Return ONLY valid JSON, no markdown.
 
         # Final fallback to mock data
         logger.warning("[CampaignService] No AI client available, using mock data")
-        return self._mock_ad_content(url)
+        return self._mock_ad_content(url, store_context)
 
     def _generate_with_openrouter(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Generate content using OpenRouter API."""
@@ -681,61 +719,143 @@ The image should reflect the brand identity and be suitable for social media adv
             "is_mock": True
         }
 
-    def _mock_ad_content(self, url: str) -> Dict[str, Any]:
-        """Generate mock ad content."""
+    def _mock_ad_content(self, url: str, store_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Generate mock ad content based on store context/industry."""
         domain = self._extract_domain_name(url).replace(" Campaign", "")
+
+        # Get business type from store context
+        business_type = store_context.get("business_type", "").lower() if store_context else ""
+        store_name = store_context.get("store_name", domain) if store_context else domain
+
+        # Industry-specific templates
+        industry_templates = {
+            "security": {
+                "headlines": [
+                    f"Protect Your Home with {store_name}",
+                    f"24/7 Security Monitoring",
+                    f"Professional CCTV Installation",
+                    f"Smart Home Security Solutions",
+                    f"Peace of Mind Guaranteed"
+                ],
+                "descriptions": [
+                    f"Professional security solutions from {store_name}. Keep your home and business safe.",
+                    f"24/7 monitoring and rapid response. Trust {store_name} for complete protection.",
+                    f"Expert CCTV installation and maintenance. Your safety is our priority.",
+                    f"Smart security systems for modern homes. Get a free consultation today.",
+                    f"Comprehensive security services. Protect what matters most."
+                ],
+                "ad_sets": [
+                    {
+                        "name": "Homeowners",
+                        "title": "Home Security Solutions",
+                        "audience_tags": ["Homeowners", "Home Security", "Smart Home", "Property Protection", "Family Safety", "Home Insurance", "Residential Security", "CCTV", "Alarm Systems", "Home Automation"],
+                        "primary_text": f"Protect your home and family with {store_name}'s professional security systems. From CCTV installation to 24/7 monitoring, we provide complete peace of mind.",
+                        "features": ["Professional CCTV Installation", "24/7 Monitoring", "Quick Response Time"],
+                        "hashtags": ["homesecurity", "cctv", "safehome", "securitysystems", "protection"]
+                    },
+                    {
+                        "name": "Business Owners",
+                        "title": "Commercial Security",
+                        "audience_tags": ["Business Owners", "Commercial Security", "Office Security", "Retail Security", "Business Protection", "Commercial CCTV", "Access Control", "Security Management", "Business Insurance", "Loss Prevention"],
+                        "primary_text": f"Secure your business with {store_name}'s commercial security solutions. Protect your assets, employees, and customers with our professional systems.",
+                        "features": ["Commercial CCTV Systems", "Access Control", "Employee Safety"],
+                        "hashtags": ["businesssecurity", "commercialcctv", "accesscontrol", "securitysolutions", "businessprotection"]
+                    },
+                    {
+                        "name": "Property Managers",
+                        "title": "Property Security Systems",
+                        "audience_tags": ["Property Management", "Real Estate", "Building Security", "Apartment Security", "Estate Management", "Multi-unit Security", "Building Automation", "Property Investment", "Landlords", "Tenant Safety"],
+                        "primary_text": f"Comprehensive security for your properties. {store_name} provides scalable solutions for apartments, estates, and commercial buildings.",
+                        "features": ["Scalable Solutions", "Multi-property Management", "Remote Monitoring"],
+                        "hashtags": ["propertysecurity", "buildingsecurity", "estatemanagement", "securitymonitoring", "propertyprotection"]
+                    },
+                    {
+                        "name": "Tech-Savvy Customers",
+                        "title": "Smart Security Technology",
+                        "audience_tags": ["Smart Home Enthusiasts", "Technology Adopters", "IoT Security", "Home Automation", "Smart Devices", "Tech Gadgets", "Connected Home", "Mobile Security", "App-Controlled Security", "Modern Living"],
+                        "primary_text": f"Experience next-generation security with {store_name}'s smart systems. Control your security from anywhere with our mobile app.",
+                        "features": ["Mobile App Control", "Smart Integration", "Real-time Alerts"],
+                        "hashtags": ["smarthome", "smartsecurity", "iotsecurity", "homeautomation", "connectedhome"]
+                    },
+                    {
+                        "name": "Safety-Conscious Families",
+                        "title": "Family Protection",
+                        "audience_tags": ["Parents", "Family Safety", "Child Safety", "Home Protection", "Peace of Mind", "Family Security", "Safe Neighborhood", "Community Safety", "Emergency Response", "Family Wellness"],
+                        "primary_text": f"Keep your family safe with {store_name}. Our security solutions give you peace of mind knowing your loved ones are protected 24/7.",
+                        "features": ["Family-Friendly Systems", "Emergency Response", "Peace of Mind"],
+                        "hashtags": ["familysafety", "childsafety", "homeprotection", "peaceofmind", "securityforfamilies"]
+                    }
+                ]
+            }
+        }
+
+        # Check if we have a matching industry template
+        for keyword, template in industry_templates.items():
+            if keyword in business_type:
+                return {
+                    "business_name": store_name,
+                    "business_type": business_type or "Security Services",
+                    **template
+                }
+
+        # Default generic template if no industry match
         return {
-            "business_name": domain,
-            "business_type": "Business",
+            "business_name": store_name,
+            "business_type": business_type or "Business",
             "headlines": [
-                f"Discover {domain} Today",
-                f"Premium {domain} Solutions",
-                f"Transform with {domain}",
-                f"Choose {domain} Excellence",
-                f"{domain} - Your Best Choice"
+                f"Discover {store_name} Today",
+                f"Premium {store_name} Solutions",
+                f"Transform with {store_name}",
+                f"Choose {store_name} Excellence",
+                f"{store_name} - Your Best Choice"
             ],
             "descriptions": [
-                f"Experience the best of {domain}. Quality products and exceptional service.",
-                f"Join thousands who trust {domain}. Start your journey today.",
-                f"Premium solutions from {domain}. Results you can count on.",
-                f"Discover why {domain} is the industry leader.",
-                f"Transform your experience with {domain}'s expert solutions."
+                f"Experience the best of {store_name}. Quality products and exceptional service.",
+                f"Join thousands who trust {store_name}. Start your journey today.",
+                f"Premium solutions from {store_name}. Results you can count on.",
+                f"Discover why {store_name} is the industry leader.",
+                f"Transform your experience with {store_name}'s expert solutions."
             ],
             "ad_sets": [
                 {
                     "name": "Professionals",
                     "title": "Industry Professionals",
                     "audience_tags": ["Business", "Professional", "Management", "Technology"],
-                    "primary_text": f"Discover how {domain} can transform your business with our premium solutions.",
-                    "features": ["Premium Quality", "Expert Support", "Fast Delivery"]
+                    "primary_text": f"Discover how {store_name} can transform your business with our premium solutions.",
+                    "features": ["Premium Quality", "Expert Support", "Fast Delivery"],
+                    "hashtags": ["business", "professional", "quality", "service", "solutions"]
                 },
                 {
                     "name": "Small Business",
                     "title": "Small Business Owners",
                     "audience_tags": ["Entrepreneur", "Small Business", "Startup", "E-commerce"],
-                    "primary_text": f"Scale your business with {domain}'s affordable solutions.",
-                    "features": ["Affordable Pricing", "Easy Setup", "24/7 Support"]
+                    "primary_text": f"Scale your business with {store_name}'s affordable solutions.",
+                    "features": ["Affordable Pricing", "Easy Setup", "24/7 Support"],
+                    "hashtags": ["smallbusiness", "entrepreneur", "startup", "growth", "success"]
                 },
                 {
                     "name": "Enterprise",
                     "title": "Enterprise Decision Makers",
                     "audience_tags": ["Enterprise", "Corporate", "C-Suite", "IT Director"],
-                    "primary_text": f"Enterprise-grade solutions from {domain} for your organization.",
-                    "features": ["Enterprise Security", "Scalable", "Custom Solutions"]
+                    "primary_text": f"Enterprise-grade solutions from {store_name} for your organization.",
+                    "features": ["Enterprise Security", "Scalable", "Custom Solutions"],
+                    "hashtags": ["enterprise", "corporate", "business", "solutions", "professional"]
                 },
                 {
                     "name": "Tech Savvy",
                     "title": "Technology Enthusiasts",
                     "audience_tags": ["Technology", "Innovation", "Digital", "Software"],
-                    "primary_text": f"Stay ahead with {domain}'s cutting-edge technology solutions.",
-                    "features": ["Latest Technology", "Innovation", "Future-Ready"]
+                    "primary_text": f"Stay ahead with {store_name}'s cutting-edge technology solutions.",
+                    "features": ["Latest Technology", "Innovation", "Future-Ready"],
+                    "hashtags": ["technology", "innovation", "digital", "future", "tech"]
                 },
                 {
                     "name": "Value Seekers",
                     "title": "Budget-Conscious Buyers",
                     "audience_tags": ["Deals", "Savings", "Value", "Smart Shopping"],
-                    "primary_text": f"Get the best value with {domain}'s competitive pricing.",
-                    "features": ["Best Value", "Money-Back Guarantee", "Free Trial"]
+                    "primary_text": f"Get the best value with {store_name}'s competitive pricing.",
+                    "features": ["Best Value", "Money-Back Guarantee", "Free Trial"],
+                    "hashtags": ["value", "deals", "savings", "affordable", "quality"]
                 }
             ]
         }
