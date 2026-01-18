@@ -432,9 +432,63 @@ Return ONLY valid JSON, no markdown.
         """Create ad sets from generated content with AI-generated images using Ad Creative Agent.
 
         If user provides assets via asset_ids, those will be used instead of generating AI images.
+        Images are generated with store branding (logo, color theme) when available.
         """
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
+
+        # Get store branding information
+        store = campaign.store
+        store_logo_url = store.logo_url if store else None
+        store_color_theme = store.color_theme if store else None
+        store_name = store.store_name if store else business_name
+        store_description = store.store_description if store else None
+        store_business_type = store.business_type if store else None
+
+        # Map business type to industry template
+        industry_mapping = {
+            "security": "security",
+            "security services": "security",
+            "security company": "security",
+            "food": "food_restaurant",
+            "restaurant": "food_restaurant",
+            "cafe": "food_restaurant",
+            "retail": "retail_ecommerce",
+            "ecommerce": "retail_ecommerce",
+            "e-commerce": "retail_ecommerce",
+            "shop": "retail_ecommerce",
+            "tech": "tech_saas",
+            "saas": "tech_saas",
+            "software": "tech_saas",
+            "technology": "tech_saas",
+            "beauty": "beauty_cosmetics",
+            "cosmetics": "beauty_cosmetics",
+            "skincare": "beauty_cosmetics",
+            "fitness": "health_fitness",
+            "health": "health_fitness",
+            "gym": "health_fitness",
+            "real estate": "real_estate",
+            "property": "real_estate",
+            "consulting": "professional_services",
+            "legal": "professional_services",
+            "finance": "professional_services",
+            "education": "education",
+            "courses": "education",
+            "automotive": "automotive",
+            "car": "automotive",
+        }
+
+        # Detect industry from business type
+        detected_industry = None
+        if store_business_type:
+            business_type_lower = store_business_type.lower()
+            for keyword, industry in industry_mapping.items():
+                if keyword in business_type_lower:
+                    detected_industry = industry
+                    break
+
+        if store:
+            logger.info(f"[CampaignService] Store branding - Logo: {store_logo_url}, Theme: {store_color_theme}, BusinessType: {store_business_type}, Industry: {detected_industry}")
 
         # Different styles for variety
         styles = [AdStyle.MODERN, AdStyle.VIBRANT, AdStyle.PROFESSIONAL, AdStyle.ELEGANT, AdStyle.BOLD]
@@ -512,8 +566,8 @@ Return ONLY valid JSON, no markdown.
 
                     # Step 2: Generate image using MediaGeneratorAgent (only if no user asset)
                     if not user_asset_url:
-                        # Use the agent's image prompt or build a default one
-                        image_prompt = agent_image_prompt or f"Professional advertisement for {business_name}. {primary_text or description}. Clean composition, commercial photography."
+                        # Build comprehensive image prompt with store branding
+                        brand_name = store_name or business_name
 
                         # Map ad style to media generator style
                         style_map = {
@@ -526,15 +580,51 @@ Return ONLY valid JSON, no markdown.
                         image_style = style_map.get(styles[i % len(styles)], "professional")
 
                         print(f"[MediaGenerator] Generating image for ad set: {ad_set.name}")
-                        result = loop.run_until_complete(
-                            self.media_generator.generate_image(
-                                prompt=image_prompt,
-                                style=image_style,
-                                aspect_ratio="1:1",
-                                upload_to_cloud=True,
-                                cloudinary_folder="shopivell/generated/ads"
+                        print(f"[MediaGenerator] Brand: {brand_name}, Colors: {store_color_theme}, Industry: {detected_industry}")
+
+                        # Use industry-specific generation if industry is detected
+                        if detected_industry:
+                            # Generate industry-compliant ad image (Meta-safe templates)
+                            print(f"[MediaGenerator] Using industry template: {detected_industry}")
+                            result = loop.run_until_complete(
+                                self.media_generator.generate_industry_ad_image(
+                                    industry=detected_industry,
+                                    product_name=brand_name,
+                                    product_description=primary_text or description or store_description or f"{brand_name} services",
+                                    headline_text=agent_headline or headline,
+                                    aspect_ratio="1:1"
+                                )
                             )
-                        )
+                        else:
+                            # Build custom prompt with branding
+                            branding_instructions = [f"Brand: {brand_name}"]
+
+                            if store_color_theme:
+                                branding_instructions.append(f"Brand colors: Use {store_color_theme} as the primary color scheme")
+
+                            if store_logo_url:
+                                branding_instructions.append(f"Include the brand logo prominently in the design")
+
+                            branding_context = ". ".join(branding_instructions)
+
+                            if agent_image_prompt:
+                                image_prompt = f"{agent_image_prompt}. {branding_context}"
+                            else:
+                                image_prompt = f"""Professional advertisement for {brand_name}.
+{primary_text or description or store_description or ''}
+{branding_context}
+Style: Clean composition, commercial photography, high-quality marketing visual.
+The image should reflect the brand identity and be suitable for social media advertising."""
+
+                            result = loop.run_until_complete(
+                                self.media_generator.generate_image(
+                                    prompt=image_prompt,
+                                    style=image_style,
+                                    aspect_ratio="1:1",
+                                    upload_to_cloud=True,
+                                    cloudinary_folder="shopivell/generated/ads"
+                                )
+                            )
 
                         if result.get("image_base64"):
                             generated_image_base64 = result["image_base64"]
