@@ -914,7 +914,8 @@ Requirements:
                                 "content": enhanced_prompt
                             }
                         ],
-                        "modalities": ["image", "text"]
+                        "modalities": ["image", "text"],
+                        "max_tokens": 4096  # Limit tokens to reduce cost
                     }
                 )
 
