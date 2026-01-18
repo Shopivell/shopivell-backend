@@ -118,6 +118,10 @@ async def get_agency_with_stores(
                 id=store.id,
                 store_name=store.store_name,
                 store_phone=store.store_phone,
+                store_email=store.store_email,
+                store_link=store.store_link,
+                logo_url=store.logo_url,
+                color_theme=store.color_theme,
                 business_type=store.business_type,
                 is_setup_completed=store.is_setup_completed,
                 created_at=store.created_at
@@ -243,6 +247,10 @@ async def get_agency_stores(
                 id=store.id,
                 store_name=store.store_name,
                 store_phone=store.store_phone,
+                store_email=store.store_email,
+                store_link=store.store_link,
+                logo_url=store.logo_url,
+                color_theme=store.color_theme,
                 business_type=store.business_type,
                 is_setup_completed=store.is_setup_completed,
                 created_at=store.created_at

@@ -64,6 +64,10 @@ class StoreBasicInfo(BaseModel):
     id: uuid.UUID
     store_name: str
     store_phone: Optional[str] = None
+    store_email: Optional[str] = None
+    store_link: Optional[str] = None
+    logo_url: Optional[str] = None
+    color_theme: Optional[str] = None
     business_type: Optional[str] = None
     is_setup_completed: bool = False
     created_at: datetime
