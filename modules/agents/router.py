@@ -806,15 +806,20 @@ async def generate_image(
         result = await agent.generate_image(
             prompt=prompt,
             style=style,
-            aspect_ratio=aspect_ratio
+            aspect_ratio=aspect_ratio,
+            upload_to_cloud=True,
+            cloudinary_folder="shopivell/generated/ads"
         )
 
         return {
             "success": True,
             "image_base64": result.get("image_base64"),
+            "cloudinary_url": result.get("cloudinary_url"),
+            "thumbnail_url": result.get("thumbnail_url"),
             "provider_used": result.get("provider_used"),
             "model": result.get("model"),
-            "is_placeholder": result.get("is_placeholder", False)
+            "is_placeholder": result.get("is_placeholder", False),
+            "cloudinary": result.get("cloudinary")
         }
 
     except Exception as e:
