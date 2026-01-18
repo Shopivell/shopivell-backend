@@ -866,7 +866,7 @@ class MediaGeneratorAgent:
         This is the PRIMARY image provider:
         - Best quality for ad images with text
         - Native text rendering in images
-        - Model: gemini-2.0-flash-preview-image-generation
+        - Model: gemini-2.0-flash-exp-image-generation
         """
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
@@ -890,11 +890,11 @@ Requirements:
 - Premium, sophisticated aesthetic
 - Photorealistic, 8K quality"""
 
-            logger.info("[MediaGeneratorAgent] Generating with Gemini Banana Pro...")
+            logger.info("[MediaGeneratorAgent] Generating with Gemini Banana Pro (gemini-2.0-flash-exp-image-generation)...")
 
             # Use Gemini Banana Pro for image generation
             response = client.models.generate_content(
-                model="gemini-2.0-flash-preview-image-generation",
+                model="gemini-2.0-flash-exp-image-generation",
                 contents=[enhanced_prompt],
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"]

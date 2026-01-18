@@ -263,13 +263,13 @@ class AdGeneratorService:
     async def _generate_with_gemini(self, request: GenerateAdRequest, prompt: str) -> GenerateAdResponse:
         """Generate an ad image using Gemini Banana Pro"""
         try:
-            logger.info("[AdGenerator] Generating with Gemini Banana Pro...")
+            logger.info("[AdGenerator] Generating with Gemini Banana Pro (gemini-2.0-flash-exp-image-generation)...")
 
             # Generate the image using Gemini Banana Pro
             from google.genai import types
 
             response = self.client.models.generate_content(
-                model="gemini-2.0-flash-preview-image-generation",
+                model="gemini-2.0-flash-exp-image-generation",
                 contents=[prompt],
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"]
