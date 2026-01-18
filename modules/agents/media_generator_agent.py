@@ -913,29 +913,73 @@ Requirements:
                 )
 
                 result = response.json()
+                logger.info(f"[MediaGeneratorAgent] OpenRouter response keys: {result.keys() if isinstance(result, dict) else 'not a dict'}")
+
+                # Check for error first
+                if result.get("error"):
+                    raise Exception(f"OpenRouter error: {result['error']}")
 
                 if result.get("choices"):
                     message = result["choices"][0]["message"]
+                    logger.info(f"[MediaGeneratorAgent] Message keys: {message.keys() if isinstance(message, dict) else 'not a dict'}")
+
+                    # Format 1: images array (OpenRouter multimodal)
                     if message.get("images"):
                         for image in message["images"]:
-                            image_url = image["image_url"]["url"]
-                            # Extract base64 from data URL (format: data:image/png;base64,...)
-                            if image_url.startswith("data:"):
-                                # Remove the data URL prefix
-                                image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
-                            else:
-                                image_base64 = image_url
+                            image_url = image.get("image_url", {}).get("url", "")
+                            if image_url:
+                                if image_url.startswith("data:"):
+                                    image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
+                                else:
+                                    image_base64 = image_url
+                                logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter (images format)")
+                                return {
+                                    "image_base64": image_base64,
+                                    "model": "gemini-banana-pro",
+                                    "supports_text": True
+                                }
 
-                            logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter")
+                    # Format 2: content as array of parts (OpenAI-style multimodal)
+                    content = message.get("content")
+                    if isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict):
+                                if part.get("type") == "image_url":
+                                    image_url = part.get("image_url", {}).get("url", "")
+                                    if image_url:
+                                        if image_url.startswith("data:"):
+                                            image_base64 = image_url.split(",", 1)[1]
+                                        else:
+                                            image_base64 = image_url
+                                        logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter (content array)")
+                                        return {
+                                            "image_base64": image_base64,
+                                            "model": "gemini-banana-pro",
+                                            "supports_text": True
+                                        }
+                                # Check for inline_data format
+                                if part.get("inline_data"):
+                                    image_base64 = part["inline_data"].get("data", "")
+                                    if image_base64:
+                                        logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter (inline_data)")
+                                        return {
+                                            "image_base64": image_base64,
+                                            "model": "gemini-banana-pro",
+                                            "supports_text": True
+                                        }
+
+                    # Format 3: content as string with embedded base64
+                    if isinstance(content, str) and len(content) > 1000:
+                        # Might be raw base64
+                        if all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in content[:100]):
+                            logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter (raw base64)")
                             return {
-                                "image_base64": image_base64,
+                                "image_base64": content,
                                 "model": "gemini-banana-pro",
                                 "supports_text": True
                             }
 
-                # Check for error
-                if result.get("error"):
-                    raise Exception(f"OpenRouter error: {result['error']}")
+                    logger.warning(f"[MediaGeneratorAgent] No image found in response. Content type: {type(content)}, Content preview: {str(content)[:200] if content else 'None'}")
 
             raise Exception("No image generated by Gemini Banana Pro")
 
