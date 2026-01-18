@@ -819,7 +819,8 @@ async def generate_image(
             "provider_used": result.get("provider_used"),
             "model": result.get("model"),
             "is_placeholder": result.get("is_placeholder", False),
-            "cloudinary": result.get("cloudinary")
+            "cloudinary": result.get("cloudinary"),
+            "provider_errors": result.get("provider_errors", [])  # For debugging
         }
 
     except Exception as e:

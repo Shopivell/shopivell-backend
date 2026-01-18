@@ -607,6 +607,7 @@ class MediaGeneratorAgent:
 
         # Try providers in order
         providers_to_try = [provider] if provider else self.available_image_providers
+        provider_errors = []  # Track errors for debugging
 
         for prov in providers_to_try:
             try:
@@ -627,6 +628,7 @@ class MediaGeneratorAgent:
 
                 if result and result.get("image_base64"):
                     result["provider_used"] = prov.value
+                    result["provider_errors"] = provider_errors  # Include previous failures
                     logger.info(f"[MediaGeneratorAgent] Successfully generated image with {prov.value}")
 
                     # Run vision compliance check on AI-generated images
@@ -711,12 +713,16 @@ class MediaGeneratorAgent:
                     return result
 
             except Exception as e:
-                logger.warning(f"[MediaGeneratorAgent] {prov.value} failed: {str(e)}")
+                error_msg = f"{prov.value}: {str(e)}"
+                logger.warning(f"[MediaGeneratorAgent] {error_msg}")
+                provider_errors.append(error_msg)
                 continue
 
         # All providers failed - return placeholder
         logger.warning("[MediaGeneratorAgent] All image providers failed, using placeholder")
-        return self._generate_placeholder_image(prompt, aspect_ratio)
+        placeholder = self._generate_placeholder_image(prompt, aspect_ratio)
+        placeholder["provider_errors"] = provider_errors
+        return placeholder
 
     def _enhance_image_prompt(self, prompt: str, style: str) -> str:
         """Enhance the prompt with style modifiers"""
