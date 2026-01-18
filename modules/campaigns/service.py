@@ -19,6 +19,7 @@ from .models import UrlCampaign, CampaignStatus, CampaignGoal, UrlAdSet, UrlAdCo
 from modules.ad_generator.service import AdGeneratorService
 from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
 from modules.agents.ad_creative_agent import AdCreativeAgent
+from modules.agents.media_generator_agent import MediaGeneratorAgent
 
 # Import OpenRouter for AI generation
 try:
@@ -60,6 +61,7 @@ class CampaignService:
         self._init_ai_clients()
         self.ad_generator = AdGeneratorService()
         self.ad_creative_agent = AdCreativeAgent()
+        self.media_generator = MediaGeneratorAgent()  # Primary image generator
 
     def _init_ai_clients(self):
         """Initialize AI clients (OpenRouter preferred, OpenAI fallback)"""
@@ -466,6 +468,7 @@ Return ONLY valid JSON, no markdown.
             visual_direction = ad_set_data.get("visual_direction", "")
 
             generated_image_base64 = None
+            generated_cloudinary_url = None  # Cloudinary URL for AI-generated image
             agent_ad_angle = None
             agent_headline = None
             user_asset_url = None
@@ -507,27 +510,42 @@ Return ONLY valid JSON, no markdown.
                     print(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
                     print(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
-                    # Step 2: Generate image using the agent's prompt (only if no user asset)
+                    # Step 2: Generate image using MediaGeneratorAgent (only if no user asset)
                     if not user_asset_url:
-                        ad_request = GenerateAdRequest(
-                            product_name=business_name,
-                            product_description=primary_text or description or f"{business_name} - {headline}",
-                            target_audience=ad_set_data.get("name", "General"),
-                            key_benefits=features[:3] if features else None,
-                            call_to_action=campaign.conversion_button or "Learn More",
-                            style=styles[i % len(styles)],
-                            format=AdFormat.SQUARE,
-                            platform=AdPlatform.FACEBOOK,
-                            include_text_overlay=True,
-                            agent_prompt=agent_image_prompt  # Use the agent's prompt
+                        # Use the agent's image prompt or build a default one
+                        image_prompt = agent_image_prompt or f"Professional advertisement for {business_name}. {primary_text or description}. Clean composition, commercial photography."
+
+                        # Map ad style to media generator style
+                        style_map = {
+                            AdStyle.MODERN: "professional",
+                            AdStyle.VIBRANT: "vibrant",
+                            AdStyle.PROFESSIONAL: "professional",
+                            AdStyle.ELEGANT: "luxury",
+                            AdStyle.BOLD: "bold"
+                        }
+                        image_style = style_map.get(styles[i % len(styles)], "professional")
+
+                        print(f"[MediaGenerator] Generating image for ad set: {ad_set.name}")
+                        result = loop.run_until_complete(
+                            self.media_generator.generate_image(
+                                prompt=image_prompt,
+                                style=image_style,
+                                aspect_ratio="1:1",
+                                upload_to_cloud=True,
+                                cloudinary_folder="shopivell/generated/ads"
+                            )
                         )
 
-                        result = loop.run_until_complete(self.ad_generator.generate_ad(ad_request))
-                        if result.success and result.image_base64:
-                            generated_image_base64 = result.image_base64
-                            print(f"[AdGenerator] Generated image for ad set: {ad_set.name}")
+                        if result.get("image_base64"):
+                            generated_image_base64 = result["image_base64"]
+                            generated_cloudinary_url = result.get("cloudinary_url")
+                            print(f"[MediaGenerator] Generated image for ad set: {ad_set.name}, provider: {result.get('provider_used')}")
+                            if generated_cloudinary_url:
+                                print(f"[MediaGenerator] Cloudinary URL: {generated_cloudinary_url}")
+                        else:
+                            print(f"[MediaGenerator] Warning: No image generated for ad set: {ad_set.name}")
                     else:
-                        print(f"[AdGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
+                        print(f"[MediaGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
 
                 finally:
                     loop.close()
@@ -536,6 +554,9 @@ Return ONLY valid JSON, no markdown.
                 print(f"[AdCreativeAgent/AdGenerator] Error for ad set {i+1}: {e}")
 
             # Create ad content with generated image and agent's ad angle
+            # Use user asset URL if available, otherwise use Cloudinary URL from AI generation
+            final_media_url = user_asset_url or generated_cloudinary_url
+
             ad_content_obj = AdContent(
                 ad_set_id=ad_set.id,
                 headline=agent_headline or headline,  # Use agent's headline if available
@@ -543,10 +564,10 @@ Return ONLY valid JSON, no markdown.
                 description=description,
                 call_to_action=campaign.conversion_button,
                 destination_url=campaign.source_url,
-                media_url=user_asset_url,  # Use user-provided asset URL if available
-                asset_id=user_asset_id,  # Link to user asset
+                media_url=final_media_url,  # Use user asset URL or AI-generated Cloudinary URL
+                asset_id=user_asset_id,  # Link to user asset (if provided)
                 is_primary=True,
-                generated_image_base64=generated_image_base64 if not user_asset_url else None  # Only use AI image if no user asset
+                generated_image_base64=generated_image_base64 if not user_asset_url else None  # Keep base64 as backup
             )
             self.db.add(ad_content_obj)
 
