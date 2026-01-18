@@ -1079,3 +1079,19 @@ def generate_hashtag_suggestions(store_name: str, business_type: Optional[str] =
             }
         }
     }
+
+
+# Debug endpoint to check store logo_url (no auth required)
+@store_router.get("/debug/logo/{store_id}")
+async def debug_store_logo(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Debug endpoint to check store logo_url value"""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        return {"error": "Store not found"}
+    return {
+        "store_id": str(store.id),
+        "store_name": store.store_name,
+        "logo_url": store.logo_url,
+        "logo_url_length": len(store.logo_url) if store.logo_url else 0,
+        "color_theme": store.color_theme
+    }
