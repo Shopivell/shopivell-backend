@@ -158,6 +158,7 @@ class FacebookCallbackRequest(BaseModel):
 # Pydantic model for OAuth URL request
 class FacebookOAuthUrlRequest(BaseModel):
     redirect_uri: Optional[str] = None
+    state: Optional[str] = None  # Custom state to pass through OAuth flow
 
 
 # Update forward references for nested models

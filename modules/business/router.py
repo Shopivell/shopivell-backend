@@ -142,11 +142,12 @@ def get_facebook_pages(access_token: str, business_account_id: str):
 @business_router.post("/facebook/oauth-url")
 def get_facebook_business_oauth_url(request_data: FacebookOAuthUrlRequest):
     """Generate Facebook OAuth URL for business account connection"""
-    state = str(uuid.uuid4())
-    
+    # Use custom state if provided (e.g., contains return URL), otherwise generate UUID
+    state = request_data.state or str(uuid.uuid4())
+
     # Use the redirect_uri from frontend or default
     redirect_uri = request_data.redirect_uri or FACEBOOK_REDIRECT_URI
-    
+
     # Validate the redirect URI
     parsed_uri = urlparse(redirect_uri)
     if not parsed_uri.scheme or not parsed_uri.netloc:
@@ -154,7 +155,7 @@ def get_facebook_business_oauth_url(request_data: FacebookOAuthUrlRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid redirect URI"
         )
-    
+
     params = {
         "client_id": FACEBOOK_APP_ID,
         "redirect_uri": redirect_uri,
