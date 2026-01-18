@@ -1,11 +1,11 @@
 # media_generator_agent.py - AI Agent for Image and Video Generation
 """
 Multi-provider media generation agent supporting:
-- Images: Gemini Banana Pro, Imagen 3, DALL-E 3, Stability AI, Replicate (Flux)
+- Images: Gemini Banana Pro (via OpenRouter), Imagen 3, DALL-E 3, Stability AI, Replicate (Flux)
 - Videos: Google Veo 2, Replicate (Stable Video Diffusion), Runway ML, Luma AI
 
 Primary Providers:
-- IMAGE: Gemini Banana Pro (gemini-2.0-flash-preview-image-generation) - Best quality with native text
+- IMAGE: Gemini Banana Pro (google/gemini-3-pro-image-preview via OpenRouter) - Best quality with native text
 - VIDEO: Veo 2 (veo-2.0-generate-001) - Up to 8-second clips with audio
 """
 
@@ -397,6 +397,7 @@ class MediaGeneratorAgent:
     def __init__(self):
         # API Keys
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.stability_api_key = os.getenv("STABILITY_API_KEY")
         self.replicate_api_key = os.getenv("REPLICATE_API_TOKEN")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -415,26 +416,28 @@ class MediaGeneratorAgent:
         """Get list of available image providers based on API keys.
 
         Priority order:
-        1. GEMINI_BANANA (Gemini Banana Pro) - Best quality with native text rendering
+        1. GEMINI_BANANA (Gemini Banana Pro via OpenRouter) - Best quality with native text rendering
         2. IMAGEN (Imagen 3) - High-quality fallback
         3. DALLE (DALL-E 3) - OpenAI alternative
         4. REPLICATE (Flux) - Good quality
         5. STABILITY (SD3) - Stable Diffusion
         """
         providers = []
-        # Priority 1: Gemini Banana Pro - Best for ads with text
-        if self.gemini_api_key:
+        # Priority 1: Gemini Banana Pro via OpenRouter - Best for ads with text
+        if self.openrouter_api_key:
             providers.append(ImageProvider.GEMINI_BANANA)
-            providers.append(ImageProvider.IMAGEN)  # Imagen 3 as fallback
-        # Priority 2: DALL-E 3
+        # Priority 2: Imagen 3 (requires Gemini API key)
+        if self.gemini_api_key:
+            providers.append(ImageProvider.IMAGEN)
+        # Priority 3: DALL-E 3
         if self.openai_api_key:
             providers.append(ImageProvider.DALLE)
-        # Priority 3: Replicate/Flux
+        # Priority 4: Replicate/Flux
         if self.replicate_api_key:
             providers.append(ImageProvider.REPLICATE)
         if self.fal_api_key and ImageProvider.REPLICATE not in providers:
             providers.append(ImageProvider.REPLICATE)
-        # Priority 4: Stability AI
+        # Priority 5: Stability AI
         if self.stability_api_key:
             providers.append(ImageProvider.STABILITY)
         return providers
@@ -861,21 +864,19 @@ class MediaGeneratorAgent:
             raise Exception("Replicate prediction timed out")
 
     async def _generate_gemini_banana_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
-        """Generate image using Gemini Banana Pro (native image generation).
+        """Generate image using Gemini Banana Pro via OpenRouter.
 
         This is the PRIMARY image provider:
         - Best quality for ad images with text
         - Native text rendering in images
-        - Model: gemini-2.0-flash-exp-image-generation
+        - Model: google/gemini-3-pro-image-preview (via OpenRouter)
         """
-        if not self.gemini_api_key:
-            raise ValueError("Gemini API key not configured")
+        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        if not openrouter_api_key:
+            raise ValueError("OpenRouter API key not configured")
 
         try:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=self.gemini_api_key)
+            import json
 
             # Enhanced prompt for better ad image generation
             enhanced_prompt = f"""Create a high-quality advertisement image:
@@ -890,26 +891,51 @@ Requirements:
 - Premium, sophisticated aesthetic
 - Photorealistic, 8K quality"""
 
-            logger.info("[MediaGeneratorAgent] Generating with Gemini Banana Pro (gemini-2.0-flash-exp-image-generation)...")
+            logger.info("[MediaGeneratorAgent] Generating with Gemini Banana Pro via OpenRouter (google/gemini-3-pro-image-preview)...")
 
-            # Use Gemini Banana Pro for image generation
-            response = client.models.generate_content(
-                model="gemini-2.0-flash-exp-image-generation",
-                contents=[enhanced_prompt],
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"]
-                )
-            )
-
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'inline_data') and part.inline_data is not None:
-                    image_base64 = base64.b64encode(part.inline_data.data).decode("utf-8")
-                    logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful")
-                    return {
-                        "image_base64": image_base64,
-                        "model": "gemini-banana-pro",
-                        "supports_text": True
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openrouter_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "google/gemini-3-pro-image-preview",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": enhanced_prompt
+                            }
+                        ],
+                        "modalities": ["image", "text"]
                     }
+                )
+
+                result = response.json()
+
+                if result.get("choices"):
+                    message = result["choices"][0]["message"]
+                    if message.get("images"):
+                        for image in message["images"]:
+                            image_url = image["image_url"]["url"]
+                            # Extract base64 from data URL (format: data:image/png;base64,...)
+                            if image_url.startswith("data:"):
+                                # Remove the data URL prefix
+                                image_base64 = image_url.split(",", 1)[1] if "," in image_url else image_url
+                            else:
+                                image_base64 = image_url
+
+                            logger.info("[MediaGeneratorAgent] Gemini Banana Pro generation successful via OpenRouter")
+                            return {
+                                "image_base64": image_base64,
+                                "model": "gemini-banana-pro",
+                                "supports_text": True
+                            }
+
+                # Check for error
+                if result.get("error"):
+                    raise Exception(f"OpenRouter error: {result['error']}")
 
             raise Exception("No image generated by Gemini Banana Pro")
 
