@@ -772,25 +772,32 @@ async def get_stores_by_owner(
 # UPDATE store
 @store_router.patch("/{store_id}", response_model=StoreResponse)
 async def update_store(
-    store_id: uuid.UUID, 
-    store_data: StoreUpdate, 
+    store_id: uuid.UUID,
+    store_data: StoreUpdate,
     db: Session = Depends(get_db)
 ):
     try:
         db_store = db.query(Store).filter(Store.id == store_id).first()
-        
+
         if not db_store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Store not found"
             )
-        
+
         update_data = store_data.model_dump(exclude_unset=True)
+        print(f"[Store Update] Store ID: {store_id}")
+        print(f"[Store Update] Fields to update: {list(update_data.keys())}")
+        if 'logo_url' in update_data:
+            print(f"[Store Update] logo_url value: {update_data['logo_url'][:100] if update_data['logo_url'] else 'None'}...")
+
         for field, value in update_data.items():
             setattr(db_store, field, value)
-        
+
         db.commit()
         db.refresh(db_store)
+
+        print(f"[Store Update] After save - logo_url: {db_store.logo_url[:100] if db_store.logo_url else 'None'}...")
         return db_store
         
     except HTTPException:
