@@ -245,12 +245,18 @@ class CampaignService:
 
             print(f"[Tavily] Scraping complete - {len(combined_content)} chars from {len(all_content)} sources")
 
+            # Extract logo URL from the website
+            logo_url = self._extract_logo_url(base_url, combined_content)
+            if logo_url:
+                print(f"[Tavily] Extracted logo URL: {logo_url}")
+
             return {
                 "url": url,
                 "domain": domain,
                 "content": combined_content[:25000],  # Increased limit for more context
                 "pages_extracted": len(all_content),
-                "extracted_at": datetime.utcnow().isoformat()
+                "extracted_at": datetime.utcnow().isoformat(),
+                "logo_url": logo_url  # Store extracted logo URL
             }
 
         except Exception as e:
@@ -477,13 +483,21 @@ Return ONLY valid JSON, no markdown.
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
+        # Get logo from scraped data first, then fall back to store
+        scraped_logo_url = campaign.scraped_data.get("logo_url") if campaign.scraped_data else None
+
         # Get store branding information
         store = campaign.store
-        store_logo_url = store.logo_url if store else None
+        logo_url_to_use = store.logo_url if store else None
         store_color_theme = store.color_theme if store else None
         store_name = store.store_name if store else business_name
         store_description = store.store_description if store else None
         store_business_type = store.business_type if store else None
+
+        # Use scraped logo if available, otherwise use store logo
+        logo_url_to_use = scraped_logo_url or logo_url_to_use
+        if logo_url_to_use:
+            logger.info(f"[CampaignService] Using logo URL: {logo_url_to_use[:80]}... (source: {'scraped' if scraped_logo_url else 'store'})")
 
         # Map business type to industry template
         industry_mapping = {
@@ -501,6 +515,10 @@ Return ONLY valid JSON, no markdown.
             "saas": "tech_saas",
             "software": "tech_saas",
             "technology": "tech_saas",
+            "fintech": "tech_saas",
+            "payments": "tech_saas",
+            "banking": "tech_saas",
+            "financial technology": "tech_saas",
             "beauty": "beauty_cosmetics",
             "cosmetics": "beauty_cosmetics",
             "skincare": "beauty_cosmetics",
@@ -528,7 +546,7 @@ Return ONLY valid JSON, no markdown.
                     break
 
         if store:
-            logger.info(f"[CampaignService] Store branding - Logo: {store_logo_url}, Theme: {store_color_theme}, BusinessType: {store_business_type}, Industry: {detected_industry}")
+            logger.info(f"[CampaignService] Store branding - Logo: {logo_url_to_use}, Theme: {store_color_theme}, BusinessType: {store_business_type}, Industry: {detected_industry}")
 
         # Different styles for variety
         styles = [AdStyle.MODERN, AdStyle.VIBRANT, AdStyle.PROFESSIONAL, AdStyle.ELEGANT, AdStyle.BOLD]
@@ -626,7 +644,7 @@ Return ONLY valid JSON, no markdown.
                         if detected_industry:
                             # Generate industry-compliant ad image (Meta-safe templates)
                             print(f"[MediaGenerator] Using industry template: {detected_industry}")
-                            print(f"[MediaGenerator] Brand colors: {store_color_theme}, Has logo: {bool(store_logo_url)}")
+                            print(f"[MediaGenerator] Brand colors: {store_color_theme}, Has logo: {bool(logo_url_to_use)}")
                             result = loop.run_until_complete(
                                 self.media_generator.generate_industry_ad_image(
                                     industry=detected_industry,
@@ -635,7 +653,7 @@ Return ONLY valid JSON, no markdown.
                                     headline_text=agent_headline or headline,
                                     aspect_ratio="1:1",
                                     brand_colors=store_color_theme,
-                                    logo_url=store_logo_url,
+                                    logo_url=logo_url_to_use,
                                     target_audience=ad_set_data.get("name", "")
                                 )
                             )
@@ -646,7 +664,7 @@ Return ONLY valid JSON, no markdown.
                             if store_color_theme:
                                 branding_instructions.append(f"Brand colors: Use {store_color_theme} as the primary color scheme")
 
-                            if store_logo_url:
+                            if logo_url_to_use:
                                 branding_instructions.append(f"Include the brand logo prominently in the design")
 
                             branding_context = ". ".join(branding_instructions)
@@ -704,6 +722,79 @@ The image should reflect the brand identity and be suitable for social media adv
                 generated_image_base64=generated_image_base64 if not user_asset_url else None  # Keep base64 as backup
             )
             self.db.add(ad_content_obj)
+
+    def _extract_logo_url(self, base_url: str, content: str = "") -> Optional[str]:
+        """Extract logo URL from website by fetching and parsing HTML."""
+        import httpx
+
+        try:
+            # Fetch the homepage HTML
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                response = client.get(base_url)
+                html = response.text
+
+            # Common logo patterns to search for (in order of priority)
+            logo_patterns = [
+                # Open Graph image (often the logo)
+                r'<meta\s+property=["\']og:image["\']\s+content=["\'](https?://[^"\']+)["\']',
+                r'<meta\s+content=["\'](https?://[^"\']+)["\']\s+property=["\']og:image["\']',
+                # Twitter card image
+                r'<meta\s+name=["\']twitter:image["\']\s+content=["\'](https?://[^"\']+)["\']',
+                # Favicon/icon (often company logo)
+                r'<link\s+rel=["\']icon["\']\s+[^>]*href=["\'](https?://[^"\']+)["\']',
+                r'<link\s+rel=["\']shortcut icon["\']\s+[^>]*href=["\'](https?://[^"\']+)["\']',
+                r'<link\s+rel=["\']apple-touch-icon["\']\s+[^>]*href=["\'](https?://[^"\']+)["\']',
+                # Images with logo in class/id/alt
+                r'<img\s+[^>]*class=["\'][^"\']*logo[^"\']*["\']\s+[^>]*src=["\'](https?://[^"\']+)["\']',
+                r'<img\s+[^>]*src=["\'](https?://[^"\']+)["\'][^>]*class=["\'][^"\']*logo[^"\']*["\']',
+                r'<img\s+[^>]*alt=["\'][^"\']*logo[^"\']*["\']\s+[^>]*src=["\'](https?://[^"\']+)["\']',
+                r'<img\s+[^>]*src=["\'](https?://[^"\']+)["\'][^>]*alt=["\'][^"\']*logo[^"\']*["\']',
+                r'<img\s+[^>]*id=["\'][^"\']*logo[^"\']*["\']\s+[^>]*src=["\'](https?://[^"\']+)["\']',
+                # Logo in URL path
+                r'<img\s+[^>]*src=["\'](https?://[^"\']*logo[^"\']*)["\']',
+            ]
+
+            # Also check for relative URLs and convert to absolute
+            relative_patterns = [
+                r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
+                r'<link\s+rel=["\']icon["\']\s+[^>]*href=["\']([^"\']+)["\']',
+                r'<img\s+[^>]*class=["\'][^"\']*logo[^"\']*["\']\s+[^>]*src=["\']([^"\']+)["\']',
+            ]
+
+            # Try absolute URL patterns first
+            for pattern in logo_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    logo_url = match.group(1)
+                    # Validate it's an image URL
+                    if any(ext in logo_url.lower() for ext in ['.png', '.jpg', '.jpeg', '.svg', '.webp', '.gif']):
+                        print(f"[LogoExtract] Found logo via pattern: {logo_url[:100]}")
+                        return logo_url
+
+            # Try relative URL patterns and convert to absolute
+            for pattern in relative_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    logo_path = match.group(1)
+                    if logo_path.startswith('//'):
+                        logo_url = 'https:' + logo_path
+                    elif logo_path.startswith('/'):
+                        logo_url = base_url.rstrip('/') + logo_path
+                    elif not logo_path.startswith('http'):
+                        logo_url = base_url.rstrip('/') + '/' + logo_path
+                    else:
+                        logo_url = logo_path
+
+                    if any(ext in logo_url.lower() for ext in ['.png', '.jpg', '.jpeg', '.svg', '.webp', '.gif']):
+                        print(f"[LogoExtract] Found logo (converted relative): {logo_url[:100]}")
+                        return logo_url
+
+            print(f"[LogoExtract] No logo found for {base_url}")
+            return None
+
+        except Exception as e:
+            print(f"[LogoExtract] Error extracting logo: {e}")
+            return None
 
     def _extract_domain_name(self, url: str) -> str:
         """Extract readable name from URL."""
