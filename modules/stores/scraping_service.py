@@ -138,6 +138,24 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         if images_data.get("images"):
             store_data["extracted_images"] = images_data["images"][:10]  # Limit to 10 images
 
+        # Also fetch raw HTML for better contact extraction (Tavily may miss footer/contact sections)
+        try:
+            print(f"[Contact] Fetching raw HTML for contact extraction...")
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            raw_response = requests.get(base_url, headers=headers, timeout=10)
+            if raw_response.status_code == 200:
+                raw_html = raw_response.text
+                # Extract contact info directly from raw HTML
+                direct_contact = _extract_contact_info_directly(raw_html, domain)
+                if direct_contact.get("email") and not store_data.get("store_email"):
+                    store_data["store_email"] = direct_contact["email"]
+                    print(f"[Contact] Found email from raw HTML: {direct_contact['email']}")
+                if direct_contact.get("phone") and not store_data.get("store_phone"):
+                    store_data["store_phone"] = direct_contact["phone"]
+                    print(f"[Contact] Found phone from raw HTML: {direct_contact['phone']}")
+        except Exception as e:
+            print(f"[Contact] Error fetching raw HTML: {e}")
+
         # Extract FAQs from the scraped content
         print(f"[FAQ] Extracting FAQs from scraped content...")
         faqs = _extract_faqs_with_ai(combined_content, url)
