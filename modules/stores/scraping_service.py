@@ -150,12 +150,14 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
 
             for fetch_url in urls_to_fetch:
                 try:
-                    raw_response = requests.get(fetch_url, headers=headers, timeout=10)
+                    raw_response = requests.get(fetch_url, headers=headers, timeout=10, allow_redirects=True)
                     if raw_response.status_code == 200:
                         all_html += raw_response.text + "\n"
                         print(f"[Contact] Fetched {fetch_url}: {len(raw_response.text)} chars")
-                except:
-                    pass
+                    else:
+                        print(f"[Contact] Failed to fetch {fetch_url}: status {raw_response.status_code}")
+                except Exception as fetch_error:
+                    print(f"[Contact] Error fetching {fetch_url}: {fetch_error}")
 
             if all_html:
                 # Extract contact info directly from raw HTML
@@ -745,13 +747,49 @@ def _extract_contact_info_directly(content: str, domain: str) -> Dict[str, Any]:
     Extract contact info directly from content using regex patterns.
     This is more reliable than AI extraction for structured data.
     """
+    import html
     result = {"email": None, "phone": None}
+
+    # Decode HTML entities in content (e.g., &#64; -> @, &amp; -> &)
+    decoded_content = html.unescape(content)
+
+    # Also handle common email obfuscations
+    decoded_content = re.sub(r'\s*\[at\]\s*', '@', decoded_content, flags=re.IGNORECASE)
+    decoded_content = re.sub(r'\s*\(at\)\s*', '@', decoded_content, flags=re.IGNORECASE)
+    decoded_content = re.sub(r'\s*\[dot\]\s*', '.', decoded_content, flags=re.IGNORECASE)
+    decoded_content = re.sub(r'\s*\(dot\)\s*', '.', decoded_content, flags=re.IGNORECASE)
+    decoded_content = re.sub(r'<span[^>]*>\s*@\s*</span>', '@', decoded_content, flags=re.IGNORECASE)
 
     # Extract emails using regex
     # Look for emails that match the domain first
     domain_base = domain.split('.')[0] if '.' in domain else domain
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    all_emails = re.findall(email_pattern, content)
+
+    # Also try mailto: links which are more reliable
+    mailto_pattern = r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+    mailto_emails = re.findall(mailto_pattern, decoded_content, re.IGNORECASE)
+
+    # Also look for href="mailto:..." patterns
+    href_mailto_pattern = r'href=["\']mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})["\']'
+    href_mailto_emails = re.findall(href_mailto_pattern, decoded_content, re.IGNORECASE)
+
+    all_emails = re.findall(email_pattern, decoded_content)
+
+    # Add mailto emails to the front (higher priority)
+    all_emails = href_mailto_emails + mailto_emails + all_emails
+
+    # Also specifically search for the domain email pattern
+    domain_email_pattern = rf'[a-zA-Z0-9._%+-]+@{re.escape(domain)}'
+    domain_specific_emails = re.findall(domain_email_pattern, decoded_content, re.IGNORECASE)
+    if domain_specific_emails:
+        all_emails = domain_specific_emails + all_emails
+
+    print(f"[Contact] Raw content length: {len(content)}, decoded: {len(decoded_content)}")
+    print(f"[Contact] Domain: {domain}, domain_base: {domain_base}")
+    print(f"[Contact] Mailto emails found: {mailto_emails}")
+    print(f"[Contact] Href mailto emails: {href_mailto_emails}")
+    print(f"[Contact] Domain specific emails: {domain_specific_emails}")
+    print(f"[Contact] All emails found: {list(set(all_emails))[:10]}")
 
     # Filter and prioritize emails
     domain_emails = []
