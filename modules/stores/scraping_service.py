@@ -141,18 +141,33 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         # Also fetch raw HTML for better contact extraction (Tavily may miss footer/contact sections)
         try:
             print(f"[Contact] Fetching raw HTML for contact extraction...")
+            print(f"[Contact] Current email: {store_data.get('store_email')}, phone: {store_data.get('store_phone')}")
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            raw_response = requests.get(base_url, headers=headers, timeout=10)
-            if raw_response.status_code == 200:
-                raw_html = raw_response.text
+
+            # Fetch main page and contact page
+            urls_to_fetch = [base_url, base_url + '/contact', base_url + '/contact-us']
+            all_html = ""
+
+            for fetch_url in urls_to_fetch:
+                try:
+                    raw_response = requests.get(fetch_url, headers=headers, timeout=10)
+                    if raw_response.status_code == 200:
+                        all_html += raw_response.text + "\n"
+                        print(f"[Contact] Fetched {fetch_url}: {len(raw_response.text)} chars")
+                except:
+                    pass
+
+            if all_html:
                 # Extract contact info directly from raw HTML
-                direct_contact = _extract_contact_info_directly(raw_html, domain)
-                if direct_contact.get("email") and not store_data.get("store_email"):
+                direct_contact = _extract_contact_info_directly(all_html, domain)
+                print(f"[Contact] Direct extraction result: email={direct_contact.get('email')}, phone={direct_contact.get('phone')}")
+
+                if direct_contact.get("email"):
                     store_data["store_email"] = direct_contact["email"]
-                    print(f"[Contact] Found email from raw HTML: {direct_contact['email']}")
-                if direct_contact.get("phone") and not store_data.get("store_phone"):
+                    print(f"[Contact] SET email from raw HTML: {direct_contact['email']}")
+                if direct_contact.get("phone"):
                     store_data["store_phone"] = direct_contact["phone"]
-                    print(f"[Contact] Found phone from raw HTML: {direct_contact['phone']}")
+                    print(f"[Contact] SET phone from raw HTML: {direct_contact['phone']}")
         except Exception as e:
             print(f"[Contact] Error fetching raw HTML: {e}")
 
