@@ -483,21 +483,22 @@ Return ONLY valid JSON, no markdown.
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
-        # Get logo from scraped data first, then fall back to store
-        scraped_logo_url = campaign.scraped_data.get("logo_url") if campaign.scraped_data else None
-
         # Get store branding information
         store = campaign.store
-        logo_url_to_use = store.logo_url if store else None
+        store_logo_url = store.logo_url if store else None
         store_color_theme = store.color_theme if store else None
         store_name = store.store_name if store else business_name
         store_description = store.store_description if store else None
         store_business_type = store.business_type if store else None
 
-        # Use scraped logo if available, otherwise use store logo
-        logo_url_to_use = scraped_logo_url or logo_url_to_use
+        # Get logo from scraped data as fallback
+        scraped_logo_url = campaign.scraped_data.get("logo_url") if campaign.scraped_data else None
+
+        # Priority: Store logo (manually set) > Scraped logo
+        logo_url_to_use = store_logo_url or scraped_logo_url
         if logo_url_to_use:
-            logger.info(f"[CampaignService] Using logo URL: {logo_url_to_use[:80]}... (source: {'scraped' if scraped_logo_url else 'store'})")
+            source = 'store' if store_logo_url else 'scraped'
+            logger.info(f"[CampaignService] Using logo URL: {logo_url_to_use[:80]}... (source: {source})")
 
         # Map business type to industry template
         industry_mapping = {
