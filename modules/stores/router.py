@@ -14,6 +14,7 @@ from modules.stores.schemas import (
 )
 from modules.whatsapp.models import FAQ
 from modules.agency.models import Agency
+from modules.assets.models import Asset, AssetType
 import re
 
 store_router = APIRouter(prefix="/api/stores", tags=["stores"])
@@ -299,6 +300,42 @@ async def complete_store_setup(
                     print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
                     # Continue with other FAQs if one fails
 
+        # Create Assets from scraped images
+        extracted_images = session_data.get('extracted_images', [])
+        if extracted_images:
+            print(f"[Assets] Creating {len(extracted_images)} assets for store {db_store.id}")
+            for i, img_data in enumerate(extracted_images):
+                try:
+                    img_url = img_data.get('url') if isinstance(img_data, dict) else img_data
+                    img_alt = img_data.get('alt', '') if isinstance(img_data, dict) else ''
+                    is_logo = img_data.get('is_logo', False) if isinstance(img_data, dict) else False
+
+                    # Generate a name for the asset
+                    if is_logo:
+                        asset_name = f"{db_store.store_name} Logo"
+                    elif img_alt:
+                        asset_name = img_alt[:255]  # Limit to 255 chars
+                    else:
+                        asset_name = f"Scraped Image {i + 1}"
+
+                    asset = Asset(
+                        store_id=db_store.id,
+                        name=asset_name,
+                        cloudinary_url=img_url,
+                        cloudinary_secure_url=img_url if img_url.startswith('https') else None,
+                        file_type=AssetType.IMAGE,
+                        source="scraped",
+                        is_active=True,
+                        is_generated=False,
+                        tags=["scraped", "logo" if is_logo else "website-image"],
+                        description=f"Image scraped from {session_data.get('store_link', 'website')}"
+                    )
+                    db.add(asset)
+                except Exception as asset_err:
+                    print(f"[Assets] Error creating asset {i}: {asset_err}")
+                    # Continue with other assets if one fails
+            print(f"[Assets] Successfully queued {len(extracted_images)} assets for creation")
+
         # Deactivate the setup session
         setup_session.is_active = False
         setup_session.setup_progress = 100
@@ -306,9 +343,9 @@ async def complete_store_setup(
         db.commit()
         db.refresh(db_store)
 
-        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs")
+        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs and {len(extracted_images)} assets")
         return db_store
-        
+
     except HTTPException:
         raise
     except Exception as e:
