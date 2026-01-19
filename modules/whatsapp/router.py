@@ -968,16 +968,28 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
         # REAL-TIME PUSH: Broadcast the new message to the frontend
         if new_message_db:
-            message_response = WhatsAppMessageResponse.model_validate(new_message_db)
-            asyncio.run(manager.broadcast_message(
-                str(whatsapp_account.id),
-                message_response.model_dump()
-            ))
+            try:
+                message_response = WhatsAppMessageResponse.model_validate(new_message_db)
+                # Use thread-safe broadcast - don't block if it fails
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(manager.broadcast_message(
+                        str(whatsapp_account.id),
+                        message_response.model_dump()
+                    ))
+                    loop.close()
+                except Exception as broadcast_err:
+                    logger.warning(f"Broadcast failed (non-critical): {broadcast_err}")
+            except Exception as e:
+                logger.warning(f"Failed to prepare broadcast (non-critical): {e}")
 
         logger.info(f"Incoming message from {from_number_clean}: {message_text}")
+        logger.info(f"Message saved successfully, proceeding to auto-respond check")
 
         # AUTO-RESPOND: If it's a text message, use AI chatbot to respond
         logger.info(f"AUTO-RESPOND CHECK: message_type={message_type}, message_text={bool(message_text)}, access_token={bool(access_token)}")
+        logger.info(f"Access token value (first 20 chars): {access_token[:20] if access_token else 'NONE'}")
         if message_type == "text" and message_text and access_token:
             logger.info("AUTO-RESPOND: Conditions met, starting response generation")
             try:
