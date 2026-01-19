@@ -16,6 +16,9 @@ try:
 except ImportError:
     TAVILY_AVAILABLE = False
 
+import html
+import requests
+
 # Import LangChain components
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -334,21 +337,80 @@ If no information can be extracted, return an empty array: []
             text = re.sub(r'\n?```$', '', text)
         return text.strip()
 
+    def _fetch_raw_html(self, base_url: str) -> str:
+        """
+        Fetch raw HTML directly from the website.
+        This helps capture emails/phones that Tavily might miss.
+        """
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        urls_to_fetch = [
+            base_url,
+            base_url + '/contact',
+            base_url + '/contact-us',
+            base_url + '/about',
+            base_url + '/about-us',
+        ]
+
+        all_html = ""
+        for url in urls_to_fetch:
+            try:
+                response = requests.get(url, headers=headers, timeout=10, allow_redirects=True, verify=True)
+                if response.status_code == 200:
+                    all_html += response.text + "\n"
+                    print(f"[StoreScrapingAgent] Fetched HTML from {url}: {len(response.text)} chars")
+            except Exception as e:
+                print(f"[StoreScrapingAgent] Failed to fetch {url}: {e}")
+
+        return all_html
+
     def _extract_emails_from_content(self, content: str, domain: str) -> List[str]:
         """
         Extract emails directly from content using regex.
         Prioritizes emails from the same domain.
+        Handles HTML entities and common obfuscations.
         """
-        emails = self.EMAIL_PATTERN.findall(content)
-        if not emails:
+        # Decode HTML entities (&#64; -> @, &amp; -> &, etc.)
+        decoded_content = html.unescape(content)
+
+        # Handle common email obfuscations
+        decoded_content = re.sub(r'\s*\[at\]\s*', '@', decoded_content, flags=re.IGNORECASE)
+        decoded_content = re.sub(r'\s*\(at\)\s*', '@', decoded_content, flags=re.IGNORECASE)
+        decoded_content = re.sub(r'\s*\[dot\]\s*', '.', decoded_content, flags=re.IGNORECASE)
+        decoded_content = re.sub(r'\s*\(dot\)\s*', '.', decoded_content, flags=re.IGNORECASE)
+
+        # First, try to extract from mailto: links (most reliable)
+        mailto_pattern = r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        mailto_emails = re.findall(mailto_pattern, decoded_content, re.IGNORECASE)
+
+        # Also look for href="mailto:..." patterns
+        href_mailto_pattern = r'href=["\']mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        href_mailto_emails = re.findall(href_mailto_pattern, decoded_content, re.IGNORECASE)
+
+        # General email pattern
+        emails = self.EMAIL_PATTERN.findall(decoded_content)
+
+        # Also specifically search for domain emails
+        domain_email_pattern = rf'[a-zA-Z0-9._%+-]+@{re.escape(domain)}'
+        domain_specific_emails = re.findall(domain_email_pattern, decoded_content, re.IGNORECASE)
+
+        # Combine all sources (mailto has priority)
+        all_emails = href_mailto_emails + mailto_emails + domain_specific_emails + emails
+
+        print(f"[StoreScrapingAgent] Email extraction - mailto: {mailto_emails}, href_mailto: {href_mailto_emails}, domain: {domain_specific_emails}, general: {emails[:5]}")
+
+        if not all_emails:
             return []
 
         # Filter out common non-business emails
         excluded_patterns = ['example.com', 'test.com', 'email.com', 'domain.com',
                             'yourcompany', 'yourdomain', 'company.com', 'noreply',
-                            'no-reply', 'donotreply', 'wix.com', 'wordpress']
+                            'no-reply', 'donotreply', 'wix.com', 'wordpress',
+                            'sentry.io', 'gravatar.com', 'w3.org']
         filtered_emails = [
-            e for e in emails
+            e for e in all_emails
             if not any(ex in e.lower() for ex in excluded_patterns)
         ]
 
@@ -372,34 +434,76 @@ If no information can be extracted, return an empty array: []
 
         filtered_emails = list(set(filtered_emails))  # Remove duplicates
         filtered_emails.sort(key=email_priority)
+        print(f"[StoreScrapingAgent] Filtered emails (sorted): {filtered_emails[:5]}")
         return filtered_emails[:5]  # Return top 5
 
     def _extract_phones_from_content(self, content: str) -> List[str]:
         """
         Extract phone numbers directly from content using regex patterns.
         Returns cleaned and deduplicated phone numbers.
+        Handles Zimbabwe phone formats specifically.
         """
+        # Decode HTML entities first
+        decoded_content = html.unescape(content)
+
         phones = []
-        for pattern in self.PHONE_PATTERNS:
-            matches = pattern.findall(content)
+
+        # Zimbabwe-specific patterns (highest priority)
+        zim_patterns = [
+            # +263-242-746620 or +263 242 746620
+            re.compile(r'\+263[\s\-\.]*\d{2,3}[\s\-\.]*\d{3}[\s\-\.]*\d{3,4}'),
+            # +263 (4) 758711 format
+            re.compile(r'\+263[\s\-\.]*\(\d+\)[\s\-\.]*\d{6,}'),
+            # 0242-746620 or 024 2746620
+            re.compile(r'0\d{2,3}[\s\-\.]*\d{3}[\s\-\.]*\d{3,4}'),
+        ]
+
+        # First try Zimbabwe patterns
+        for pattern in zim_patterns:
+            matches = pattern.findall(decoded_content)
             for match in matches:
-                # Clean the phone number
+                phone = str(match).strip()
+                if phone and len(re.sub(r'[^\d]', '', phone)) >= 9:
+                    phones.append(phone)
+
+        # Then try general patterns
+        for pattern in self.PHONE_PATTERNS:
+            matches = pattern.findall(decoded_content)
+            for match in matches:
                 if isinstance(match, tuple):
                     match = match[0] if match else ''
-                phone = re.sub(r'[^\d+\-\s()]', '', str(match)).strip()
-                if len(phone) >= 7:  # Minimum valid phone length
+                phone = str(match).strip()
+                # Only accept if it looks like a real phone (has enough digits)
+                digits = re.sub(r'[^\d]', '', phone)
+                if len(digits) >= 9 and len(digits) <= 15:
                     phones.append(phone)
+
+        # Also extract from tel: links
+        tel_pattern = r'tel:([+\d\s\-().]{7,20})'
+        tel_matches = re.findall(tel_pattern, decoded_content, re.IGNORECASE)
+        for match in tel_matches:
+            phone = match.strip()
+            if phone:
+                phones.append(phone)
+
+        print(f"[StoreScrapingAgent] Raw phones found: {phones[:10]}")
 
         # Deduplicate while preserving order
         seen = set()
         unique_phones = []
         for phone in phones:
             # Normalize for comparison (remove spaces/dashes)
-            normalized = re.sub(r'[\s\-()]', '', phone)
-            if normalized not in seen and len(normalized) >= 7:
-                seen.add(normalized)
-                unique_phones.append(phone)
+            normalized = re.sub(r'[\s\-().+]', '', phone)
+            # Skip fake patterns
+            if normalized in ['1234567890', '12345678901', '0000000000'] or len(set(normalized)) <= 2:
+                continue
+            # Skip if too short or already seen
+            if len(normalized) < 9 or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_phones.append(phone)
 
+        print(f"[StoreScrapingAgent] Filtered phones: {unique_phones[:5]}")
         return unique_phones[:5]  # Return top 5
 
     def _extract_logo_url_robust(self, images: List[Any], domain: str, content: str) -> Optional[str]:
@@ -482,10 +586,20 @@ If no information can be extracted, return an empty array: []
         content = scraped_data.get("content", "")
         images = scraped_data.get("images", [])
 
-        # Step 2: DIRECT EXTRACTION - Extract emails and phones using regex (reliable)
-        logger.info("[StoreScrapingAgent] Extracting contact info directly from content...")
-        direct_emails = self._extract_emails_from_content(content, domain)
-        direct_phones = self._extract_phones_from_content(content)
+        # Step 2: Fetch raw HTML for better contact extraction
+        base_url = url.rstrip('/')
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+        raw_html = self._fetch_raw_html(base_url)
+
+        # Combine Tavily content with raw HTML for contact extraction
+        combined_content = content + "\n" + raw_html
+        print(f"[StoreScrapingAgent] Combined content length: {len(combined_content)} (Tavily: {len(content)}, HTML: {len(raw_html)})")
+
+        # Step 3: DIRECT EXTRACTION - Extract emails and phones using regex (reliable)
+        logger.info("[StoreScrapingAgent] Extracting contact info directly from combined content...")
+        direct_emails = self._extract_emails_from_content(combined_content, domain)
+        direct_phones = self._extract_phones_from_content(combined_content)
 
         logger.info(f"[StoreScrapingAgent] Direct extraction found: {len(direct_emails)} emails, {len(direct_phones)} phones")
         if direct_emails:
