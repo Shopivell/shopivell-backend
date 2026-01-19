@@ -755,12 +755,19 @@ async def create_store(
                 detail="Owner not found"
             )
 
+        # Sanitize phone: keep only first number if comma-separated, limit to 50 chars
+        phone = store_data.store_phone
+        if phone:
+            if ',' in phone:
+                phone = phone.split(',')[0].strip()
+            phone = phone[:50] if len(phone) > 50 else phone
+
         # Create the store
         db_store = Store(
             owner_id=store_data.owner_id,
             agency_id=store_data.agency_id,
             store_name=store_data.store_name,
-            store_phone=store_data.store_phone,
+            store_phone=phone,
             store_email=store_data.store_email,
             store_link=store_data.store_link,
             color_theme=store_data.color_theme,
