@@ -14,6 +14,8 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
+import phonenumbers
+from phonenumbers import PhoneNumberMatcher, PhoneNumberFormat
 
 load_dotenv()
 
@@ -823,54 +825,68 @@ def _extract_contact_info_directly(content: str, domain: str) -> Dict[str, Any]:
 
     print(f"[Contact] Found emails: domain={domain_emails}, contact={contact_emails}, other={other_emails[:3]}")
 
-    # Extract phone numbers using multiple patterns
-    # Pattern for international numbers (with country code)
-    phone_patterns = [
-        # International format with + (e.g., +263 242 758 711, +1 234 567 8901)
-        r'\+\d{1,3}[\s\-\.]?\d{2,4}[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
-        # International format with + and parentheses (e.g., +263 (4) 758711)
-        r'\+\d{1,3}[\s\-\.]?\(\d+\)[\s\-\.]?\d{3,}[\s\-\.]?\d*',
-        # Local format with area code in parentheses (e.g., (024) 2758 711)
-        r'\(\d{2,4}\)[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
-        # Plain numbers with separators (e.g., 024-2758-711)
-        r'\b\d{3,4}[\s\-\.]\d{3,4}[\s\-\.]\d{3,4}\b',
-        # Plain continuous numbers (7+ digits, likely phone)
-        r'\b0\d{8,11}\b',
-    ]
-
+    # Extract phone numbers using phonenumbers library (Google's libphonenumber)
+    # This handles international formats automatically
     all_phones = []
-    for pattern in phone_patterns:
-        matches = re.findall(pattern, content)
-        all_phones.extend(matches)
-
-    # Clean and deduplicate phones
-    cleaned_phones = []
     seen_digits = set()
 
-    for phone in all_phones:
-        # Get just the digits for comparison
-        digits = re.sub(r'[^\d]', '', phone)
+    # Try common regions - prioritize based on domain hints
+    regions_to_try = ['ZW', 'ZA', 'US', 'GB', 'AU', None]  # None = no region hint
 
-        # Skip too short or too long numbers
-        if len(digits) < 7 or len(digits) > 15:
-            continue
+    # Check if domain suggests a specific country
+    if '.zw' in domain.lower():
+        regions_to_try = ['ZW'] + [r for r in regions_to_try if r != 'ZW']
+    elif '.za' in domain.lower():
+        regions_to_try = ['ZA'] + [r for r in regions_to_try if r != 'ZA']
+    elif '.co.uk' in domain.lower() or '.uk' in domain.lower():
+        regions_to_try = ['GB'] + [r for r in regions_to_try if r != 'GB']
 
-        # Skip obvious fake patterns
-        if digits in ['1234567890', '12345678901', '0000000000'] or len(set(digits)) <= 2:
-            continue
+    print(f"[Contact] Using phonenumbers library with regions: {regions_to_try[:3]}")
 
-        # Skip duplicates (based on last 7 digits)
-        last7 = digits[-7:]
-        if last7 in seen_digits:
-            continue
-        seen_digits.add(last7)
+    for region in regions_to_try:
+        try:
+            for match in PhoneNumberMatcher(decoded_content, region):
+                phone_obj = match.number
+                # Format as international
+                formatted = phonenumbers.format_number(phone_obj, PhoneNumberFormat.INTERNATIONAL)
 
-        cleaned_phones.append(phone.strip())
+                # Get digits for deduplication
+                digits = re.sub(r'[^\d]', '', formatted)
+                last7 = digits[-7:]
 
-    if cleaned_phones:
-        result["phone"] = cleaned_phones[0]
+                if last7 not in seen_digits:
+                    seen_digits.add(last7)
+                    all_phones.append(formatted)
+                    print(f"[Contact] phonenumbers found: {formatted} (region: {region})")
+        except Exception as e:
+            print(f"[Contact] phonenumbers error for region {region}: {e}")
 
-    print(f"[Contact] Found phones: {cleaned_phones[:5]}")
+    # Fallback to regex if phonenumbers found nothing
+    if not all_phones:
+        print("[Contact] phonenumbers found nothing, falling back to regex")
+        phone_patterns = [
+            r'\+\d{1,3}[\s\-\.]\d{2,4}[\s\-\.]\d{5,7}',
+            r'\+\d{1,3}[\s\-\.]?\d{2,4}[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
+            r'\+\d{1,3}[\s\-\.]?\(\d+\)[\s\-\.]?\d{3,}[\s\-\.]?\d*',
+            r'\(\d{2,4}\)[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
+            r'\b\d{3,4}[\s\-\.]\d{3,4}[\s\-\.]\d{3,4}\b',
+            r'\b0\d{8,11}\b',
+        ]
+
+        for pattern in phone_patterns:
+            matches = re.findall(pattern, content)
+            for phone in matches:
+                digits = re.sub(r'[^\d]', '', phone)
+                if len(digits) >= 7 and len(digits) <= 15:
+                    last7 = digits[-7:]
+                    if last7 not in seen_digits and len(set(digits)) > 2:
+                        seen_digits.add(last7)
+                        all_phones.append(phone.strip())
+
+    if all_phones:
+        result["phone"] = all_phones[0]
+
+    print(f"[Contact] Found phones: {all_phones[:5]}")
 
     return result
 
@@ -931,6 +947,20 @@ def _validate_contact_info(store_data: Dict[str, Any], original_content: str) ->
         elif phone_cleaned in ["12345678901", "1234567890"] or len(set(phone_cleaned.replace("+", ""))) <= 2:
             print(f"[Validation] Rejected suspicious phone pattern: {phone}")
             store_data["store_phone"] = direct_contact["phone"]
+
+    # Sanitize phone: if multiple phones (comma-separated), keep only the first one
+    # Also ensure it doesn't exceed database limit (50 chars)
+    final_phone = store_data.get("store_phone")
+    if final_phone:
+        # Split by comma and take only the first phone
+        if ',' in final_phone:
+            final_phone = final_phone.split(',')[0].strip()
+            print(f"[Validation] Multiple phones detected, using first: {final_phone}")
+        # Truncate if still too long (max 50 chars for DB)
+        if len(final_phone) > 50:
+            final_phone = final_phone[:50]
+            print(f"[Validation] Phone truncated to 50 chars: {final_phone}")
+        store_data["store_phone"] = final_phone
 
     return store_data
 
