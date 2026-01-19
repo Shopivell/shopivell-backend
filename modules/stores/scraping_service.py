@@ -767,6 +767,7 @@ def _extract_faqs_with_ai(content: str, url: str) -> List[Dict[str, str]]:
     """
     Use OpenAI to extract FAQ information from website content.
     Returns a list of {question, answer, category} dicts.
+    Enhanced to extract comprehensive business information.
     """
     client = OpenAI(api_key=openai_api_key)
 
@@ -776,39 +777,65 @@ def _extract_faqs_with_ai(content: str, url: str) -> List[Dict[str, str]]:
 
     domain = url.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
 
-    prompt = f"""You are an expert at extracting FAQ information from website content.
+    prompt = f"""You are an expert at extracting FAQ and business information from website content.
 
-TASK: Analyze this website content and extract any FAQ (Frequently Asked Questions) information.
+TASK: Analyze this website content and create helpful FAQs that customers would want to know.
 
 Website URL: {url}
 Domain: {domain}
 
-Look for:
-1. Explicit FAQ sections (Q&A format)
-2. "How it works" sections that answer common questions
-3. Shipping, returns, refund policies
-4. Pricing information and payment options
-5. Contact hours and availability
-6. Product/service specifications that answer common questions
-7. Any "About" section content that answers "who are you" type questions
+EXTRACT INFORMATION FOR THESE FAQ CATEGORIES:
+
+1. **COMPANY INFO** (PRIORITY - Always extract if available):
+   - "Who founded [Company]?" / "When was [Company] founded?"
+   - "What does [Company] do?" / "What services does [Company] offer?"
+   - "What is [Company]'s mission?"
+   - Look for: founder names, CEO, year established, company history, mission statements
+
+2. **LOCATION & CONTACT**:
+   - "Where is [Company] located?"
+   - "What are [Company]'s business hours?"
+   - "How can I contact [Company]?"
+   - Look for: physical addresses, office locations, operating hours, contact numbers, email
+
+3. **PRODUCTS & SERVICES**:
+   - "What products/services does [Company] offer?"
+   - "How does [Product/Service] work?"
+   - "What makes [Company] different?"
+   - Look for: product descriptions, service offerings, unique selling points
+
+4. **POLICIES & PROCEDURES**:
+   - Shipping and delivery information
+   - Returns and refunds
+   - Payment methods accepted
+   - Warranty information
+
+5. **TECHNICAL/SPECIFIC INFO**:
+   - Product specifications
+   - Service accuracy/reliability stats
+   - Certifications or credentials
+   - Any numerical claims or statistics
 
 WEBSITE CONTENT:
 {content}
 
 IMPORTANT RULES:
-- Extract ONLY information that ACTUALLY appears in the content
-- Create 5-10 FAQs based on available information
-- If content is limited, extract fewer FAQs (minimum 3)
-- Each FAQ should be practical and helpful for customers
-- Categorize each FAQ: shipping, returns, pricing, general, products, services, hours, contact, payment
+- Extract ONLY information that ACTUALLY appears in the content above
+- PRIORITIZE company identity info: name, founder/CEO, founding year, location, hours
+- Create 8-15 FAQs covering as many categories as possible
+- Make questions natural - how a customer would actually ask
+- Answers should be complete but concise (1-3 sentences)
+- Use the actual company/brand name in questions when known
+- Categories: company, location, hours, contact, products, services, shipping, returns, pricing, payment, general
 
 Return ONLY valid JSON array in this format:
 [
-  {{"question": "...", "answer": "...", "category": "..."}},
-  {{"question": "...", "answer": "...", "category": "..."}}
+  {{"question": "When was [Company] founded?", "answer": "[Company] was founded in [year] by [founder].", "category": "company"}},
+  {{"question": "Where is [Company] located?", "answer": "[Company] is located at [address].", "category": "location"}},
+  {{"question": "What are [Company]'s business hours?", "answer": "[Company] is open [hours].", "category": "hours"}}
 ]
 
-If no FAQ information can be extracted, return an empty array: []
+If no information can be extracted, return an empty array: []
 """
 
     try:
