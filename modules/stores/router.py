@@ -958,17 +958,22 @@ async def update_store(
 async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
     try:
         db_store = db.query(Store).filter(Store.id == store_id).first()
-        
+
         if not db_store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Store not found"
             )
-        
+
+        # Delete related FAQs first (they have store_id foreign key)
+        from modules.whatsapp.models import FAQ
+        db.query(FAQ).filter(FAQ.store_id == store_id).delete(synchronize_session=False)
+
+        # Delete the store
         db.delete(db_store)
         db.commit()
         return None
-        
+
     except HTTPException:
         raise
     except Exception as e:
