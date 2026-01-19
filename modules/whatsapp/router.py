@@ -2817,3 +2817,83 @@ def get_routing_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get routing stats: {str(e)}"
         )
+
+
+# Debug endpoint to test auto-respond logic
+@whatsapp_router.post("/debug/test-autorespond")
+def debug_test_autorespond(
+    phone_number: str = Query(..., description="Customer phone number"),
+    message: str = Query(..., description="Test message to respond to"),
+    db: Session = Depends(get_db)
+):
+    """
+    Debug endpoint to test the auto-respond logic synchronously.
+    This helps diagnose why auto-respond might not be working.
+    """
+    import traceback
+
+    try:
+        # Find the WhatsApp account
+        whatsapp_account = db.query(WhatsAppAccount).filter(
+            WhatsAppAccount.phone_number_id == "826950020512691"
+        ).first()
+
+        if not whatsapp_account:
+            return {"error": "WhatsApp account not found"}
+
+        # Get access token
+        access_token = whatsapp_account.permanent_access_token
+        if not access_token:
+            business_account = whatsapp_account.business_account
+            if business_account:
+                access_token = business_account.access_token
+
+        if not access_token:
+            return {"error": "No access token available", "permanent_token": whatsapp_account.permanent_access_token is not None}
+
+        # Initialize store router
+        router = StoreRouter(whatsapp_account_id=whatsapp_account.id, db=db)
+
+        # Route the message
+        store_id, routing_method, conversation = router.route_message(
+            phone_number=phone_number,
+            message_data={"type": "text", "text": {"body": message}}
+        )
+
+        if not store_id:
+            return {
+                "error": "No store routed",
+                "routing_method": routing_method,
+                "conversation_status": conversation.routing_status if conversation else None
+            }
+
+        # Create the bot
+        bot = MultiTenantSalesBot(store_id=store_id, db=db)
+
+        # Generate response
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            ai_response = loop.run_until_complete(
+                bot.generate_response(
+                    user_message=message,
+                    phone_number=phone_number,
+                    whatsapp_account_id=whatsapp_account.id
+                )
+            )
+        finally:
+            loop.close()
+
+        return {
+            "success": True,
+            "store_id": str(store_id),
+            "routing_method": routing_method,
+            "ai_response": ai_response,
+            "access_token_set": True
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
