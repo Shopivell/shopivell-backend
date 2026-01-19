@@ -65,11 +65,14 @@ class StoreScrapingAgent:
     def __init__(self):
         # Initialize Tavily client
         tavily_api_key = os.getenv("TAVILY_API_KEY")
+        print(f"[StoreScrapingAgent] Initializing... TAVILY_AVAILABLE={TAVILY_AVAILABLE}, API_KEY={'SET' if tavily_api_key else 'NOT SET'}")
         if tavily_api_key and TAVILY_AVAILABLE:
             self.tavily = TavilyClient(api_key=tavily_api_key)
+            print("[StoreScrapingAgent] Tavily client initialized successfully")
             logger.info("[StoreScrapingAgent] Tavily client initialized")
         else:
             self.tavily = None
+            print(f"[StoreScrapingAgent] WARNING: Tavily not available! TAVILY_AVAILABLE={TAVILY_AVAILABLE}, API_KEY={'SET' if tavily_api_key else 'NOT SET'}")
             logger.warning("[StoreScrapingAgent] Tavily not available - scraping will be limited")
 
         # Initialize LLM via OpenRouter or OpenAI
@@ -213,7 +216,11 @@ If no information can be extracted, return an empty array: []
         Scrape website content using Tavily - extracts from multiple pages.
         Similar to campaign service scraping.
         """
+        print(f"[StoreScrapingAgent] _scrape_website called for: {url}")
+        print(f"[StoreScrapingAgent] Tavily client available: {self.tavily is not None}")
+
         if not self.tavily:
+            print("[StoreScrapingAgent] ERROR: Tavily not available, returning empty content")
             logger.warning("[StoreScrapingAgent] Tavily not available")
             return {"content": "", "pages_extracted": 0}
 
@@ -245,8 +252,10 @@ If no information can be extracted, return an empty array: []
 
             # Extract from multiple pages
             try:
+                print(f"[StoreScrapingAgent] Calling Tavily extract for {len(urls_to_extract)} URLs...")
                 logger.info(f"[StoreScrapingAgent] Attempting to extract from {len(urls_to_extract)} URLs...")
                 extract_result = self.tavily.extract(urls=urls_to_extract, include_images=True)
+                print(f"[StoreScrapingAgent] Tavily extract returned: {len(extract_result.get('results', [])) if extract_result else 0} results")
 
                 if extract_result and extract_result.get("results"):
                     for result in extract_result["results"]:
@@ -261,12 +270,17 @@ If no information can be extracted, return an empty array: []
                         if images:
                             all_images.extend(images)
 
+                    print(f"[StoreScrapingAgent] Successfully extracted {len(extracted_pages)} pages with content")
                     logger.info(f"[StoreScrapingAgent] Successfully extracted {len(extracted_pages)} pages")
+                else:
+                    print(f"[StoreScrapingAgent] Tavily extract returned no results!")
             except Exception as e:
+                print(f"[StoreScrapingAgent] Extraction error: {e}")
                 logger.error(f"[StoreScrapingAgent] Extraction error: {e}")
 
             # Also do a search for more context, especially contact info
             try:
+                print(f"[StoreScrapingAgent] Starting Tavily search for {domain}...")
                 logger.info(f"[StoreScrapingAgent] Searching for {domain} information...")
                 search_queries = [
                     f"site:{domain} contact email phone address",
@@ -290,11 +304,14 @@ If no information can be extracted, return an empty array: []
                             all_content.append(f"=== SEARCH: {result_url} ===\n{content}")
                             extracted_pages.append(result_url)
 
+                print(f"[StoreScrapingAgent] Search complete, total sources: {len(all_content)}")
                 logger.info(f"[StoreScrapingAgent] Search complete, total sources: {len(all_content)}")
             except Exception as e:
+                print(f"[StoreScrapingAgent] Search error: {e}")
                 logger.error(f"[StoreScrapingAgent] Search error: {e}")
 
             combined_content = "\n\n".join(all_content)
+            print(f"[StoreScrapingAgent] Final content length: {len(combined_content)} chars, {len(all_content)} sources, {len(all_images)} images")
 
             return {
                 "url": url,
@@ -306,6 +323,7 @@ If no information can be extracted, return an empty array: []
             }
 
         except Exception as e:
+            print(f"[StoreScrapingAgent] FATAL Scraping error: {e}")
             logger.error(f"[StoreScrapingAgent] Scraping error: {e}")
             return {"content": "", "pages_extracted": 0, "images": []}
 
