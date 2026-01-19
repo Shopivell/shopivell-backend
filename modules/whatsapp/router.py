@@ -1096,21 +1096,41 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                 )
                 logger.info(f"AUTO-RESPOND: Bot created, generating response")
 
-                # Run the bot asynchronously
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                # Run the bot - handle async properly
+                logger.info(f"AUTO-RESPOND: Running generate_response")
                 try:
-                    logger.info(f"AUTO-RESPOND: Running async generate_response")
-                    ai_response = loop.run_until_complete(
-                        bot.generate_response(
-                            user_message=message_text,
-                            phone_number=from_number_clean,
-                            whatsapp_account_id=whatsapp_account.id
+                    # Try to get existing event loop, or create new one
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # If we're already in an async context, use run_coroutine_threadsafe
+                        import concurrent.futures
+                        future = asyncio.run_coroutine_threadsafe(
+                            bot.generate_response(
+                                user_message=message_text,
+                                phone_number=from_number_clean,
+                                whatsapp_account_id=whatsapp_account.id
+                            ),
+                            loop
                         )
-                    )
+                        ai_response = future.result(timeout=60)
+                    except RuntimeError:
+                        # No running loop, create a new one
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            ai_response = loop.run_until_complete(
+                                bot.generate_response(
+                                    user_message=message_text,
+                                    phone_number=from_number_clean,
+                                    whatsapp_account_id=whatsapp_account.id
+                                )
+                            )
+                        finally:
+                            loop.close()
                     logger.info(f"AUTO-RESPOND: Got response: {ai_response[:50] if ai_response else 'None'}...")
-                finally:
-                    loop.close()
+                except Exception as loop_error:
+                    logger.error(f"AUTO-RESPOND: Event loop error: {str(loop_error)}")
+                    raise
 
                 # NO HALLUCINATION POLICY: If bot returns None, stay silent
                 if ai_response is None:
