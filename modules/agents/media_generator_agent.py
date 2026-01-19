@@ -1773,7 +1773,9 @@ STYLE REQUIREMENTS:
         product_name: str,
         product_description: str,
         include_text: Optional[str] = None,
-        target_audience: Optional[str] = None
+        target_audience: Optional[str] = None,
+        brand_colors: Optional[str] = None,
+        include_logo: bool = False
     ) -> str:
         """Generate a Meta-compliant image prompt for a specific industry.
 
@@ -1783,6 +1785,8 @@ STYLE REQUIREMENTS:
             product_description: Description of the product/service
             include_text: Optional text to render in the image (uses Nano Banana Pro)
             target_audience: Optional audience segment for audience-specific imagery
+            brand_colors: Optional brand color theme to use instead of template colors
+            include_logo: Whether to include brand logo in the design
 
         Returns:
             Complete image generation prompt
@@ -1841,7 +1845,11 @@ STYLE REQUIREMENTS:
         background = random.choice(backgrounds)
         subject = random.choice(subjects)
         prop = random.choice(props) if props else None
-        color_scheme = random.choice(template.get("color_schemes", ["professional colors"]))
+        # Use brand colors if provided, otherwise use template colors
+        if brand_colors:
+            color_scheme = f"{brand_colors} (brand colors)"
+        else:
+            color_scheme = random.choice(template.get("color_schemes", ["professional colors"]))
         mood = template.get("mood", "professional")
         avoid_items = template.get("avoid", [])
 
@@ -1854,6 +1862,10 @@ STYLE REQUIREMENTS:
 
         if prop:
             prompt_parts.append(f"Accent prop: {prop}.")
+
+        # Add logo instruction if requested
+        if include_logo:
+            prompt_parts.append(f"Include the {product_name} brand logo prominently in the design - render it clearly and professionally.")
 
         prompt_parts.extend([
             f"Color scheme: {color_scheme}.",
@@ -1880,7 +1892,10 @@ STYLE REQUIREMENTS:
         product_name: str,
         product_description: str,
         headline_text: Optional[str] = None,
-        aspect_ratio: str = "1:1"
+        aspect_ratio: str = "1:1",
+        brand_colors: Optional[str] = None,
+        logo_url: Optional[str] = None,
+        target_audience: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate a Meta-compliant ad image for a specific industry.
 
@@ -1892,6 +1907,9 @@ STYLE REQUIREMENTS:
             product_description: Description of the product/service
             headline_text: Optional headline to render in the image
             aspect_ratio: Image aspect ratio
+            brand_colors: Optional brand color theme (e.g., "#1E3A5F navy blue")
+            logo_url: Optional URL to brand logo (for reference in prompt)
+            target_audience: Optional audience segment for audience-specific imagery
 
         Returns:
             Generated image result
@@ -1900,7 +1918,10 @@ STYLE REQUIREMENTS:
             industry=industry,
             product_name=product_name,
             product_description=product_description,
-            include_text=headline_text
+            include_text=headline_text,
+            target_audience=target_audience,
+            brand_colors=brand_colors,
+            include_logo=logo_url is not None
         )
 
         return await self.generate_image(

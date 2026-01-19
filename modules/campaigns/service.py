@@ -626,13 +626,17 @@ Return ONLY valid JSON, no markdown.
                         if detected_industry:
                             # Generate industry-compliant ad image (Meta-safe templates)
                             print(f"[MediaGenerator] Using industry template: {detected_industry}")
+                            print(f"[MediaGenerator] Brand colors: {store_color_theme}, Has logo: {bool(store_logo_url)}")
                             result = loop.run_until_complete(
                                 self.media_generator.generate_industry_ad_image(
                                     industry=detected_industry,
                                     product_name=brand_name,
                                     product_description=primary_text or description or store_description or f"{brand_name} services",
                                     headline_text=agent_headline or headline,
-                                    aspect_ratio="1:1"
+                                    aspect_ratio="1:1",
+                                    brand_colors=store_color_theme,
+                                    logo_url=store_logo_url,
+                                    target_audience=ad_set_data.get("name", "")
                                 )
                             )
                         else:
