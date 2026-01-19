@@ -598,6 +598,9 @@ async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
                     # Save FAQs to session for later insertion
                     current_data["scraped_faqs"] = store_data.get("faqs", [])
 
+                    # Save extracted images for asset creation
+                    current_data["extracted_images"] = store_data.get("extracted_images", [])
+
                     # Assign new dict to ensure SQLAlchemy detects the change
                     session.session_data = current_data
                     flag_modified(session, "session_data")
@@ -731,10 +734,44 @@ async def create_store(
                     print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
                     # Continue with other FAQs if one fails
 
+        # Create Assets from scraped images
+        extracted_images = store_data.extracted_images or []
+        if extracted_images:
+            print(f"[Assets] Creating {len(extracted_images)} assets for store {db_store.id}")
+            for i, img_data in enumerate(extracted_images):
+                try:
+                    img_url = img_data.get('url') if isinstance(img_data, dict) else img_data
+                    img_alt = img_data.get('alt', '') if isinstance(img_data, dict) else ''
+                    is_logo = img_data.get('is_logo', False) if isinstance(img_data, dict) else False
+
+                    # Generate a name for the asset
+                    if is_logo:
+                        asset_name = f"{db_store.store_name} Logo"
+                    elif img_alt:
+                        asset_name = img_alt[:255]
+                    else:
+                        asset_name = f"Scraped Image {i + 1}"
+
+                    asset = Asset(
+                        store_id=db_store.id,
+                        name=asset_name,
+                        cloudinary_url=img_url,
+                        cloudinary_secure_url=img_url if img_url.startswith('https') else None,
+                        file_type=AssetType.IMAGE,
+                        source="scraped",
+                        is_active=True,
+                        is_generated=False,
+                        tags=["scraped", "logo" if is_logo else "website-image"],
+                        description=f"Image scraped from {store_data.store_link or 'website'}"
+                    )
+                    db.add(asset)
+                except Exception as asset_err:
+                    print(f"[Assets] Error creating asset {i}: {asset_err}")
+
         db.commit()
         db.refresh(db_store)
 
-        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs")
+        print(f"[Store] Created store {db_store.id} with {len(scraped_faqs)} FAQs and {len(extracted_images)} assets")
         return db_store
 
     except HTTPException:
