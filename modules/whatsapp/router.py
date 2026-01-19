@@ -833,9 +833,8 @@ async def whatsapp_webhook_receive(
         payload = await request.json()
         logger.info(f"Received webhook payload: {json.dumps(payload, indent=2)}")
 
-        # Process webhook SYNCHRONOUSLY to ensure auto-respond works
-        # (Background task was causing issues with database session management)
-        process_webhook_payload(payload)
+        # Process webhook in background
+        background_tasks.add_task(process_webhook_payload, payload)
 
         return {"status": "ok"}
 
@@ -843,7 +842,6 @@ async def whatsapp_webhook_receive(
         logger.error(f"Error processing webhook: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        # Return OK to avoid Meta retrying the webhook
         return {"status": "ok"}
 
 def process_webhook_payload(payload: Dict[str, Any]):
@@ -957,7 +955,9 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         logger.info(f"Incoming message from {from_number_clean}: {message_text}")
 
         # AUTO-RESPOND: If it's a text message, use AI chatbot to respond
+        logger.info(f"AUTO-RESPOND CHECK: message_type={message_type}, message_text={bool(message_text)}, access_token={bool(access_token)}")
         if message_type == "text" and message_text and access_token:
+            logger.info("AUTO-RESPOND: Conditions met, starting response generation")
             try:
                 # === MULTI-STORE ROUTING ===
                 store_id, routing_method, conversation = router.route_message(
@@ -1077,15 +1077,18 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
                 # === GENERATE AI RESPONSE ===
                 # Use MultiTenantSalesBot with store-specific configuration
+                logger.info(f"AUTO-RESPOND: Creating bot for store {store_id}")
                 bot = MultiTenantSalesBot(
                     store_id=store_id,
                     db=db
                 )
+                logger.info(f"AUTO-RESPOND: Bot created, generating response")
 
                 # Run the bot asynchronously
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
+                    logger.info(f"AUTO-RESPOND: Running async generate_response")
                     ai_response = loop.run_until_complete(
                         bot.generate_response(
                             user_message=message_text,
@@ -1093,6 +1096,7 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                             whatsapp_account_id=whatsapp_account.id
                         )
                     )
+                    logger.info(f"AUTO-RESPOND: Got response: {ai_response[:50] if ai_response else 'None'}...")
                 finally:
                     loop.close()
 
