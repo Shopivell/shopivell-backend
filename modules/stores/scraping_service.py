@@ -707,11 +707,126 @@ JSON FORMAT:
         return _generate_fallback_data(url)
 
 
+def _extract_contact_info_directly(content: str, domain: str) -> Dict[str, Any]:
+    """
+    Extract contact info directly from content using regex patterns.
+    This is more reliable than AI extraction for structured data.
+    """
+    result = {"email": None, "phone": None}
+
+    # Extract emails using regex
+    # Look for emails that match the domain first
+    domain_base = domain.split('.')[0] if '.' in domain else domain
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    all_emails = re.findall(email_pattern, content)
+
+    # Filter and prioritize emails
+    domain_emails = []
+    contact_emails = []
+    other_emails = []
+
+    # Emails to skip (common generic/fake ones)
+    skip_emails = {
+        'example@example.com', 'test@test.com', 'user@example.com',
+        'contact@gmail.com', 'info@gmail.com', 'noreply@'
+    }
+
+    for email in all_emails:
+        email_lower = email.lower()
+        if any(skip in email_lower for skip in skip_emails):
+            continue
+        if domain_base.lower() in email_lower:
+            domain_emails.append(email)
+        elif any(prefix in email_lower for prefix in ['info@', 'contact@', 'hello@', 'support@', 'enquiries@', 'sales@', 'help@']):
+            contact_emails.append(email)
+        else:
+            other_emails.append(email)
+
+    # Prioritize: domain emails > contact emails > other emails
+    if domain_emails:
+        result["email"] = domain_emails[0]
+    elif contact_emails:
+        result["email"] = contact_emails[0]
+    elif other_emails:
+        result["email"] = other_emails[0]
+
+    print(f"[Contact] Found emails: domain={domain_emails}, contact={contact_emails}, other={other_emails[:3]}")
+
+    # Extract phone numbers using multiple patterns
+    # Pattern for international numbers (with country code)
+    phone_patterns = [
+        # International format with + (e.g., +263 242 758 711, +1 234 567 8901)
+        r'\+\d{1,3}[\s\-\.]?\d{2,4}[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
+        # International format with + and parentheses (e.g., +263 (4) 758711)
+        r'\+\d{1,3}[\s\-\.]?\(\d+\)[\s\-\.]?\d{3,}[\s\-\.]?\d*',
+        # Local format with area code in parentheses (e.g., (024) 2758 711)
+        r'\(\d{2,4}\)[\s\-\.]?\d{3,4}[\s\-\.]?\d{3,4}',
+        # Plain numbers with separators (e.g., 024-2758-711)
+        r'\b\d{3,4}[\s\-\.]\d{3,4}[\s\-\.]\d{3,4}\b',
+        # Plain continuous numbers (7+ digits, likely phone)
+        r'\b0\d{8,11}\b',
+    ]
+
+    all_phones = []
+    for pattern in phone_patterns:
+        matches = re.findall(pattern, content)
+        all_phones.extend(matches)
+
+    # Clean and deduplicate phones
+    cleaned_phones = []
+    seen_digits = set()
+
+    for phone in all_phones:
+        # Get just the digits for comparison
+        digits = re.sub(r'[^\d]', '', phone)
+
+        # Skip too short or too long numbers
+        if len(digits) < 7 or len(digits) > 15:
+            continue
+
+        # Skip obvious fake patterns
+        if digits in ['1234567890', '12345678901', '0000000000'] or len(set(digits)) <= 2:
+            continue
+
+        # Skip duplicates (based on last 7 digits)
+        last7 = digits[-7:]
+        if last7 in seen_digits:
+            continue
+        seen_digits.add(last7)
+
+        cleaned_phones.append(phone.strip())
+
+    if cleaned_phones:
+        result["phone"] = cleaned_phones[0]
+
+    print(f"[Contact] Found phones: {cleaned_phones[:5]}")
+
+    return result
+
+
 def _validate_contact_info(store_data: Dict[str, Any], original_content: str) -> Dict[str, Any]:
     """
-    Validate contact info to reject obvious AI hallucinations.
+    Validate and enhance contact info.
+    First try direct extraction, then validate AI-extracted data.
     """
-    # Check for fake/placeholder emails
+    # Extract domain for email matching
+    domain = ""
+    if store_data.get("store_link"):
+        domain = store_data.get("store_link", "")
+
+    # Try direct extraction first
+    direct_contact = _extract_contact_info_directly(original_content, domain)
+
+    # Use direct extraction results if available
+    if direct_contact["email"] and not store_data.get("store_email"):
+        store_data["store_email"] = direct_contact["email"]
+        print(f"[Validation] Using directly extracted email: {direct_contact['email']}")
+
+    if direct_contact["phone"] and not store_data.get("store_phone"):
+        store_data["store_phone"] = direct_contact["phone"]
+        print(f"[Validation] Using directly extracted phone: {direct_contact['phone']}")
+
+    # Validate AI-extracted email
     email = store_data.get("store_email")
     if email:
         fake_email_patterns = [
@@ -722,12 +837,14 @@ def _validate_contact_info(store_data: Dict[str, Any], original_content: str) ->
         ]
         if any(pattern in email.lower() for pattern in fake_email_patterns):
             print(f"[Validation] Rejected fake email: {email}")
-            store_data["store_email"] = None
+            store_data["store_email"] = direct_contact["email"]  # Fallback to direct extraction
         elif email.lower() not in original_content.lower():
-            print(f"[Validation] Email not found in content, rejecting: {email}")
-            store_data["store_email"] = None
+            print(f"[Validation] AI email not found in content: {email}")
+            # Still use it if we have no alternative, as AI might have normalized it
+            if direct_contact["email"]:
+                store_data["store_email"] = direct_contact["email"]
 
-    # Check for fake/placeholder phone numbers
+    # Validate AI-extracted phone
     phone = store_data.get("store_phone")
     if phone:
         fake_phone_patterns = [
@@ -739,16 +856,10 @@ def _validate_contact_info(store_data: Dict[str, Any], original_content: str) ->
 
         if any(pattern.replace("-", "").replace(" ", "") in phone_cleaned for pattern in fake_phone_patterns):
             print(f"[Validation] Rejected fake phone: {phone}")
-            store_data["store_phone"] = None
+            store_data["store_phone"] = direct_contact["phone"]
         elif phone_cleaned in ["12345678901", "1234567890"] or len(set(phone_cleaned.replace("+", ""))) <= 2:
             print(f"[Validation] Rejected suspicious phone pattern: {phone}")
-            store_data["store_phone"] = None
-        else:
-            phone_digits = re.sub(r'[^\d]', '', phone)
-            if len(phone_digits) >= 7:
-                if phone_digits[-7:] not in re.sub(r'[^\d]', '', original_content):
-                    print(f"[Validation] Phone not found in content, rejecting: {phone}")
-                    store_data["store_phone"] = None
+            store_data["store_phone"] = direct_contact["phone"]
 
     return store_data
 
