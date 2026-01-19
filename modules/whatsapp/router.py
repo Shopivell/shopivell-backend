@@ -1149,32 +1149,47 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
                 logger.info(f"AI Response for {from_number_clean}: {ai_response[:100]}...")
 
-                # Send the AI response back via WhatsApp
-                send_whatsapp_message_request(
-                    phone_number_id=whatsapp_account.phone_number_id,
-                    access_token=access_token,
-                    to=from_number_clean,
-                    message_type="text",
-                    message_data={
-                        "text": {
-                            "body": ai_response,
-                            "preview_url": False
-                        }
-                    }
-                )
-
-                # Save the outgoing AI response to database
+                # Save the outgoing AI response to database FIRST
+                msg_id = f"ai_reply_{datetime.utcnow().timestamp()}"
                 save_message_to_db(
                     db=db,
                     whatsapp_account_id=whatsapp_account.id,
-                    message_id=f"ai_reply_{datetime.utcnow().timestamp()}",
+                    message_id=msg_id,
                     from_number=whatsapp_account.phone_number,
                     to_number=from_number_clean,
                     message_type="text",
                     direction="outbound",
-                    status="sent",
+                    status="pending",
                     message_text=ai_response
                 )
+                logger.info(f"Saved outbound message to DB: {msg_id}")
+
+                # Send the AI response back via WhatsApp
+                try:
+                    logger.info(f"Sending WhatsApp message with token: {access_token[:20]}...")
+                    send_result = send_whatsapp_message_request(
+                        phone_number_id=whatsapp_account.phone_number_id,
+                        access_token=access_token,
+                        to=from_number_clean,
+                        message_type="text",
+                        message_data={
+                            "text": {
+                                "body": ai_response,
+                                "preview_url": False
+                            }
+                        }
+                    )
+                    logger.info(f"WhatsApp send result: {send_result}")
+
+                    # Update message status to sent
+                    sent_msg = db.query(WhatsAppMessage).filter(WhatsAppMessage.message_id == msg_id).first()
+                    if sent_msg:
+                        sent_msg.status = "sent"
+                        db.commit()
+                except Exception as send_error:
+                    logger.error(f"Failed to send WhatsApp message: {str(send_error)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
 
                 logger.info(f"AI response sent to {from_number_clean}")
 
