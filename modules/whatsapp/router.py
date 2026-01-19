@@ -833,17 +833,18 @@ async def whatsapp_webhook_receive(
         payload = await request.json()
         logger.info(f"Received webhook payload: {json.dumps(payload, indent=2)}")
 
-        # Process webhook in background with a NEW database session
-        background_tasks.add_task(process_webhook_payload, payload)
+        # Process webhook SYNCHRONOUSLY to ensure auto-respond works
+        # (Background task was causing issues with database session management)
+        process_webhook_payload(payload)
 
         return {"status": "ok"}
 
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid webhook payload"
-        )
+        import traceback
+        logger.error(traceback.format_exc())
+        # Return OK to avoid Meta retrying the webhook
+        return {"status": "ok"}
 
 def process_webhook_payload(payload: Dict[str, Any]):
     """Process webhook payload and update message statuses"""
