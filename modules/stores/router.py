@@ -549,6 +549,7 @@ async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
 
     If sessionId is provided, saves scraped data to the setup session.
     """
+    import os
     from modules.stores.store_scraping_agent import StoreScrapingAgent
 
     url = request.url.strip()
@@ -557,16 +558,49 @@ async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
     if not url.startswith('http://') and not url.startswith('https://'):
         url = 'https://' + url
 
+    # Check if Tavily API key is configured
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if not tavily_key:
+        print("[Scrape] WARNING: TAVILY_API_KEY not configured!")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Website scraping is not available. TAVILY_API_KEY is not configured."
+        )
+
     try:
+        print(f"[Scrape] Starting scrape for: {url}")
+        print(f"[Scrape] Tavily API key configured: {bool(tavily_key)}")
+
         # Initialize the AI scraping agent
         agent = StoreScrapingAgent()
+
+        # Check if Tavily was initialized
+        if not agent.tavily:
+            print("[Scrape] ERROR: Tavily client failed to initialize")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tavily client failed to initialize. Check your API key."
+            )
+
+        print(f"[Scrape] Tavily client initialized: {agent.tavily is not None}")
 
         # Extract store info using Tavily + LangChain AI agent
         store_data = await agent.extract_store_info(url)
 
+        # Check if we got actual scraped data or fallback
+        pages_scraped = store_data.get('pages_scraped', 0)
+        faqs_count = len(store_data.get('faqs', []))
+        images_count = len(store_data.get('extracted_images', []))
+
         print(f"[Scrape] Successfully extracted data for: {url}")
         print(f"[Scrape] Store: {store_data.get('store_name')}")
-        print(f"[Scrape] Extracted {len(store_data.get('faqs', []))} FAQs")
+        print(f"[Scrape] Pages scraped: {pages_scraped}")
+        print(f"[Scrape] FAQs extracted: {faqs_count}")
+        print(f"[Scrape] Images extracted: {images_count}")
+
+        # Warn if fallback was used
+        if pages_scraped == 0:
+            print(f"[Scrape] WARNING: No pages were scraped - using fallback data")
 
         # If session ID provided, save to session
         if request.sessionId:
@@ -627,6 +661,42 @@ async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to scrape website: {str(e)}"
         )
+
+
+@store_router.get("/scrape-status", status_code=status.HTTP_200_OK)
+async def check_scrape_status():
+    """
+    Debug endpoint to check if scraping services are properly configured.
+    Returns the status of Tavily and OpenRouter/OpenAI configuration.
+    """
+    import os
+
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    # Try to initialize the agent
+    agent_status = "unknown"
+    tavily_client_status = "unknown"
+    try:
+        from modules.stores.store_scraping_agent import StoreScrapingAgent, TAVILY_AVAILABLE, OPENROUTER_AVAILABLE
+        agent = StoreScrapingAgent()
+        agent_status = "initialized"
+        tavily_client_status = "initialized" if agent.tavily else "failed"
+    except Exception as e:
+        agent_status = f"error: {str(e)}"
+
+    return {
+        "tavily_api_key_configured": bool(tavily_key),
+        "tavily_api_key_preview": f"{tavily_key[:8]}..." if tavily_key else None,
+        "tavily_module_available": TAVILY_AVAILABLE if 'TAVILY_AVAILABLE' in dir() else "unknown",
+        "tavily_client_status": tavily_client_status,
+        "openrouter_api_key_configured": bool(openrouter_key),
+        "openai_api_key_configured": bool(openai_key),
+        "openrouter_available": OPENROUTER_AVAILABLE if 'OPENROUTER_AVAILABLE' in dir() else "unknown",
+        "agent_status": agent_status,
+        "message": "Scraping is ready" if tavily_key and tavily_client_status == "initialized" else "Scraping is NOT configured properly"
+    }
 
 
 @store_router.post("/scrape-products", status_code=status.HTTP_200_OK)
