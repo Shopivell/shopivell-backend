@@ -833,8 +833,18 @@ async def whatsapp_webhook_receive(
         payload = await request.json()
         logger.info(f"Received webhook payload: {json.dumps(payload, indent=2)}")
 
-        # Process webhook in background
-        background_tasks.add_task(process_webhook_payload, payload)
+        # Process webhook using a thread to avoid async context issues
+        import threading
+        def run_in_thread():
+            try:
+                process_webhook_payload(payload)
+            except Exception as e:
+                logger.error(f"Thread error processing webhook: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+        thread = threading.Thread(target=run_in_thread)
+        thread.start()
 
         return {"status": "ok"}
 
