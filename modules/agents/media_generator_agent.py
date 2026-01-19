@@ -175,34 +175,8 @@ class MediaGeneratorAgent:
             "color_schemes": ["navy blue and white", "charcoal and silver", "dark blue and gold"],
             "mood": "professional, trustworthy, reliable",
             "avoid": ["weapons", "guns", "armed guards", "military", "violence", "threatening imagery"],
-            # Audience-specific variations for unique images per ad set
-            "audience_variations": {
-                "homeowners": {
-                    "backgrounds": ["cozy family home living room", "residential house exterior at dusk", "suburban neighborhood street view"],
-                    "subjects": ["doorbell camera at home entrance", "smart home control panel on wall", "family home with security sign in yard"],
-                    "props": ["house keys with smart fob", "family photo frame nearby", "welcome mat at door"]
-                },
-                "business": {
-                    "backgrounds": ["corporate office building at night", "retail storefront with lights", "warehouse interior with shelving"],
-                    "subjects": ["commercial CCTV system on building", "access control gate at entrance", "security desk in office lobby"],
-                    "props": ["employee badges on lanyard", "visitor sign-in tablet", "office building directory"]
-                },
-                "property": {
-                    "backgrounds": ["apartment building exterior", "gated community entrance", "multi-story building lobby"],
-                    "subjects": ["intercom system at gate", "elevator security panel", "parking garage camera system"],
-                    "props": ["property management keys", "building access cards", "security patrol vehicle (no armed personnel)"]
-                },
-                "tech": {
-                    "backgrounds": ["modern smart home with ambient lighting", "sleek home office setup", "minimalist living space with tech"],
-                    "subjects": ["smartphone showing security app interface", "smart display with camera feeds", "voice assistant device with security features"],
-                    "props": ["wireless sensors on table", "smart hub device", "tablet with home automation app"]
-                },
-                "family": {
-                    "backgrounds": ["family home backyard with play area", "child-safe home interior", "peaceful residential neighborhood"],
-                    "subjects": ["baby monitor camera on shelf", "child-safe door locks", "motion sensor in hallway"],
-                    "props": ["family safety checklist", "emergency contact card", "peace of mind symbol"]
-                }
-            }
+            # Scene generation is DYNAMIC based on ad set target audience - not hardcoded
+            # The target_audience from ad set is used directly in prompt generation
         },
         "food_restaurant": {
             "description": "Food and restaurant businesses",
@@ -1779,110 +1753,58 @@ STYLE REQUIREMENTS:
     ) -> str:
         """Generate a Meta-compliant image prompt for a specific industry.
 
+        Dynamically generates scene based on target_audience from ad set.
+
         Args:
             industry: Industry key
             product_name: Name of the product/service
             product_description: Description of the product/service
-            include_text: Optional text to render in the image (uses Nano Banana Pro)
-            target_audience: Optional audience segment for audience-specific imagery
-            brand_colors: Optional brand color theme to use instead of template colors
+            include_text: Optional text to render in the image
+            target_audience: Target audience from ad set (e.g., "Homeowners", "Parking Facility Managers")
+            brand_colors: Optional brand color theme
             include_logo: Whether to include brand logo in the design
 
         Returns:
             Complete image generation prompt
         """
-        import random
-
         template = self.get_industry_template(industry)
 
-        # Check for audience-specific variations
-        audience_key = None
-        if target_audience:
-            audience_lower = target_audience.lower()
-            # Map audience names to variation keys
-            audience_mapping = {
-                "homeowner": "homeowners",
-                "home": "homeowners",
-                "residential": "homeowners",
-                "family": "family",
-                "parent": "family",
-                "safety": "family",
-                "business": "business",
-                "commercial": "business",
-                "office": "business",
-                "retail": "business",
-                "property": "property",
-                "building": "property",
-                "apartment": "property",
-                "estate": "property",
-                "manager": "property",
-                "tech": "tech",
-                "smart": "tech",
-                "technology": "tech",
-                "gadget": "tech",
-                "consult": "business",
-                "enterprise": "business",
-            }
-            for keyword, key in audience_mapping.items():
-                if keyword in audience_lower:
-                    audience_key = key
-                    break
-
-        # Get audience-specific template if available
-        audience_variations = template.get("audience_variations", {})
-        if audience_key and audience_key in audience_variations:
-            audience_template = audience_variations[audience_key]
-            backgrounds = audience_template.get("backgrounds", template.get("backgrounds", ["clean professional background"]))
-            subjects = audience_template.get("subjects", template.get("subjects", ["product shot"]))
-            props = audience_template.get("props", template.get("props", []))
-            logger.info(f"[MediaGenerator] Using audience-specific template for: {audience_key}")
-        else:
-            backgrounds = template.get("backgrounds", ["clean professional background"])
-            subjects = template.get("subjects", ["product shot"])
-            props = template.get("props", [])
-
-        # Randomly select elements for variety
-        background = random.choice(backgrounds)
-        subject = random.choice(subjects)
-        prop = random.choice(props) if props else None
-        # Use brand colors if provided, otherwise use template colors
-        if brand_colors:
-            color_scheme = f"{brand_colors} (brand colors)"
-        else:
-            color_scheme = random.choice(template.get("color_schemes", ["professional colors"]))
+        # Get template metadata
         mood = template.get("mood", "professional")
         avoid_items = template.get("avoid", [])
 
-        # Build prompt
+        # Build dynamic scene instruction based on target_audience from ad set
+        if target_audience:
+            audience_context = f"Target audience: {target_audience}. Create a DEMONSTRATIVE scene showing security equipment in action that would appeal to this audience."
+        else:
+            audience_context = "Create a DEMONSTRATIVE scene showing security equipment in action."
+
+        # Build the prompt - dynamically generates scene based on ad set audience
         prompt_parts = [
-            f"Professional advertisement for {product_name}.",
-            f"Background: {background}.",
-            f"Main subject: {subject}.",
+            f"Professional advertisement image for a {industry} company.",
+            audience_context,
+            "The scene must show the security system BEING USED - a hand interacting with equipment, a screen showing a response, or equipment actively working (gate opening, light indicating access granted, etc.).",
+            f"IMPORTANT COLOR THEME: Use {brand_colors if brand_colors else 'gold'} as accent color on lighting, highlights, glows, LED indicators, and ambient tones throughout the image.",
+            f"Mood: {mood}.",
+            "All equipment, cards, devices, and props must be plain with NO logos, NO text, NO branding visible on them.",
         ]
 
-        if prop:
-            prompt_parts.append(f"Accent prop: {prop}.")
-
-        # Add logo instruction if requested
+        # Add logo instruction if requested - logo as overlay only
         if include_logo:
-            prompt_parts.append(f"Include the {product_name} brand logo prominently in the design - render it clearly and professionally.")
+            prompt_parts.append(f"Add a small '{product_name}' company logo ONLY in the bottom right corner as a subtle overlay watermark.")
 
-        prompt_parts.extend([
-            f"Color scheme: {color_scheme}.",
-            f"Mood: {mood}.",
-            f"Product context: {product_description[:200]}.",
-            "High-quality commercial photography, clean composition, 8K quality."
-        ])
-
-        # Add text rendering instruction if specified
+        # Add headline text if specified
         if include_text:
-            prompt_parts.append(f"Include text overlay: \"{include_text}\" - render clearly and legibly.")
+            prompt_parts.append(f"Add headline text: \"{include_text}\" - positioned prominently and legibly.")
 
-        # Add explicit avoidance instructions
+        # Add quality and style requirements
+        prompt_parts.append("High-quality commercial photography, clean composition, professional lighting, 8K quality.")
+
+        # Add explicit avoidance instructions for Meta compliance
         if avoid_items:
-            prompt_parts.append(f"IMPORTANT: Do NOT include: {', '.join(avoid_items)}.")
+            prompt_parts.append(f"CRITICAL: Do NOT include any of the following: {', '.join(avoid_items)}.")
 
-        prompt_parts.append("No AI-generated faces, no weapons, no controversial content.")
+        prompt_parts.append("No AI-generated human faces, no weapons, no controversial or violent content.")
 
         return " ".join(prompt_parts)
 
