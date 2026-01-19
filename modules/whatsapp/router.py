@@ -908,10 +908,22 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
     # Get access token for sending replies
     access_token = whatsapp_account.permanent_access_token
+    logger.info(f"Access token from permanent_access_token: {'SET' if access_token else 'NONE'}")
     if not access_token:
+        # Try to get from business account relationship
         business_account = whatsapp_account.business_account
         if business_account:
             access_token = business_account.access_token
+            logger.info(f"Access token from business_account: {'SET' if access_token else 'NONE'}")
+        else:
+            # Direct query fallback
+            logger.info("Business account relationship not loaded, trying direct query")
+            fb_account = db.query(FacebookBusinessAccount).filter(
+                FacebookBusinessAccount.id == whatsapp_account.business_account_id
+            ).first()
+            if fb_account:
+                access_token = fb_account.access_token
+                logger.info(f"Access token from direct query: {'SET' if access_token else 'NONE'}")
 
     # Initialize the store router
     router = StoreRouter(whatsapp_account_id=whatsapp_account.id, db=db)
