@@ -160,7 +160,7 @@ Generate 5 short-form copy variations for Stories/Reels ads (max 72 characters e
     ]
 }}
 
-Keep it punchy, use emojis strategically, create instant impact.
+Keep it punchy, NO EMOJIS in headlines - keep them clean and professional.
 Return ONLY valid JSON.
 """)
 

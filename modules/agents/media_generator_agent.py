@@ -174,7 +174,35 @@ class MediaGeneratorAgent:
             ],
             "color_schemes": ["navy blue and white", "charcoal and silver", "dark blue and gold"],
             "mood": "professional, trustworthy, reliable",
-            "avoid": ["weapons", "guns", "armed guards", "military", "violence", "threatening imagery"]
+            "avoid": ["weapons", "guns", "armed guards", "military", "violence", "threatening imagery"],
+            # Audience-specific variations for unique images per ad set
+            "audience_variations": {
+                "homeowners": {
+                    "backgrounds": ["cozy family home living room", "residential house exterior at dusk", "suburban neighborhood street view"],
+                    "subjects": ["doorbell camera at home entrance", "smart home control panel on wall", "family home with security sign in yard"],
+                    "props": ["house keys with smart fob", "family photo frame nearby", "welcome mat at door"]
+                },
+                "business": {
+                    "backgrounds": ["corporate office building at night", "retail storefront with lights", "warehouse interior with shelving"],
+                    "subjects": ["commercial CCTV system on building", "access control gate at entrance", "security desk in office lobby"],
+                    "props": ["employee badges on lanyard", "visitor sign-in tablet", "office building directory"]
+                },
+                "property": {
+                    "backgrounds": ["apartment building exterior", "gated community entrance", "multi-story building lobby"],
+                    "subjects": ["intercom system at gate", "elevator security panel", "parking garage camera system"],
+                    "props": ["property management keys", "building access cards", "security patrol vehicle (no armed personnel)"]
+                },
+                "tech": {
+                    "backgrounds": ["modern smart home with ambient lighting", "sleek home office setup", "minimalist living space with tech"],
+                    "subjects": ["smartphone showing security app interface", "smart display with camera feeds", "voice assistant device with security features"],
+                    "props": ["wireless sensors on table", "smart hub device", "tablet with home automation app"]
+                },
+                "family": {
+                    "backgrounds": ["family home backyard with play area", "child-safe home interior", "peaceful residential neighborhood"],
+                    "subjects": ["baby monitor camera on shelf", "child-safe door locks", "motion sensor in hallway"],
+                    "props": ["family safety checklist", "emergency contact card", "peace of mind symbol"]
+                }
+            }
         },
         "food_restaurant": {
             "description": "Food and restaurant businesses",
@@ -1744,7 +1772,8 @@ STYLE REQUIREMENTS:
         industry: str,
         product_name: str,
         product_description: str,
-        include_text: Optional[str] = None
+        include_text: Optional[str] = None,
+        target_audience: Optional[str] = None
     ) -> str:
         """Generate a Meta-compliant image prompt for a specific industry.
 
@@ -1753,6 +1782,7 @@ STYLE REQUIREMENTS:
             product_name: Name of the product/service
             product_description: Description of the product/service
             include_text: Optional text to render in the image (uses Nano Banana Pro)
+            target_audience: Optional audience segment for audience-specific imagery
 
         Returns:
             Complete image generation prompt
@@ -1761,10 +1791,56 @@ STYLE REQUIREMENTS:
 
         template = self.get_industry_template(industry)
 
+        # Check for audience-specific variations
+        audience_key = None
+        if target_audience:
+            audience_lower = target_audience.lower()
+            # Map audience names to variation keys
+            audience_mapping = {
+                "homeowner": "homeowners",
+                "home": "homeowners",
+                "residential": "homeowners",
+                "family": "family",
+                "parent": "family",
+                "safety": "family",
+                "business": "business",
+                "commercial": "business",
+                "office": "business",
+                "retail": "business",
+                "property": "property",
+                "building": "property",
+                "apartment": "property",
+                "estate": "property",
+                "manager": "property",
+                "tech": "tech",
+                "smart": "tech",
+                "technology": "tech",
+                "gadget": "tech",
+                "consult": "business",
+                "enterprise": "business",
+            }
+            for keyword, key in audience_mapping.items():
+                if keyword in audience_lower:
+                    audience_key = key
+                    break
+
+        # Get audience-specific template if available
+        audience_variations = template.get("audience_variations", {})
+        if audience_key and audience_key in audience_variations:
+            audience_template = audience_variations[audience_key]
+            backgrounds = audience_template.get("backgrounds", template.get("backgrounds", ["clean professional background"]))
+            subjects = audience_template.get("subjects", template.get("subjects", ["product shot"]))
+            props = audience_template.get("props", template.get("props", []))
+            logger.info(f"[MediaGenerator] Using audience-specific template for: {audience_key}")
+        else:
+            backgrounds = template.get("backgrounds", ["clean professional background"])
+            subjects = template.get("subjects", ["product shot"])
+            props = template.get("props", [])
+
         # Randomly select elements for variety
-        background = random.choice(template.get("backgrounds", ["clean professional background"]))
-        subject = random.choice(template.get("subjects", ["product shot"]))
-        prop = random.choice(template.get("props", []))
+        background = random.choice(backgrounds)
+        subject = random.choice(subjects)
+        prop = random.choice(props) if props else None
         color_scheme = random.choice(template.get("color_schemes", ["professional colors"]))
         mood = template.get("mood", "professional")
         avoid_items = template.get("avoid", [])

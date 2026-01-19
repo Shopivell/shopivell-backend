@@ -63,7 +63,7 @@ IMAGE_PROMPT: [Write a detailed, vivid image prompt for AI image generation. Inc
 
 AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle. This will be the primary text shown with the ad.]
 
-HEADLINE: [Write a short, punchy headline (5-8 words max)]
+HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, keep it clean and professional]
 """)
 
     def _parse_creative_response(self, response_text: str) -> Dict[str, str]:

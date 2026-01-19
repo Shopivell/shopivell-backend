@@ -318,10 +318,12 @@ Based on your analysis, generate:
 1. HEADLINES (5 different attention-grabbing headlines for ads, max 40 chars each)
    - Focus on products/services, not corporate values
    - Use action words and benefits
+   - DO NOT add emojis to headlines - keep them clean and professional
 
 2. DESCRIPTIONS (5 different ad descriptions, max 125 chars each)
    - Highlight what customers can buy or experience
    - Include a call to action
+   - DO NOT add random emojis - keep copy professional
 
 3. AD_SETS (5 different audience segments with):
    - name: Segment name based on who would buy these products/services
