@@ -18,6 +18,8 @@ except ImportError:
 
 import html
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 
 # Import LangChain components
 from langchain_core.prompts import ChatPromptTemplate
@@ -566,6 +568,74 @@ If no information can be extracted, return an empty array: []
 
         return None
 
+    def _extract_images_from_html(self, url: str) -> List[Dict[str, Any]]:
+        """
+        Fallback method to extract images directly from HTML when Tavily returns none.
+        Focuses on logos and brand images.
+        """
+        images = []
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'lxml')
+            base_url = url.rstrip('/')
+            domain = urlparse(url).netloc.replace('www.', '')
+
+            # Logo selectors - common patterns
+            logo_selectors = [
+                'img[class*="logo"]', 'img[id*="logo"]', 'img[alt*="logo"]',
+                'img[src*="logo"]', '.logo img', '#logo img', 'header img',
+                '.navbar img', '.brand img', 'a.navbar-brand img'
+            ]
+
+            found_urls = set()
+
+            # Find logos first
+            for selector in logo_selectors:
+                for img in soup.select(selector):
+                    src = img.get('src') or img.get('data-src')
+                    if src and src not in found_urls:
+                        if not src.startswith('http'):
+                            src = urljoin(base_url, src)
+                        # Skip tracking pixels and tiny images
+                        if any(skip in src.lower() for skip in ['pixel', 'tracking', '1x1', 'spacer', '.gif', 'data:']):
+                            continue
+                        found_urls.add(src)
+                        images.append({
+                            "url": src,
+                            "alt": img.get('alt', ''),
+                            "is_logo": True
+                        })
+                        print(f"[StoreScrapingAgent] Found logo via selector: {src[:80]}")
+
+            # Find other images
+            for img in soup.find_all('img'):
+                src = img.get('src') or img.get('data-src')
+                if src and src not in found_urls:
+                    if not src.startswith('http'):
+                        src = urljoin(base_url, src)
+                    # Skip tracking pixels and tiny images
+                    if any(skip in src.lower() for skip in ['pixel', 'tracking', '1x1', 'spacer', '.gif', 'data:', 'facebook', 'twitter', 'analytics']):
+                        continue
+                    found_urls.add(src)
+                    is_logo = 'logo' in src.lower() or 'logo' in (img.get('alt', '') or '').lower()
+                    images.append({
+                        "url": src,
+                        "alt": img.get('alt', ''),
+                        "is_logo": is_logo
+                    })
+
+            print(f"[StoreScrapingAgent] Extracted {len(images)} images from HTML")
+            return images[:20]  # Limit to 20 images
+
+        except Exception as e:
+            print(f"[StoreScrapingAgent] Error extracting images from HTML: {e}")
+            return []
+
     async def extract_store_info(self, url: str) -> Dict[str, Any]:
         """
         Main method to extract all store information from a website.
@@ -588,6 +658,11 @@ If no information can be extracted, return an empty array: []
         domain = scraped_data.get("domain", "")
         content = scraped_data.get("content", "")
         images = scraped_data.get("images", [])
+
+        # Fallback: Extract images from HTML if Tavily returned none
+        if not images:
+            print(f"[StoreScrapingAgent] No images from Tavily, extracting from HTML...")
+            images = self._extract_images_from_html(url)
 
         # Step 2: Fetch raw HTML for better contact extraction
         base_url = url.rstrip('/')
