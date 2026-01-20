@@ -534,17 +534,21 @@ Return ONLY valid JSON, no markdown.
             "car": "automotive",
         }
 
-        # Detect industry from business type
+        # Detect industry from scraped URL and content, NOT from store.business_type
+        # This prevents stale industry (e.g., "security") from affecting new URL scrapes
         detected_industry = None
-        if store_business_type:
-            business_type_lower = store_business_type.lower()
-            for keyword, industry in industry_mapping.items():
-                if keyword in business_type_lower:
-                    detected_industry = industry
-                    break
+        source_url = campaign.source_url.lower() if campaign.source_url else ""
+        scraped_content = (campaign.scraped_data.get("content", "") if campaign.scraped_data else "").lower()
+
+        # Check URL and scraped content for industry keywords
+        detection_text = f"{source_url} {scraped_content[:2000]}"  # Limit content to first 2000 chars
+        for keyword, industry in industry_mapping.items():
+            if keyword in detection_text:
+                detected_industry = industry
+                break
 
         if store:
-            logger.info(f"[CampaignService] Store branding - Logo: {logo_url_to_use}, Theme: {store_color_theme}, BusinessType: {store_business_type}, Industry: {detected_industry}")
+            logger.info(f"[CampaignService] Store branding - Logo: {logo_url_to_use}, Theme: {store_color_theme}, DetectedIndustry: {detected_industry} (from URL/content, not store)")
 
         # Different styles for variety
         styles = [AdStyle.MODERN, AdStyle.VIBRANT, AdStyle.PROFESSIONAL, AdStyle.ELEGANT, AdStyle.BOLD]
