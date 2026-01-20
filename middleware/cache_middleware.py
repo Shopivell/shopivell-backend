@@ -50,6 +50,11 @@ class CacheMiddleware(BaseHTTPMiddleware):
             "/v1/auth",
             "/v1/payment/webhook",
             "/v1/whatsapp/webhook",
+            "/v1/api/url-campaigns",  # Campaigns contain store-specific scraped data
+            "/v1/api/stores/scrape",  # Scraping must be fresh per request
+            "/v1/api/campaigns",      # All campaign routes
+            "/api/stores/scrape",     # Alternative scrape paths
+            "/api/url-campaigns",     # Alternative campaign paths
             "/health",
             "/docs",
             "/openapi.json",

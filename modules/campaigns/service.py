@@ -276,23 +276,20 @@ class CampaignService:
         pages_extracted = scraped_data.get("pages_extracted", 1)
 
         # Build store context section if available
+        # NOTE: We now prioritize scraped content over store context to avoid
+        # stale business_type from previous scrapes affecting new campaigns
         store_info_section = ""
         if store_context:
             store_name = store_context.get("store_name", "")
-            business_type = store_context.get("business_type", "")
+            # Don't force business_type from store - let AI determine from scraped content
+            # This prevents "security" persisting when scraping non-security URLs
             store_description = store_context.get("store_description", "")
             services_products = store_context.get("services_products", "")
 
+            # Only include minimal store context, let scraped content drive business type
             store_info_section = f"""
-KNOWN STORE INFORMATION (USE THIS AS PRIMARY CONTEXT):
+STORE CONTEXT (for reference only - analyze the SCRAPED CONTENT below to determine business type):
 - Store Name: {store_name}
-- Business Type: {business_type}
-- Store Description: {store_description}
-- Services/Products: {services_products}
-
-IMPORTANT: This is a {business_type.upper() if business_type else 'BUSINESS'}.
-Generate ALL ad content specifically for this industry.
-Audience tags, headlines, and ad copy MUST be relevant to {business_type or 'the business'}.
 """
 
         prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this business and create compelling Facebook/Instagram ad campaigns.
@@ -818,12 +815,25 @@ The image should reflect the brand identity and be suitable for social media adv
         }
 
     def _mock_ad_content(self, url: str, store_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate mock ad content based on store context/industry."""
+        """Generate mock ad content based on URL domain (not store context to avoid stale data)."""
         domain = self._extract_domain_name(url).replace(" Campaign", "")
 
-        # Get business type from store context
-        business_type = store_context.get("business_type", "").lower() if store_context else ""
-        store_name = store_context.get("store_name", domain) if store_context else domain
+        # Use domain name as store name, don't rely on store_context to avoid stale data
+        store_name = domain
+
+        # Try to detect business type from URL/domain, not from store context
+        # This prevents "security" from persisting across different URL scrapes
+        url_lower = url.lower()
+        business_type = ""
+
+        # Detect business type from URL patterns
+        if any(kw in url_lower for kw in ['security', 'secure', 'cctv', 'alarm', 'guard']):
+            business_type = "security"
+        elif any(kw in url_lower for kw in ['restaurant', 'food', 'cafe', 'kitchen', 'dining']):
+            business_type = "restaurant"
+        elif any(kw in url_lower for kw in ['shop', 'store', 'buy', 'ecommerce', 'retail']):
+            business_type = "retail"
+        # Otherwise leave empty for generic template
 
         # Industry-specific templates
         industry_templates = {
