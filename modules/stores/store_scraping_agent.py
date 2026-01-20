@@ -372,8 +372,11 @@ If no information can be extracted, return an empty array: []
         Prioritizes emails from the same domain.
         Handles HTML entities and common obfuscations.
         """
+        from urllib.parse import unquote
         # Decode HTML entities (&#64; -> @, &amp; -> &, etc.)
         decoded_content = html.unescape(content)
+        # Decode URL encoding (%20 -> space, %40 -> @)
+        decoded_content = unquote(decoded_content)
 
         # Handle common email obfuscations
         decoded_content = re.sub(r'\s*\[at\]\s*', '@', decoded_content, flags=re.IGNORECASE)
@@ -628,15 +631,22 @@ If no information can be extracted, return an empty array: []
         # Step 4: MERGE RESULTS - Direct extraction takes priority for contact info
         # Direct regex extraction is more reliable for emails/phones
         if direct_emails:
-            store_data["store_email"] = direct_emails[0]
-            logger.info(f"[StoreScrapingAgent] Using direct-extracted email: {direct_emails[0]}")
+            # Clean email: remove URL encoding and leading junk
+            from urllib.parse import unquote
+            email = unquote(direct_emails[0]).strip()
+            email = re.sub(r'^[^a-zA-Z0-9]+', '', email)  # Remove leading non-alphanumeric
+            store_data["store_email"] = email
+            logger.info(f"[StoreScrapingAgent] Using direct-extracted email: {email}")
         elif not store_data.get("store_email"):
             store_data["store_email"] = None
 
         if direct_phones:
-            # Join multiple phones if found
-            store_data["store_phone"] = ", ".join(direct_phones[:3]) if len(direct_phones) > 1 else direct_phones[0]
-            logger.info(f"[StoreScrapingAgent] Using direct-extracted phone: {store_data['store_phone']}")
+            # Use only the first phone to avoid DB truncation (max 50 chars)
+            phone = direct_phones[0]
+            if len(phone) > 50:
+                phone = phone[:50]
+            store_data["store_phone"] = phone
+            logger.info(f"[StoreScrapingAgent] Using direct-extracted phone: {phone}")
         elif not store_data.get("store_phone"):
             store_data["store_phone"] = None
 

@@ -750,10 +750,13 @@ def _extract_contact_info_directly(content: str, domain: str) -> Dict[str, Any]:
     This is more reliable than AI extraction for structured data.
     """
     import html
+    from urllib.parse import unquote
     result = {"email": None, "phone": None}
 
     # Decode HTML entities in content (e.g., &#64; -> @, &amp; -> &)
     decoded_content = html.unescape(content)
+    # Also decode URL encoding (e.g., %20 -> space, %40 -> @)
+    decoded_content = unquote(decoded_content)
 
     # Also handle common email obfuscations
     decoded_content = re.sub(r'\s*\[at\]\s*', '@', decoded_content, flags=re.IGNORECASE)
@@ -961,6 +964,19 @@ def _validate_contact_info(store_data: Dict[str, Any], original_content: str) ->
             final_phone = final_phone[:50]
             print(f"[Validation] Phone truncated to 50 chars: {final_phone}")
         store_data["store_phone"] = final_phone
+
+    # Sanitize email: clean up URL-encoded characters and whitespace
+    final_email = store_data.get("store_email")
+    if final_email:
+        from urllib.parse import unquote
+        # Decode URL encoding (e.g., %20 -> space)
+        final_email = unquote(final_email)
+        # Strip whitespace
+        final_email = final_email.strip()
+        # Remove any remaining invalid characters at start
+        final_email = re.sub(r'^[^a-zA-Z0-9]+', '', final_email)
+        store_data["store_email"] = final_email
+        print(f"[Validation] Sanitized email: {final_email}")
 
     return store_data
 
