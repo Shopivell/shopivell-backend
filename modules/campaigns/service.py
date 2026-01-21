@@ -318,38 +318,69 @@ Based on your analysis, generate:
    - Include a call to action
    - DO NOT add random emojis - keep copy professional
 
-3. AD_SETS (5 different BUSINESS-SPECIFIC ad sets targeting different audiences or highlighting different products/services):
-   - name: PUNCHY 2-4 word name with ACTION WORDS or BENEFITS (see naming rules below)
-   - title: Ad set title featuring actual products/services from this business
-   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to THIS SPECIFIC angle
-   - primary_text: Compelling ad copy (50-100 words) promoting the specific product/service/angle
-   - features: List of 3-4 key benefits specific to this angle
-   - hashtags: List of 5-8 relevant hashtags for social media (without # symbol)
-   - value_proposition: One sentence value proposition for this specific angle
-   - emotion: Target emotion relevant to this audience/product
-   - visual_direction: Brief description of what the ad image should show - BE SPECIFIC to this business
+3. AD_SETS (5 different ad sets, each targeting a SPECIFIC BUYER PERSONA or USE CASE):
+   - name: WHO you're targeting (job title/role) + WHAT problem you solve (2-5 words)
+   - title: Specific headline for this audience mentioning their pain point or goal
+   - audience_description: 1-2 sentences describing WHO this audience is (job titles, responsibilities, what they need)
+   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags for THIS SPECIFIC persona
+   - primary_text: Detailed ad copy (80-150 words) that:
+     * Addresses the specific audience by role (e.g., "Security directors, facilities managers...")
+     * Mentions specific metrics/benefits (e.g., "99% accuracy", "40% cost reduction", "85% faster")
+     * Lists concrete features relevant to THIS audience
+     * Ends with clear CTA
+   - features: List of 4-5 specific features with metrics where possible
+   - hashtags: List of 5-8 industry-specific hashtags (without # symbol)
+   - value_proposition: One sentence with specific benefit and metric
+   - emotion: Target emotion (Efficiency, Security, Control, Growth, etc.)
+   - visual_direction: Specific scene showing THIS audience using the product
 
-AD SET NAMING RULES (FOLLOW EXACTLY):
-1. Use 2-4 words maximum
-2. Include ACTION words (Access, Solutions, Essentials) or BENEFIT words (Nationwide, Seamless, One-Stop)
-3. Be SPECIFIC to the audience OR product (not both generic)
-4. Target DISTINCT audiences: families, youth, professionals, businesses, etc.
-5. Each ad set must target a DIFFERENT audience segment or use case
+CRITICAL RULES FOR AD SET NAMES:
+1. Target SPECIFIC buyer personas with job titles or industry roles
+2. Each ad set must target a COMPLETELY DIFFERENT audience segment
+3. Use industry-specific terminology from the scraped content
+4. Focus on WHO is buying, not just WHAT you're selling
 
-BAD names (too generic): "Digital Solutions", "Quality Products", "Great Service", "Payment Services"
-GOOD names (specific + action): "Business Payroll Solutions", "Trend-Forward Youth", "Kids' School Essentials", "Nationwide ATM Access"
+BAD names (too generic): "Digital Solutions", "Business Security", "Payment Services", "Quality Products"
+GOOD names (specific persona + use case):
+- "Property Management Companies" (targets property managers)
+- "Corporate Security Decision Makers" (targets security directors)
+- "E-commerce Merchants" (targets online store owners)
+- "Smart City Planners" (targets urban planners)
+- "Parking Facility Operators" (targets parking lot managers)
 
-CRITICAL: DO NOT use generic angles like "Trust & Reliability", "Innovation", "Value", "Urgency".
-Each ad set must target a DIFFERENT:
-- TARGET AUDIENCE (families, youth 18-25, professionals, small businesses, enterprises)
-- USE CASE or OCCASION (back-to-school, date night, business lunch, payroll day)
-- PRODUCT CATEGORY (if business has multiple: fashion vs beauty, ATM vs POS vs mobile)
+FOR B2B BUSINESSES, each ad set MUST target a different:
+- JOB TITLE/ROLE (Security Directors, Facility Managers, HR Managers, CFOs)
+- INDUSTRY VERTICAL (Healthcare, Retail, Manufacturing, Property Management)
+- COMPANY SIZE (SMEs, Enterprises, Government)
+- USE CASE (Access Control, Payroll, Monitoring, Compliance)
 
-EXAMPLES - FOLLOW THIS EXACT NAMING STYLE:
-- Fashion retailer: "One-Stop Family Fashion", "Trend-Forward Youth", "Professional Workwear", "Back-to-School Essentials", "Beauty & Fragrance Collection"
-- Fintech/Payments: "Business Payroll Solutions", "Nationwide ATM Access", "E-commerce Merchants", "Mobile-First Payments", "Salary Disbursements"
-- Restaurant: "Family Dining Experience", "Quick Business Lunch", "Romantic Date Night", "Weekend Brunch Special", "Catering Services"
-- Security company: "Home Protection", "Business Security", "Smart Monitoring", "24/7 Response Team", "Property Management"
+FOR B2C BUSINESSES, each ad set MUST target a different:
+- DEMOGRAPHIC (Families, Youth 18-25, Professionals, Seniors)
+- LIFE STAGE (Back-to-School, New Parents, First Job, Retirement)
+- USE CASE (Work, Weekend, Special Occasion, Daily Use)
+
+EXAMPLES BY INDUSTRY:
+
+Security/ANPR Company:
+- "Property Management Companies" - Multi-site property managers needing access control
+- "Corporate Security Decision Makers" - Security directors at large corporations
+- "Smart City Planners" - Urban planners modernizing traffic management
+- "Parking Facility Operators" - Commercial parking lot managers
+- "Law Enforcement Agencies" - Police departments for vehicle tracking
+
+Fashion Retailer:
+- "Professional Workwear" - Office workers needing business attire
+- "Back-to-School Essentials" - Parents shopping for school uniforms
+- "Trend-Forward Youth" - Young adults 18-25 wanting latest styles
+- "Family Fashion Fun" - Parents shopping for whole family
+- "Beauty & Fragrance Collection" - Beauty enthusiasts
+
+Fintech/Payments:
+- "Business Payroll Solutions" - HR managers processing salaries
+- "E-commerce Merchants" - Online store owners needing payment gateway
+- "Salary Disbursements" - Finance teams at large companies
+- "Mobile-First Payments" - Young professionals preferring mobile
+- "Nationwide ATM Access" - Consumers needing cash access
 
 Return as JSON:
 {{
@@ -361,17 +392,18 @@ Return as JSON:
     "descriptions": ["desc1", "desc2", "desc3", "desc4", "desc5"],
     "ad_sets": [
         {{
-            "name": "Business-Specific Angle 1 (e.g., 'Family Fashion' or 'Business Payroll')",
-            "title": "Specific title for this product/service/audience",
-            "audience_tags": ["specific", "targeting", "tags", "for", "this", "audience"],
-            "primary_text": "Ad copy specific to this angle...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["relevant", "hashtags"],
-            "value_proposition": "Specific value prop for this angle",
-            "emotion": "Relevant emotion",
-            "visual_direction": "Specific scene showing this product/service in use"
+            "name": "Specific Buyer Persona (e.g., 'Property Management Companies' or 'Corporate Security Decision Makers')",
+            "title": "Headline addressing this audience's pain point",
+            "audience_description": "1-2 sentences: WHO this audience is, their job titles, responsibilities, and what they need",
+            "audience_tags": ["specific", "targeting", "tags", "for", "this", "persona"],
+            "primary_text": "Detailed 80-150 word ad copy addressing this specific audience by role, with metrics and features...",
+            "features": ["feature1 with metric", "feature2 with metric", "feature3", "feature4"],
+            "hashtags": ["industry", "specific", "hashtags"],
+            "value_proposition": "Specific benefit with metric (e.g., 'Reduce costs by 40% with...')",
+            "emotion": "Efficiency/Security/Control/Growth",
+            "visual_direction": "Scene showing THIS specific audience using the product"
         }}
-        // ... 4 more UNIQUE business-specific ad sets
+        // ... 4 more ad sets targeting DIFFERENT buyer personas
     ]
 }}
 

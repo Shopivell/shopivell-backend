@@ -281,6 +281,30 @@ async def close_session(
 
 # ============== PRODUCT LOOKUP ENDPOINTS ==============
 
+@pos_router.get("/products/{store_id}", response_model=List[ProductLookupResponse])
+async def get_store_products(
+    store_id: UUID,
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """Get all active products for a store (for POS grid display)"""
+    products = db.query(Product).filter(
+        Product.store_id == store_id,
+        Product.status == "Active"
+    ).order_by(Product.title).limit(limit).all()
+
+    return [ProductLookupResponse(
+        id=p.id,
+        title=p.title,
+        sku=p.sku,
+        barcode=getattr(p, 'barcode', None),
+        price=p.price,
+        available=p.available if p.available else 0,
+        image_url=p.image_url
+    ) for p in products]
+
+
 @pos_router.get("/products/lookup/{store_id}", response_model=List[ProductLookupResponse])
 async def lookup_products(
     store_id: UUID,

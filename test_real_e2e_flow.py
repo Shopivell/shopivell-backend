@@ -135,32 +135,69 @@ Based on your analysis, generate:
    - Include a call to action
    - DO NOT add random emojis - keep copy professional
 
-3. AD_SETS (5 different BUSINESS-SPECIFIC ad sets targeting different audiences or highlighting different products/services):
-   - name: PUNCHY 2-4 word name with ACTION WORDS or BENEFITS (see naming rules below)
-   - title: Ad set title featuring actual products/services from this business
-   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to THIS SPECIFIC angle
-   - primary_text: Compelling ad copy (50-100 words) promoting the specific product/service/angle
-   - features: List of 3-4 key benefits specific to this angle
-   - hashtags: List of 5-8 relevant hashtags for social media (without # symbol)
-   - value_proposition: One sentence value proposition for this specific angle
-   - emotion: Target emotion relevant to this audience/product
-   - visual_direction: Brief description of what the ad image should show - BE SPECIFIC to this business
+3. AD_SETS (5 different ad sets, each targeting a SPECIFIC BUYER PERSONA or USE CASE):
+   - name: WHO you're targeting (job title/role) + WHAT problem you solve (2-5 words)
+   - title: Specific headline for this audience mentioning their pain point or goal
+   - audience_description: 1-2 sentences describing WHO this audience is (job titles, responsibilities, what they need)
+   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags for THIS SPECIFIC persona
+   - primary_text: Detailed ad copy (80-150 words) that:
+     * Addresses the specific audience by role (e.g., "Security directors, facilities managers...")
+     * Mentions specific metrics/benefits (e.g., "99% accuracy", "40% cost reduction", "85% faster")
+     * Lists concrete features relevant to THIS audience
+     * Ends with clear CTA
+   - features: List of 4-5 specific features with metrics where possible
+   - hashtags: List of 5-8 industry-specific hashtags (without # symbol)
+   - value_proposition: One sentence with specific benefit and metric
+   - emotion: Target emotion (Efficiency, Security, Control, Growth, etc.)
+   - visual_direction: Specific scene showing THIS audience using the product
 
-AD SET NAMING RULES (FOLLOW EXACTLY):
-1. Use 2-4 words maximum
-2. Include ACTION words (Access, Solutions, Essentials) or BENEFIT words (Nationwide, Seamless, One-Stop)
-3. Be SPECIFIC to the audience OR product (not both generic)
-4. Target DISTINCT audiences: families, youth, professionals, businesses, etc.
-5. Each ad set must target a DIFFERENT audience segment or use case
+CRITICAL RULES FOR AD SET NAMES:
+1. Target SPECIFIC buyer personas with job titles or industry roles
+2. Each ad set must target a COMPLETELY DIFFERENT audience segment
+3. Use industry-specific terminology from the scraped content
+4. Focus on WHO is buying, not just WHAT you're selling
 
-BAD names (too generic): "Digital Solutions", "Quality Products", "Great Service", "Payment Services"
-GOOD names (specific + action): "Business Payroll Solutions", "Trend-Forward Youth", "Kids' School Essentials", "Nationwide ATM Access"
+BAD names (too generic): "Digital Solutions", "Business Security", "Payment Services", "Quality Products"
+GOOD names (specific persona + use case):
+- "Property Management Companies" (targets property managers)
+- "Corporate Security Decision Makers" (targets security directors)
+- "E-commerce Merchants" (targets online store owners)
+- "Smart City Planners" (targets urban planners)
+- "Parking Facility Operators" (targets parking lot managers)
 
-CRITICAL: DO NOT use generic angles like "Trust & Reliability", "Innovation", "Value", "Urgency".
-Each ad set must target a DIFFERENT:
-- TARGET AUDIENCE (families, youth 18-25, professionals, small businesses, enterprises)
-- USE CASE or OCCASION (back-to-school, date night, business lunch, payroll day)
-- PRODUCT CATEGORY (if business has multiple: fashion vs beauty, ATM vs POS vs mobile)
+FOR B2B BUSINESSES, each ad set MUST target a different:
+- JOB TITLE/ROLE (Security Directors, Facility Managers, HR Managers, CFOs)
+- INDUSTRY VERTICAL (Healthcare, Retail, Manufacturing, Property Management)
+- COMPANY SIZE (SMEs, Enterprises, Government)
+- USE CASE (Access Control, Payroll, Monitoring, Compliance)
+
+FOR B2C BUSINESSES, each ad set MUST target a different:
+- DEMOGRAPHIC (Families, Youth 18-25, Professionals, Seniors)
+- LIFE STAGE (Back-to-School, New Parents, First Job, Retirement)
+- USE CASE (Work, Weekend, Special Occasion, Daily Use)
+
+EXAMPLES BY INDUSTRY:
+
+Security/ANPR Company:
+- "Property Management Companies" - Multi-site property managers needing access control
+- "Corporate Security Decision Makers" - Security directors at large corporations
+- "Smart City Planners" - Urban planners modernizing traffic management
+- "Parking Facility Operators" - Commercial parking lot managers
+- "Law Enforcement Agencies" - Police departments for vehicle tracking
+
+Fashion Retailer:
+- "Professional Workwear" - Office workers needing business attire
+- "Back-to-School Essentials" - Parents shopping for school uniforms
+- "Trend-Forward Youth" - Young adults 18-25 wanting latest styles
+- "Family Fashion Fun" - Parents shopping for whole family
+- "Beauty & Fragrance Collection" - Beauty enthusiasts
+
+Fintech/Payments:
+- "Business Payroll Solutions" - HR managers processing salaries
+- "E-commerce Merchants" - Online store owners needing payment gateway
+- "Salary Disbursements" - Finance teams at large companies
+- "Mobile-First Payments" - Young professionals preferring mobile
+- "Nationwide ATM Access" - Consumers needing cash access
 
 Return as JSON:
 {{
@@ -346,35 +383,63 @@ async def test_real_e2e_flow(url: str):
 
 
 async def main():
+    results = {}
+
+    # Test 1: Edgars (B2C Fashion)
     print("\n" + "=" * 80)
-    print("TESTING WITH EDGARS (REAL E2E - NO HARDCODED DATA)")
+    print("TEST 1: EDGARS (B2C Fashion Retailer)")
     print("=" * 80)
+    results["edgars"] = await test_real_e2e_flow("https://edgarsstores.co.zw")
 
-    edgars_result = await test_real_e2e_flow("https://edgarsstores.co.zw")
-
-    print("\n\n")
+    # Test 2: Zimswitch (B2B Fintech)
+    print("\n\n" + "=" * 80)
+    print("TEST 2: ZIMSWITCH (B2B Fintech/Payments)")
     print("=" * 80)
-    print("TESTING WITH ZIMSWITCH (REAL E2E - NO HARDCODED DATA)")
-    print("=" * 80)
+    results["zimswitch"] = await test_real_e2e_flow("https://zimswitch.co.zw")
 
-    zimswitch_result = await test_real_e2e_flow("https://zimswitch.co.zw")
+    # Test 3: ZimSecureSights (B2B Security/ANPR)
+    print("\n\n" + "=" * 80)
+    print("TEST 3: ZIMSECURESIGHTS (B2B Security/ANPR)")
+    print("=" * 80)
+    results["zimsecuresights"] = await test_real_e2e_flow("https://zimsecuresights.co.zw")
 
     # Final verification
     print("\n\n" + "=" * 80)
-    print("FINAL VERIFICATION - BOTH TESTS")
+    print("FINAL VERIFICATION - ALL 3 TESTS")
     print("=" * 80)
 
-    print("\n[Edgars]")
-    print(f"  Business: {edgars_result['business_name']}")
-    print(f"  Type: {edgars_result['business_type']}")
-    print(f"  Ad Sets: {edgars_result['ad_sets_count']}")
-    print(f"  Brand Color: {edgars_result['brand_color']}")
+    for name, result in results.items():
+        print(f"\n[{name.upper()}]")
+        print(f"  Business: {result['business_name']}")
+        print(f"  Type: {result['business_type']}")
+        print(f"  Brand Color: {result['brand_color']}")
+        print(f"  Ad Sets ({result['ad_sets_count']}):")
+        for r in result['results']:
+            print(f"    - {r['ad_set']}")
 
-    print("\n[Zimswitch]")
-    print(f"  Business: {zimswitch_result['business_name']}")
-    print(f"  Type: {zimswitch_result['business_type']}")
-    print(f"  Ad Sets: {zimswitch_result['ad_sets_count']}")
-    print(f"  Brand Color: {zimswitch_result['brand_color']}")
+    print("\n" + "=" * 80)
+    print("EXPECTED AD SET NAMES (for comparison):")
+    print("=" * 80)
+    print("\nEdgars (B2C Fashion):")
+    print("  - Professional Workwear")
+    print("  - Back-to-School Essentials")
+    print("  - Trend-Forward Youth")
+    print("  - Family Fashion Fun")
+    print("  - Beauty & Fragrance Collection")
+
+    print("\nZimswitch (B2B Fintech):")
+    print("  - Business Payroll Solutions")
+    print("  - E-commerce Merchants")
+    print("  - Salary Disbursements")
+    print("  - Mobile-First Payments")
+    print("  - Nationwide ATM Access")
+
+    print("\nZimSecureSights (B2B Security):")
+    print("  - Property Management Companies")
+    print("  - Corporate Security Decision Makers")
+    print("  - Smart City Planners")
+    print("  - Parking Facility Operators")
+    print("  - Law Enforcement Agencies")
 
     print("\n" + "=" * 80)
     print("ALL DATA ABOVE WAS GENERATED BY AI FROM SCRAPED CONTENT")
