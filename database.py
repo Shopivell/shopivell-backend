@@ -79,6 +79,7 @@ def init_db():
     from modules.notifications import models as notification_models
     from modules.admin import models as admin_models
     from modules.pos import models as pos_models
+    from modules.accounting import models as accounting_models
 
     Base.metadata.create_all(bind=engine)
     

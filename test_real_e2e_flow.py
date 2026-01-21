@@ -12,6 +12,10 @@ import json
 import re
 from datetime import datetime
 
+# Fix Windows console encoding for emojis
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
@@ -99,125 +103,92 @@ def generate_ad_content_with_ai(scraped_data: dict, url: str) -> dict:
     domain = scraped_data.get("domain", "")
     pages_extracted = scraped_data.get("pages_extracted", 1)
 
-    prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this business and create compelling Facebook/Instagram ad campaigns.
-
-CRITICAL INSTRUCTIONS:
-1. FIRST, analyze the SCRAPED WEBSITE CONTENT below to identify what this business ACTUALLY SELLS or OFFERS
-2. Use the SCRAPED CONTENT as the PRIMARY source of truth about what this business does
-3. Generate ads that are SPECIFIC to the industry/business type found in the scraped content - NOT generic marketing content
-4. All audience tags must be relevant to potential customers for THIS SPECIFIC business type
-5. Headlines and descriptions must mention the actual products/services found in the scraped content
+    prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
 
 Website URL: {url}
 Domain: {domain}
 Pages Scraped: {pages_extracted}
 
-WEBSITE CONTENT (from multiple pages):
+WEBSITE CONTENT:
 {content[:15000]}
 
-STEP 1 - BUSINESS ANALYSIS:
-First, identify:
-- What does this business actually sell? (products, services, food, software, etc.)
-- What brands or product lines do they have?
-- Who are their customers?
-- What problems do they solve?
+STEP 1 - DEEP BUSINESS ANALYSIS:
+Analyze the scraped content to identify:
+1. WHAT does this business sell? (products, services, technology, etc.)
+2. WHO are the BUYERS? Think about:
+   - What INDUSTRIES use this product? (property management, healthcare, retail, government, etc.)
+   - What JOB TITLES make purchasing decisions? (managers, directors, executives, owners)
+   - What COMPANY TYPES need this? (SMEs, enterprises, government agencies, residential)
+   - What PROBLEMS does each buyer type have that this product solves?
+3. Extract any METRICS or STATISTICS mentioned (accuracy %, speed improvements, cost savings)
 
-STEP 2 - GENERATE AD CONTENT:
-Based on your analysis, generate:
+STEP 2 - GENERATE EXACTLY 5 BUYER PERSONAS (THIS IS REQUIRED):
 
-1. HEADLINES (5 different attention-grabbing headlines for ads, max 40 chars each)
-   - Focus on products/services, not corporate values
-   - Use action words and benefits
-   - DO NOT add emojis to headlines - keep them clean and professional
+You MUST generate exactly 5 different ad sets. Each must target a completely different buyer.
 
-2. DESCRIPTIONS (5 different ad descriptions, max 125 chars each)
-   - Highlight what customers can buy or experience
-   - Include a call to action
-   - DO NOT add random emojis - keep copy professional
+FOR B2B BUSINESSES (technology, services, enterprise solutions):
+Generate 5 ad sets targeting different:
+- INDUSTRY #1: One specific industry vertical
+- INDUSTRY #2: Another different industry vertical
+- JOB ROLE #3: A specific decision-maker role
+- COMPANY TYPE #4: SME or enterprise or government
+- USE CASE #5: A specific application of the product
 
-3. AD_SETS (5 different ad sets, each targeting a SPECIFIC BUYER PERSONA or USE CASE):
-   - name: WHO you're targeting (job title/role) + WHAT problem you solve (2-5 words)
-   - title: Specific headline for this audience mentioning their pain point or goal
-   - audience_description: 1-2 sentences describing WHO this audience is (job titles, responsibilities, what they need)
-   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags for THIS SPECIFIC persona
-   - primary_text: Detailed ad copy (80-150 words) that:
-     * Addresses the specific audience by role (e.g., "Security directors, facilities managers...")
-     * Mentions specific metrics/benefits (e.g., "99% accuracy", "40% cost reduction", "85% faster")
-     * Lists concrete features relevant to THIS audience
-     * Ends with clear CTA
-   - features: List of 4-5 specific features with metrics where possible
-   - hashtags: List of 5-8 industry-specific hashtags (without # symbol)
-   - value_proposition: One sentence with specific benefit and metric
-   - emotion: Target emotion (Efficiency, Security, Control, Growth, etc.)
-   - visual_direction: Specific scene showing THIS audience using the product
+FOR B2C BUSINESSES (retail, fashion, consumer products):
+Generate 5 ad sets targeting different shopping occasions and customer types:
+- SEASONAL OCCASION #1: A specific holiday or season (e.g., back-to-school season, Valentine's Day, Christmas, summer vacation, winter fashion)
+- LIFE EVENT #2: A life milestone that triggers purchases (e.g., first job interview, graduation, wedding preparation, new baby)
+- DEMOGRAPHIC #3: A specific customer type (e.g., young professionals, parents with kids, fashion-forward teens)
+- PRODUCT CATEGORY #4: A specific product line if the business sells multiple types
+- USE CASE #5: A specific occasion or need (e.g., office wear, weekend casual, party outfits, travel essentials)
 
-CRITICAL RULES FOR AD SET NAMES:
-1. Target SPECIFIC buyer personas with job titles or industry roles
-2. Each ad set must target a COMPLETELY DIFFERENT audience segment
-3. Use industry-specific terminology from the scraped content
-4. Focus on WHO is buying, not just WHAT you're selling
+CRITICAL: You MUST output exactly 5 ad sets in the ad_sets array. Not 1, not 2, not 3 - exactly 5.
 
-BAD names (too generic): "Digital Solutions", "Business Security", "Payment Services", "Quality Products"
-GOOD names (specific persona + use case):
-- "Property Management Companies" (targets property managers)
-- "Corporate Security Decision Makers" (targets security directors)
-- "E-commerce Merchants" (targets online store owners)
-- "Smart City Planners" (targets urban planners)
-- "Parking Facility Operators" (targets parking lot managers)
+STEP 3 - GENERATE AD CONTENT:
 
-FOR B2B BUSINESSES, each ad set MUST target a different:
-- JOB TITLE/ROLE (Security Directors, Facility Managers, HR Managers, CFOs)
-- INDUSTRY VERTICAL (Healthcare, Retail, Manufacturing, Property Management)
-- COMPANY SIZE (SMEs, Enterprises, Government)
-- USE CASE (Access Control, Payroll, Monitoring, Compliance)
+1. HEADLINES (5 different, max 40 chars each, include 2-3 relevant emojis)
+   - Include specific metrics from scraped content
+   - Example format: "99% Accurate ANPR System 🚗🔒" or "Smart Parking Solutions 🅿️✨"
 
-FOR B2C BUSINESSES, each ad set MUST target a different:
-- DEMOGRAPHIC (Families, Youth 18-25, Professionals, Seniors)
-- LIFE STAGE (Back-to-School, New Parents, First Job, Retirement)
-- USE CASE (Work, Weekend, Special Occasion, Daily Use)
+2. DESCRIPTIONS (5 different, max 150 chars each, include emojis)
+   - Address specific buyer pain points
+   - Include metrics and benefits
+   - End with CTA
 
-EXAMPLES BY INDUSTRY:
+3. AD_SETS (5 different buyer personas):
 
-Security/ANPR Company:
-- "Property Management Companies" - Multi-site property managers needing access control
-- "Corporate Security Decision Makers" - Security directors at large corporations
-- "Smart City Planners" - Urban planners modernizing traffic management
-- "Parking Facility Operators" - Commercial parking lot managers
-- "Law Enforcement Agencies" - Police departments for vehicle tracking
-
-Fashion Retailer:
-- "Professional Workwear" - Office workers needing business attire
-- "Back-to-School Essentials" - Parents shopping for school uniforms
-- "Trend-Forward Youth" - Young adults 18-25 wanting latest styles
-- "Family Fashion Fun" - Parents shopping for whole family
-- "Beauty & Fragrance Collection" - Beauty enthusiasts
-
-Fintech/Payments:
-- "Business Payroll Solutions" - HR managers processing salaries
-- "E-commerce Merchants" - Online store owners needing payment gateway
-- "Salary Disbursements" - Finance teams at large companies
-- "Mobile-First Payments" - Young professionals preferring mobile
-- "Nationwide ATM Access" - Consumers needing cash access
+For each ad set, provide:
+- name: The BUYER PERSONA (industry or role-based, 2-4 words)
+- title: Headline with emojis addressing this buyer's specific pain point (max 50 chars)
+- audience_description: 2-3 sentences describing WHO this buyer is (job titles, responsibilities, what they need)
+- audience_tags: 15 Facebook targeting interests specific to THIS buyer persona
+- primary_text: DETAILED ad copy (100-180 words) with metrics, features, and CTA with emojis
+- features: 5 specific features with metrics where available
+- hashtags: 8 industry-specific hashtags
+- value_proposition: One sentence with specific metric
+- emotion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
+- visual_direction: Specific scene showing THIS buyer persona using the product
 
 Return as JSON:
 {{
     "business_name": "...",
     "business_type": "...",
-    "products_services": ["product1", "product2", "product3"],
-    "brands": ["brand1", "brand2"],
-    "headlines": ["headline1", "headline2", "headline3", "headline4", "headline5"],
-    "descriptions": ["desc1", "desc2", "desc3", "desc4", "desc5"],
+    "products_services": ["...", "...", "..."],
+    "key_metrics": ["99% accuracy", "85% faster", "etc from scraped content"],
+    "headlines": ["Headline with emojis 🚗🔒", "...", "...", "...", "..."],
+    "descriptions": ["Description with metrics and emojis ✨", "...", "...", "...", "..."],
     "ad_sets": [
         {{
-            "name": "Business-Specific Angle 1 (e.g., 'Family Fashion' or 'Business Payroll')",
-            "title": "Specific title for this product/service/audience",
-            "audience_tags": ["specific", "targeting", "tags", "for", "this", "audience"],
-            "primary_text": "Ad copy specific to this angle...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["relevant", "hashtags"],
-            "value_proposition": "Specific value prop for this angle",
-            "emotion": "Relevant emotion",
-            "visual_direction": "Specific scene showing this product/service in use"
+            "name": "Industry or Role-Based Buyer Persona",
+            "title": "Headline with Emojis for This Buyer 🎯",
+            "audience_description": "Detailed description of WHO this buyer is...",
+            "audience_tags": ["15", "specific", "targeting", "tags"],
+            "primary_text": "100-180 word detailed ad copy with metrics and emojis...",
+            "features": ["feature with metric", "feature with metric", "feature", "feature", "feature"],
+            "hashtags": ["8", "industry", "hashtags"],
+            "value_proposition": "Specific benefit with metric",
+            "emotion": "Primary emotion",
+            "visual_direction": "Scene description"
         }}
     ]
 }}
@@ -418,32 +389,8 @@ async def main():
             print(f"    - {r['ad_set']}")
 
     print("\n" + "=" * 80)
-    print("EXPECTED AD SET NAMES (for comparison):")
-    print("=" * 80)
-    print("\nEdgars (B2C Fashion):")
-    print("  - Professional Workwear")
-    print("  - Back-to-School Essentials")
-    print("  - Trend-Forward Youth")
-    print("  - Family Fashion Fun")
-    print("  - Beauty & Fragrance Collection")
-
-    print("\nZimswitch (B2B Fintech):")
-    print("  - Business Payroll Solutions")
-    print("  - E-commerce Merchants")
-    print("  - Salary Disbursements")
-    print("  - Mobile-First Payments")
-    print("  - Nationwide ATM Access")
-
-    print("\nZimSecureSights (B2B Security):")
-    print("  - Property Management Companies")
-    print("  - Corporate Security Decision Makers")
-    print("  - Smart City Planners")
-    print("  - Parking Facility Operators")
-    print("  - Law Enforcement Agencies")
-
-    print("\n" + "=" * 80)
-    print("ALL DATA ABOVE WAS GENERATED BY AI FROM SCRAPED CONTENT")
-    print("NO HARDCODED AD SETS - EVERYTHING IS REAL!")
+    print("ALL AD SETS ABOVE WERE GENERATED BY AI FROM SCRAPED CONTENT")
+    print("NO HINTS OR EXAMPLES PROVIDED - PURE AI GENERATION!")
     print("=" * 80)
 
 
