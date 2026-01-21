@@ -136,7 +136,7 @@ Based on your analysis, generate:
    - DO NOT add random emojis - keep copy professional
 
 3. AD_SETS (5 different BUSINESS-SPECIFIC ad sets targeting different audiences or highlighting different products/services):
-   - name: UNIQUE business-specific angle name based on actual products, services, or target audiences found in the scraped content
+   - name: PUNCHY 2-4 word name with ACTION WORDS or BENEFITS (see naming rules below)
    - title: Ad set title featuring actual products/services from this business
    - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to THIS SPECIFIC angle
    - primary_text: Compelling ad copy (50-100 words) promoting the specific product/service/angle
@@ -146,12 +146,21 @@ Based on your analysis, generate:
    - emotion: Target emotion relevant to this audience/product
    - visual_direction: Brief description of what the ad image should show - BE SPECIFIC to this business
 
+AD SET NAMING RULES (FOLLOW EXACTLY):
+1. Use 2-4 words maximum
+2. Include ACTION words (Access, Solutions, Essentials) or BENEFIT words (Nationwide, Seamless, One-Stop)
+3. Be SPECIFIC to the audience OR product (not both generic)
+4. Target DISTINCT audiences: families, youth, professionals, businesses, etc.
+5. Each ad set must target a DIFFERENT audience segment or use case
+
+BAD names (too generic): "Digital Solutions", "Quality Products", "Great Service", "Payment Services"
+GOOD names (specific + action): "Business Payroll Solutions", "Trend-Forward Youth", "Kids' School Essentials", "Nationwide ATM Access"
+
 CRITICAL: DO NOT use generic angles like "Trust & Reliability", "Innovation", "Value", "Urgency".
-Instead, create BUSINESS-SPECIFIC angles based on:
-- Different PRODUCTS or SERVICES the business offers
-- Different TARGET AUDIENCES (families, youth, professionals, etc.)
-- Different USE CASES or OCCASIONS
-- Unique selling points from the scraped content
+Each ad set must target a DIFFERENT:
+- TARGET AUDIENCE (families, youth 18-25, professionals, small businesses, enterprises)
+- USE CASE or OCCASION (back-to-school, date night, business lunch, payroll day)
+- PRODUCT CATEGORY (if business has multiple: fashion vs beauty, ATM vs POS vs mobile)
 
 Return as JSON:
 {{

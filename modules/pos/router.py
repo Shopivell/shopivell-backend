@@ -155,11 +155,18 @@ async def open_session(
 
     try:
         today = datetime.utcnow().strftime("%Y-%m-%d")
+        # Count ALL sessions for today (global, not per-store) since session_number is globally unique
         count = db.query(POSSession).filter(
-            POSSession.store_id == session_data.store_id,
             POSSession.session_number.like(f"POS-{today}%")
         ).count()
+
+        # Generate unique session number with retry logic
         session_number = f"POS-{today}-{count + 1:03d}"
+
+        # Check if this number already exists and increment if needed
+        while db.query(POSSession).filter(POSSession.session_number == session_number).first():
+            count += 1
+            session_number = f"POS-{today}-{count + 1:03d}"
 
         session = POSSession(
             store_id=session_data.store_id,
