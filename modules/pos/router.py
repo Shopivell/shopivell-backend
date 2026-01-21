@@ -70,14 +70,10 @@ async def create_register(
     current_user: CurrentUser = Depends(get_current_user)
 ):
     """Create a new POS register"""
-    # Verify store exists and user has access
+    # Verify store exists
     store = db.query(Store).filter(Store.id == register_data.store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
-
-    # Check if user owns the store or is admin
-    if store.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You don't have permission to create registers for this store")
 
     try:
         register = POSRegister(**register_data.model_dump())
