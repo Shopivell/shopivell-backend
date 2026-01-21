@@ -61,20 +61,25 @@ class AdCreativeAgent:
         # This format produces prompts like a professional creative director would write
         self.prompt_template = """You are an expert advertising creative director who writes EXCEPTIONAL image generation prompts for AI tools like Gemini and DALL-E.
 
+IMPORTANT: Be IMAGINATIVE and create REAL-WORLD SCENARIOS showing the product/service IN USE. Don't just show products - show PEOPLE experiencing the benefits in realistic situations. Think about WHO uses this service and WHAT they're doing when they use it.
+
 Your prompts MUST follow this EXACT structure:
 1. SCENE SETUP: "Professional advertisement image for a [industry] company: [business name]."
-2. TARGET AUDIENCE: "Target audience: [audience]. Create a scene showing [industry-specific visuals] that appeals to this audience."
-3. VISUAL DESCRIPTION: Describe EXACTLY what should be in the image - specific products, settings, compositions
-4. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color throughout - on products, lighting, backgrounds."
+2. SCENARIO: Create a REALISTIC scene showing the product/service being USED by real people in a believable situation
+3. PEOPLE & ACTION: Include people actively using/benefiting from the service - show their expressions, body language, the environment
+4. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color throughout - on screens, clothing accents, lighting, environment."
 5. MOOD: "Mood: [specific mood words]."
-6. TECHNICAL: "High-quality commercial photography, clean composition, professional lighting, 8K quality."
+6. TECHNICAL: "High-quality commercial photography, cinematic composition, professional lighting, 8K quality."
 7. COMPLIANCE: "AVOID: [things to avoid]. No text in image."
 
-EXAMPLE for fashion retail:
-"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing stylish business casual clothing displayed on modern wooden hangers against a clean white backdrop, with a sleek leather briefcase and polished shoes arranged nearby. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on clothing items, shopping bags, and subtle lighting accents. Mood: aspirational, sophisticated, confident. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, price tags. No text in image."
+EXAMPLE for fintech/payments company (Zimswitch):
+"Professional advertisement image for a financial technology company: Zimswitch. Target audience: HR Managers & Business Owners. Create a scene showing a confident HR manager in a modern office, smiling while viewing a laptop screen displaying a payroll dashboard with multiple employee salary transactions being processed. In the background, happy employees can be seen through glass walls. IMPORTANT COLOR THEME: Use #0066CC blue as accent color throughout - on the laptop screen UI, the manager's blazer accent, and ambient office lighting. Mood: efficient, relieved, professional, empowering. High-quality commercial photography, cinematic office composition, warm professional lighting, 8K quality. AVOID: stressed expressions, cluttered desks, outdated technology. No text in image."
 
-EXAMPLE for security company:
-"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a modern smart home security panel mounted on a clean white wall, with a hand reaching to touch the screen showing a green 'secured' status. A stylish front door with a smart lock visible in background. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on LED indicators, UI elements, and ambient lighting. Mood: professional, trustworthy, reassuring. High-quality commercial photography, clean modern interior, professional lighting, 8K quality. AVOID: weapons, armed guards, threatening imagery. No text in image."
+EXAMPLE for fashion retail (Edgars):
+"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing a stylish young professional woman walking confidently out of a modern store entrance, carrying branded shopping bags, wearing a chic outfit. She's checking her phone with a satisfied smile while her friend admires her new look. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on shopping bags, her accessories, store signage glow. Mood: aspirational, confident, social, successful. High-quality commercial photography, street-style composition, golden hour lighting, 8K quality. AVOID: empty stores, bored expressions, cheap-looking items. No text in image."
+
+EXAMPLE for security company (SecureSights):
+"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a relaxed father on a couch with his daughter, both smiling while he checks the home security app on his tablet showing all-clear status. Through the window, you can see a peaceful evening neighborhood. A subtle security camera is visible in the corner. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on tablet screen UI, cushion accents, and evening ambient lighting. Mood: peaceful, protected, family-focused, reassuring. High-quality commercial photography, warm home interior, cozy evening lighting, 8K quality. AVOID: fear-based imagery, weapons, dark threatening scenes. No text in image."
 
 ---
 
@@ -94,7 +99,7 @@ Logo URL: {logo_url}
 
 Generate output in this EXACT format:
 
-IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Include: scene setup with business name, target audience context, SPECIFIC product/item descriptions, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - not generic. If a Logo URL is provided above, ADD this instruction at the end: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
+IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Be IMAGINATIVE - create a REAL-WORLD SCENARIO showing people USING the product/service. Include: scene setup, realistic scenario with people in action, their expressions and environment, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - show the actual USE CASE, not just products. If a Logo URL is provided above, ADD this instruction at the end: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
 
 AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
 
