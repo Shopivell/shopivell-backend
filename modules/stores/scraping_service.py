@@ -364,6 +364,17 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
 
             # Generic color names to skip
             generic_color_names = {'black', 'white', 'gray', 'grey', 'light-gray', 'medium-gray', 'dark-gray'}
+
+            # WordPress default preset color names to skip (these appear on EVERY WordPress site)
+            wordpress_preset_names = {
+                'cyan-bluish-gray', 'pale-pink', 'vivid-red', 'luminous-vivid-orange',
+                'luminous-vivid-amber', 'light-green-cyan', 'vivid-green-cyan',
+                'pale-cyan-blue', 'vivid-cyan-blue', 'vivid-purple',
+                '-black', '-white', '-cyan-bluish-gray', '-pale-pink', '-vivid-red',
+                '-luminous-vivid-orange', '-luminous-vivid-amber', '-light-green-cyan',
+                '-vivid-green-cyan', '-pale-cyan-blue', '-vivid-cyan-blue', '-vivid-purple'
+            }
+
             # Priority color names (brand-like)
             priority_color_names = {'gold', 'primary', 'brand', 'main', 'accent', 'highlight', 'secondary'}
 
@@ -373,8 +384,9 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
                 for match in matches:
                     if isinstance(match, tuple) and len(match) == 2:
                         name, color = match[0].lower(), match[1]
-                        # Skip generic color names
-                        if name in generic_color_names:
+                        # Skip generic color names and WordPress default presets
+                        if name in generic_color_names or name in wordpress_preset_names:
+                            print(f"[Colors] Skipping WordPress/generic preset '{name}': {color}")
                             continue
                         color = color.upper()
                         # Prioritize brand-like color names

@@ -312,6 +312,10 @@ async def test_real_e2e_flow(url: str):
 
         results.append({
             "ad_set": ad_set["name"],
+            "title": ad_set.get("title", ""),
+            "audience_description": ad_set.get("audience_description", ""),
+            "primary_text": ad_set.get("primary_text", ""),
+            "value_proposition": ad_set.get("value_proposition", ""),
             "headline": result["headline"],
             "ad_angle": result["ad_angle"],
             "image_prompt": result["image_prompt"],
@@ -335,13 +339,24 @@ async def test_real_e2e_flow(url: str):
     print(f"Logo URL: {logo_url[:60]}..." if logo_url else "Logo URL: None")
 
     print(f"\n--- {len(results)} Ad Sets Generated (by AI, not hardcoded!) ---")
-    for r in results:
+    for i, r in enumerate(results, 1):
         color_check = "OK" if r["has_color"] else "MISSING"
         logo_check = "OK" if r["has_logo"] else "MISSING"
-        print(f"\n{r['ad_set']}:")
-        print(f"  Headline: {r['headline']}")
-        print(f"  Color: {color_check}, Logo: {logo_check}")
-        print(f"  Prompt: {r['image_prompt'][:150]}...")
+        print(f"\n{'='*70}")
+        print(f"AD SET {i}: {r['ad_set']}")
+        print(f"{'='*70}")
+        print(f"\nTITLE: {r['title']}")
+        print(f"\nAUDIENCE DESCRIPTION:")
+        print(f"{r['audience_description']}")
+        print(f"\nAD DESCRIPTION (Primary Text):")
+        print(f"{r['primary_text']}")
+        print(f"\nVALUE PROPOSITION: {r['value_proposition']}")
+        print(f"\n--- AdCreative Agent Output ---")
+        print(f"HEADLINE: {r['headline']}")
+        print(f"AD ANGLE: {r['ad_angle']}")
+        print(f"Color in prompt: {color_check}, Logo in prompt: {logo_check}")
+        print(f"\nIMAGE PROMPT:")
+        print(f"{r['image_prompt']}")
 
     return {
         "business_name": business_name,
@@ -356,27 +371,21 @@ async def test_real_e2e_flow(url: str):
 async def main():
     results = {}
 
-    # Test 1: Edgars (B2C Fashion)
+    # Test 1: Securico (B2B Security)
     print("\n" + "=" * 80)
-    print("TEST 1: EDGARS (B2C Fashion Retailer)")
+    print("TEST 1: SECURICO (B2B Security)")
     print("=" * 80)
-    results["edgars"] = await test_real_e2e_flow("https://edgarsstores.co.zw")
+    results["securico"] = await test_real_e2e_flow("https://securico.co.zw")
 
-    # Test 2: Zimswitch (B2B Fintech)
+    # Test 2: Safeguard (B2B Security)
     print("\n\n" + "=" * 80)
-    print("TEST 2: ZIMSWITCH (B2B Fintech/Payments)")
+    print("TEST 2: SAFEGUARD (B2B Security)")
     print("=" * 80)
-    results["zimswitch"] = await test_real_e2e_flow("https://zimswitch.co.zw")
-
-    # Test 3: ZimSecureSights (B2B Security/ANPR)
-    print("\n\n" + "=" * 80)
-    print("TEST 3: ZIMSECURESIGHTS (B2B Security/ANPR)")
-    print("=" * 80)
-    results["zimsecuresights"] = await test_real_e2e_flow("https://zimsecuresights.co.zw")
+    results["safeguard"] = await test_real_e2e_flow("https://safeguard.co.zw")
 
     # Final verification
     print("\n\n" + "=" * 80)
-    print("FINAL VERIFICATION - ALL 3 TESTS")
+    print("FINAL VERIFICATION - ALL TESTS")
     print("=" * 80)
 
     for name, result in results.items():
