@@ -123,17 +123,20 @@ class CampaignService:
                 scraped_data["user_asset_ids"] = [str(aid) for aid in asset_ids]
                 campaign.scraped_data = scraped_data
 
-            # Get store information for context-aware ad generation
+            # IMPORTANT: When scraping a NEW URL, use ONLY the scraped data
+            # DO NOT use store.business_type, store.store_description, etc. as they may be stale
+            # from a previous different website scrape (e.g., security site vs clothing site)
             store = campaign.store
             store_context = None
             if store:
+                # Only pass store_name for reference, let AI determine everything else from scraped content
                 store_context = {
                     "store_name": store.store_name,
-                    "business_type": store.business_type,
-                    "store_description": store.store_description,
-                    "services_products": store.services_products if hasattr(store, 'services_products') else None,
+                    # DO NOT include business_type - it's stale from previous scrapes
+                    # DO NOT include store_description - it's from a different website
+                    # DO NOT include services_products - it's from a different website
                 }
-                logger.info(f"[CampaignService] Using store context: {store_context.get('business_type')}")
+                logger.info(f"[CampaignService] Using minimal store context (name only) - business type will be determined from scraped URL content")
 
             # Generate ad content with store context
             ad_content = self._generate_ad_content(scraped_data, url, store_context)
@@ -276,30 +279,25 @@ class CampaignService:
         pages_extracted = scraped_data.get("pages_extracted", 1)
 
         # Build store context section if available
-        # NOTE: We now prioritize scraped content over store context to avoid
-        # stale business_type from previous scrapes affecting new campaigns
+        # NOTE: We only use store_name from store_context, NOT business_type, description, etc.
+        # Those are stale from previous scrapes and would mix data between different websites
         store_info_section = ""
         if store_context:
             store_name = store_context.get("store_name", "")
-            # Don't force business_type from store - let AI determine from scraped content
-            # This prevents "security" persisting when scraping non-security URLs
-            store_description = store_context.get("store_description", "")
-            services_products = store_context.get("services_products", "")
-
-            # Only include minimal store context, let scraped content drive business type
+            # Only include store name, let AI determine everything else from SCRAPED content
             store_info_section = f"""
-STORE CONTEXT (for reference only - analyze the SCRAPED CONTENT below to determine business type):
-- Store Name: {store_name}
+STORE NAME (for reference): {store_name}
+IMPORTANT: Analyze the SCRAPED CONTENT below to determine business type, products, and services.
 """
 
         prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this business and create compelling Facebook/Instagram ad campaigns.
 {store_info_section}
 CRITICAL INSTRUCTIONS:
-1. FIRST, identify what this business ACTUALLY SELLS or OFFERS (products, services, brands)
-2. Use the store information above as the PRIMARY source of truth about what this business does
-3. Generate ads that are SPECIFIC to the industry/business type - NOT generic marketing content
+1. FIRST, analyze the SCRAPED WEBSITE CONTENT below to identify what this business ACTUALLY SELLS or OFFERS
+2. Use the SCRAPED CONTENT as the PRIMARY source of truth about what this business does
+3. Generate ads that are SPECIFIC to the industry/business type found in the scraped content - NOT generic marketing content
 4. All audience tags must be relevant to potential customers for THIS SPECIFIC business type
-5. Headlines and descriptions must mention the actual products/services offered
+5. Headlines and descriptions must mention the actual products/services found in the scraped content
 
 Website URL: {url}
 Domain: {domain}
@@ -480,22 +478,26 @@ Return ONLY valid JSON, no markdown.
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
-        # Get store branding information
+        # IMPORTANT: Use SCRAPED data from the current URL, NOT stale store data
+        # Store data (logo, color, business_type) may be from a completely different website
         store = campaign.store
-        store_logo_url = store.logo_url if store else None
-        store_color_theme = store.color_theme if store else None
         store_name = store.store_name if store else business_name
-        store_description = store.store_description if store else None
-        store_business_type = store.business_type if store else None
 
-        # Get logo from scraped data as fallback
-        scraped_logo_url = campaign.scraped_data.get("logo_url") if campaign.scraped_data else None
+        # Get branding from SCRAPED data (current URL), not from store record
+        scraped_data = campaign.scraped_data or {}
+        scraped_logo_url = scraped_data.get("logo_url")
+        scraped_color_theme = scraped_data.get("color_theme")
+        scraped_business_type = scraped_data.get("business_type")
 
-        # Priority: Store logo (manually set) > Scraped logo
-        logo_url_to_use = store_logo_url or scraped_logo_url
+        # Priority: Scraped data (current URL) > Store data (may be stale from different website)
+        # This ensures edgarsstores.co.zw doesn't get SecureSights branding
+        logo_url_to_use = scraped_logo_url  # Use scraped logo, not store logo
+        color_theme_to_use = scraped_color_theme  # Use scraped color, not store color
+
         if logo_url_to_use:
-            source = 'store' if store_logo_url else 'scraped'
-            logger.info(f"[CampaignService] Using logo URL: {logo_url_to_use[:80]}... (source: {source})")
+            logger.info(f"[CampaignService] Using SCRAPED logo URL: {logo_url_to_use[:80]}...")
+        if color_theme_to_use:
+            logger.info(f"[CampaignService] Using SCRAPED color theme: {color_theme_to_use}")
 
         # Map business type to industry template
         industry_mapping = {
@@ -547,8 +549,7 @@ Return ONLY valid JSON, no markdown.
                 detected_industry = industry
                 break
 
-        if store:
-            logger.info(f"[CampaignService] Store branding - Logo: {logo_url_to_use}, Theme: {store_color_theme}, DetectedIndustry: {detected_industry} (from URL/content, not store)")
+        logger.info(f"[CampaignService] Using SCRAPED branding - Logo: {logo_url_to_use}, Theme: {color_theme_to_use}, DetectedIndustry: {detected_industry} (all from current URL scrape)")
 
         # Different styles for variety
         styles = [AdStyle.MODERN, AdStyle.VIBRANT, AdStyle.PROFESSIONAL, AdStyle.ELEGANT, AdStyle.BOLD]
@@ -640,21 +641,23 @@ Return ONLY valid JSON, no markdown.
                         image_style = style_map.get(styles[i % len(styles)], "professional")
 
                         print(f"[MediaGenerator] Generating image for ad set: {ad_set.name}")
-                        print(f"[MediaGenerator] Brand: {brand_name}, Colors: {store_color_theme}, Industry: {detected_industry}")
+                        print(f"[MediaGenerator] Brand: {brand_name}, Colors: {color_theme_to_use}, Industry: {detected_industry}")
 
                         # Use industry-specific generation if industry is detected
                         if detected_industry:
                             # Generate industry-compliant ad image (Meta-safe templates)
                             print(f"[MediaGenerator] Using industry template: {detected_industry}")
-                            print(f"[MediaGenerator] Brand colors: {store_color_theme}, Has logo: {bool(logo_url_to_use)}")
+                            print(f"[MediaGenerator] Brand colors: {color_theme_to_use}, Has logo: {bool(logo_url_to_use)}")
+                            # Use scraped description from current URL, not stale store data
+                            scraped_description = scraped_data.get("store_description", "") or scraped_data.get("description", "")
                             result = loop.run_until_complete(
                                 self.media_generator.generate_industry_ad_image(
                                     industry=detected_industry,
                                     product_name=brand_name,
-                                    product_description=primary_text or description or store_description or f"{brand_name} services",
+                                    product_description=primary_text or description or scraped_description or f"{brand_name} services",
                                     headline_text=agent_headline or headline,
                                     aspect_ratio="1:1",
-                                    brand_colors=store_color_theme,
+                                    brand_colors=color_theme_to_use,
                                     logo_url=logo_url_to_use,
                                     target_audience=ad_set_data.get("name", "")
                                 )
@@ -663,8 +666,8 @@ Return ONLY valid JSON, no markdown.
                             # Build custom prompt with branding
                             branding_instructions = [f"Brand: {brand_name}"]
 
-                            if store_color_theme:
-                                branding_instructions.append(f"Brand colors: Use {store_color_theme} as the primary color scheme")
+                            if color_theme_to_use:
+                                branding_instructions.append(f"Brand colors: Use {color_theme_to_use} as the primary color scheme")
 
                             if logo_url_to_use:
                                 branding_instructions.append(f"Include the brand logo prominently in the design")
@@ -674,8 +677,10 @@ Return ONLY valid JSON, no markdown.
                             if agent_image_prompt:
                                 image_prompt = f"{agent_image_prompt}. {branding_context}"
                             else:
+                                # Use scraped description, not stale store data
+                                scraped_desc = scraped_data.get("store_description", "") or scraped_data.get("description", "")
                                 image_prompt = f"""Professional advertisement for {brand_name}.
-{primary_text or description or store_description or ''}
+{primary_text or description or scraped_desc or ''}
 {branding_context}
 Style: Clean composition, commercial photography, high-quality marketing visual.
 The image should reflect the brand identity and be suitable for social media advertising."""
