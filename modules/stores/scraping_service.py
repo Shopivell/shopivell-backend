@@ -482,7 +482,27 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
             colors_data["source"] = brand_color_candidates[0]["source"]
         elif unique_colors and not colors_data["primary_color"]:
             colors_data["primary_color"] = unique_colors[0]["color"]
-            colors_data["source"] = unique_colors[0]["source"]
+
+        # Fallback: If no color found from CSS variables, analyze inline styles
+        # Look for most frequently used non-generic color in HTML
+        if not colors_data["primary_color"] and css_content:
+            print("[Colors] No CSS variables found, analyzing inline styles for frequent colors...")
+            all_hex_colors = re.findall(r'#[0-9a-fA-F]{6}', css_content)
+            color_counts = {}
+            for c in all_hex_colors:
+                c_lower = c.lower()
+                if c_lower not in generic_colors and c_lower not in early_skip_colors:
+                    color_counts[c_lower] = color_counts.get(c_lower, 0) + 1
+
+            if color_counts:
+                sorted_colors = sorted(color_counts.items(), key=lambda x: x[1], reverse=True)
+                # Only use if it appears at least 3 times (likely intentional brand color)
+                if sorted_colors and sorted_colors[0][1] >= 3:
+                    top_color = sorted_colors[0][0].upper()
+                    print(f"[Colors] Found frequent inline color {top_color} ({sorted_colors[0][1]} times)")
+                    colors_data["primary_color"] = top_color
+                    colors_data["source"] = "inline style (frequent)"
+                    colors_data["all_colors"].insert(0, {"color": top_color, "source": "inline style (frequent)"})
 
         print(f"[Colors] Extracted {len(colors_data['all_colors'])} unique brand colors, primary: {colors_data['primary_color']}")
         return colors_data

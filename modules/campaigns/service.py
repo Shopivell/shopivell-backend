@@ -810,10 +810,18 @@ The image should reflect the brand identity and be suitable for social media adv
             generic_colors = {
                 '#000', '#000000', '#fff', '#ffffff', '#333', '#333333',
                 '#666', '#666666', '#999', '#999999', '#ccc', '#cccccc',
-                '#f5f5f5', '#e5e5e5', '#d4d4d4', '#fafafa', '#f0f0f0',
-                '#007bff', '#6c757d', '#28a745', '#dc3545',  # Bootstrap
-                '#17a2b8', '#343a40', '#f8f9fa', '#212529',  # More Bootstrap
+                '#f5f5f5', '#f7f7f7', '#e5e5e5', '#d4d4d4', '#fafafa', '#f0f0f0',
+                '#f9f9f9', '#eee', '#eeeeee', '#ddd', '#dddddd',
+                '#007bff', '#0069d9', '#0062cc', '#0056b3',  # Bootstrap blue
+                '#6c757d', '#5a6268', '#545b62',  # Bootstrap gray
+                '#28a745', '#218838', '#1e7e34',  # Bootstrap green
+                '#dc3545', '#c82333', '#bd2130',  # Bootstrap red
+                '#ffc107', '#e0a800', '#d39e00',  # Bootstrap yellow
+                '#17a2b8', '#138496', '#117a8b',  # Bootstrap cyan
+                '#343a40', '#23272b', '#1d2124',  # Bootstrap dark
+                '#f8f9fa', '#e2e6ea', '#dae0e5', '#212529',  # Bootstrap light/dark
                 '#32373c', '#abb8c3',  # WordPress defaults
+                '#2b2b2b', '#1a1a1a',  # Common dark colors
             }
 
             # Priority color names (brand-like)
@@ -856,13 +864,31 @@ The image should reflect the brand identity and be suitable for social media adv
                 matches = re.findall(pattern, html, re.I)
                 for color in matches:
                     color_lower = color.lower()
-                    # Skip generic/framework colors
                     if color_lower in generic_colors:
-                        print(f"[ColorExtract] Skipping generic color: {color}")
                         continue
                     if color_lower not in [c.lower() for c in found_colors]:
                         print(f"[ColorExtract] Found CSS variable color: {color}")
                         found_colors.append(color)
+
+            # 4. If no CSS variables found, look for most frequently used non-generic color
+            # This catches inline styles like "color: #e60028" or "background: #e60028"
+            if not found_colors:
+                print("[ColorExtract] No CSS variables found, analyzing inline styles...")
+                all_hex_colors = re.findall(r'#[0-9a-fA-F]{6}', html)
+                color_counts = {}
+                for c in all_hex_colors:
+                    c_lower = c.lower()
+                    if c_lower not in generic_colors:
+                        color_counts[c_lower] = color_counts.get(c_lower, 0) + 1
+
+                if color_counts:
+                    # Get the most frequently used non-generic color
+                    sorted_colors = sorted(color_counts.items(), key=lambda x: x[1], reverse=True)
+                    # Only use if it appears at least 3 times (likely intentional brand color)
+                    if sorted_colors and sorted_colors[0][1] >= 3:
+                        top_color = sorted_colors[0][0]
+                        print(f"[ColorExtract] Found frequent color {top_color} ({sorted_colors[0][1]} times)")
+                        found_colors.append(top_color)
 
             if found_colors:
                 result = found_colors[0].upper()
