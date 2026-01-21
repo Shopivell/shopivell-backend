@@ -760,16 +760,11 @@ def regenerate_ads(
         ).delete(synchronize_session=False)
         db.query(AdSet).filter(AdSet.campaign_id == campaign_id).delete(synchronize_session=False)
 
-    # Get store context for ad generation
-    store = campaign.store
-    store_context = None
-    if store:
-        store_context = {
-            "store_name": store.store_name,
-            "business_type": store.business_type,
-            "store_description": store.store_description,
-            "services_products": getattr(store, 'services_products', None),
-        }
+    # IMPORTANT: Do NOT pass any store context for regeneration
+    # The AI should determine business name, type, and everything else from SCRAPED CONTENT ONLY
+    # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
+    # for completely different businesses (e.g., Edgars clothing store)
+    store_context = None  # AI derives everything from scraped content
 
     # Generate new ad content with store context
     ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url, store_context)

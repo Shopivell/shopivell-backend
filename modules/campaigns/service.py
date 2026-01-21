@@ -124,19 +124,11 @@ class CampaignService:
                 campaign.scraped_data = scraped_data
 
             # IMPORTANT: When scraping a NEW URL, use ONLY the scraped data
-            # DO NOT use store.business_type, store.store_description, etc. as they may be stale
+            # DO NOT use ANY store data (store_name, business_type, etc.) as they may be stale
             # from a previous different website scrape (e.g., security site vs clothing site)
-            store = campaign.store
-            store_context = None
-            if store:
-                # Only pass store_name for reference, let AI determine everything else from scraped content
-                store_context = {
-                    "store_name": store.store_name,
-                    # DO NOT include business_type - it's stale from previous scrapes
-                    # DO NOT include store_description - it's from a different website
-                    # DO NOT include services_products - it's from a different website
-                }
-                logger.info(f"[CampaignService] Using minimal store context (name only) - business type will be determined from scraped URL content")
+            # The AI should determine business name, type, and details from SCRAPED CONTENT ONLY
+            store_context = None  # Pass nothing - AI will derive everything from scraped content
+            logger.info(f"[CampaignService] Using NO store context - all data will be derived from scraped URL content")
 
             # Generate ad content with store context
             ad_content = self._generate_ad_content(scraped_data, url, store_context)
@@ -278,17 +270,11 @@ class CampaignService:
         domain = scraped_data.get("domain", "")
         pages_extracted = scraped_data.get("pages_extracted", 1)
 
-        # Build store context section if available
-        # NOTE: We only use store_name from store_context, NOT business_type, description, etc.
-        # Those are stale from previous scrapes and would mix data between different websites
-        store_info_section = ""
-        if store_context:
-            store_name = store_context.get("store_name", "")
-            # Only include store name, let AI determine everything else from SCRAPED content
-            store_info_section = f"""
-STORE NAME (for reference): {store_name}
-IMPORTANT: Analyze the SCRAPED CONTENT below to determine business type, products, and services.
-"""
+        # NOTE: We intentionally do NOT pass any store context to the AI
+        # The AI should determine business name, type, and everything else from SCRAPED CONTENT ONLY
+        # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
+        # for completely different businesses (e.g., Edgars clothing store)
+        store_info_section = ""  # Empty - AI derives everything from scraped content
 
         prompt = f"""You are an expert digital marketing specialist. Your task is to analyze this business and create compelling Facebook/Instagram ad campaigns.
 {store_info_section}
@@ -479,9 +465,9 @@ Return ONLY valid JSON, no markdown.
         business_name = ad_content.get("business_name", "Business")
 
         # IMPORTANT: Use SCRAPED data from the current URL, NOT stale store data
-        # Store data (logo, color, business_type) may be from a completely different website
-        store = campaign.store
-        store_name = store.store_name if store else business_name
+        # Store data (store_name, logo, color, business_type) may be from a completely different website
+        # Always use business_name from AI-generated content (derived from scraped URL)
+        store_name = business_name  # From ad_content - determined by AI from scraped content
 
         # Get branding from SCRAPED data (current URL), not from store record
         scraped_data = campaign.scraped_data or {}
