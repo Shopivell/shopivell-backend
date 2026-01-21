@@ -1773,20 +1773,68 @@ STYLE REQUIREMENTS:
         mood = template.get("mood", "professional")
         avoid_items = template.get("avoid", [])
 
-        # Build dynamic scene instruction based on target_audience from ad set
-        if target_audience:
-            audience_context = f"Target audience: {target_audience}. Create a DEMONSTRATIVE scene showing security equipment in action that would appeal to this audience."
-        else:
-            audience_context = "Create a DEMONSTRATIVE scene showing security equipment in action."
+        # Build INDUSTRY-SPECIFIC scene instructions
+        # Each industry has different subjects/scenes - DO NOT use generic security language for non-security industries
+        industry_scene_instructions = {
+            "security": {
+                "scene": "security equipment in action - a hand interacting with access control, a monitoring screen, or equipment actively working (gate opening, light indicating access granted)",
+                "subject": "security system BEING USED"
+            },
+            "retail_ecommerce": {
+                "scene": "products beautifully displayed - clothing on racks, items arranged on shelves, or a product hero shot with clean background",
+                "subject": "retail products in an aspirational shopping environment"
+            },
+            "food_restaurant": {
+                "scene": "delicious food presentation - beautifully plated dishes, fresh ingredients, or a warm restaurant atmosphere",
+                "subject": "appetizing food in an inviting dining setting"
+            },
+            "tech_saas": {
+                "scene": "modern technology workspace - clean desk setup with devices, abstract data visualization, or sleek software interface",
+                "subject": "technology solutions in a professional modern setting"
+            },
+            "beauty_cosmetics": {
+                "scene": "elegant beauty products - luxurious packaging, texture swatches, or spa-like setting with soft lighting",
+                "subject": "premium beauty products in an elegant arrangement"
+            },
+            "health_fitness": {
+                "scene": "fitness and wellness - gym equipment, healthy meals, or active lifestyle setting",
+                "subject": "fitness products/environment promoting healthy living"
+            },
+            "real_estate": {
+                "scene": "beautiful property - bright interior spaces, architectural details, or welcoming home exterior",
+                "subject": "aspirational living space"
+            },
+            "professional_services": {
+                "scene": "professional business environment - modern office, handshake (hands only), or clean workspace",
+                "subject": "professional services in a trustworthy corporate setting"
+            },
+            "education": {
+                "scene": "learning environment - books and study materials, laptop with course interface, or inspiring study space",
+                "subject": "educational resources in an inspiring setting"
+            },
+            "automotive": {
+                "scene": "automotive showcase - car detail shots, clean showroom, or scenic road setting",
+                "subject": "vehicle or automotive service in premium environment"
+            }
+        }
 
-        # Build the prompt - dynamically generates scene based on ad set audience
+        # Get industry-specific instructions, default to retail if not found
+        industry_info = industry_scene_instructions.get(industry, industry_scene_instructions["retail_ecommerce"])
+
+        # Build dynamic scene instruction based on target_audience and INDUSTRY
+        if target_audience:
+            audience_context = f"Target audience: {target_audience}. Create a DEMONSTRATIVE scene showing {industry_info['scene']} that would appeal to this audience."
+        else:
+            audience_context = f"Create a DEMONSTRATIVE scene showing {industry_info['scene']}."
+
+        # Build the prompt - dynamically generates scene based on INDUSTRY and ad set audience
         prompt_parts = [
-            f"Professional advertisement image for a {industry} company.",
+            f"Professional advertisement image for a {industry.replace('_', ' ')} company: {product_name}.",
             audience_context,
-            "The scene must show the security system BEING USED - a hand interacting with equipment, a screen showing a response, or equipment actively working (gate opening, light indicating access granted, etc.).",
-            f"IMPORTANT COLOR THEME: Use {brand_colors if brand_colors else 'gold'} as accent color on lighting, highlights, glows, LED indicators, and ambient tones throughout the image.",
+            f"The scene must show {industry_info['subject']}.",
+            f"IMPORTANT COLOR THEME: Use {brand_colors if brand_colors else 'brand-appropriate colors'} as accent color throughout the image.",
             f"Mood: {mood}.",
-            "All equipment, cards, devices, and props must be plain with NO logos, NO text, NO branding visible on them.",
+            "All products and props must be plain with NO competitor logos, NO random text visible on them.",
         ]
 
         # Add logo instruction if requested - logo as overlay only
