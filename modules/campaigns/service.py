@@ -312,15 +312,18 @@ Based on your analysis, generate:
    - Include a call to action
    - DO NOT add random emojis - keep copy professional
 
-3. AD_SETS (5 different audience segments with):
-   - name: Segment name based on who would buy these products/services
+3. AD_SETS (5 different creative angles with):
+   - name: Creative angle name (e.g., "Trust & Security", "Innovation", "Value", "Lifestyle", "Urgency")
    - title: Ad set title featuring actual products/services
    - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to buyers
    - primary_text: Compelling ad copy (50-100 words) promoting actual offerings
    - features: List of 3-4 key benefits customers get
    - hashtags: List of 5-8 relevant hashtags for social media (without # symbol)
+   - value_proposition: One sentence value proposition for this angle
+   - emotion: Target emotion (e.g., "Trust", "Excitement", "Security", "Joy", "FOMO")
+   - visual_direction: Brief description of what the ad image should show for this angle
 
-IMPORTANT: You MUST generate exactly 5 different ad sets targeting different audience segments.
+IMPORTANT: You MUST generate exactly 5 different ad sets with UNIQUE creative angles - each should evoke a different emotion and visual style.
 
 Return as JSON:
 {{
@@ -332,44 +335,59 @@ Return as JSON:
     "descriptions": ["desc1", "desc2", "desc3", "desc4", "desc5"],
     "ad_sets": [
         {{
-            "name": "Audience Segment 1",
-            "title": "Ad Title for Segment 1",
+            "name": "Trust & Reliability",
+            "title": "Ad Title for Trust angle",
             "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy for segment 1...",
+            "primary_text": "Compelling ad copy emphasizing trust...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
+            "value_proposition": "Trust us for reliable service",
+            "emotion": "Trust",
+            "visual_direction": "Professional setting showing reliability and security"
         }},
         {{
-            "name": "Audience Segment 2",
-            "title": "Ad Title for Segment 2",
+            "name": "Innovation & Technology",
+            "title": "Ad Title for Innovation angle",
             "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy for segment 2...",
+            "primary_text": "Compelling ad copy about innovation...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
+            "value_proposition": "Cutting-edge solutions for modern needs",
+            "emotion": "Excitement",
+            "visual_direction": "Modern tech-forward imagery with sleek devices"
         }},
         {{
-            "name": "Audience Segment 3",
-            "title": "Ad Title for Segment 3",
+            "name": "Value & Savings",
+            "title": "Ad Title for Value angle",
             "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy for segment 3...",
+            "primary_text": "Compelling ad copy about value...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
+            "value_proposition": "Premium quality at affordable prices",
+            "emotion": "Satisfaction",
+            "visual_direction": "Products displayed elegantly showing quality and value"
         }},
         {{
-            "name": "Audience Segment 4",
-            "title": "Ad Title for Segment 4",
+            "name": "Lifestyle & Aspiration",
+            "title": "Ad Title for Lifestyle angle",
             "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy for segment 4...",
+            "primary_text": "Compelling ad copy about lifestyle...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
+            "value_proposition": "Elevate your lifestyle",
+            "emotion": "Aspiration",
+            "visual_direction": "Aspirational scene showing the product in an ideal lifestyle setting"
         }},
         {{
-            "name": "Audience Segment 5",
-            "title": "Ad Title for Segment 5",
+            "name": "Urgency & Action",
+            "title": "Ad Title for Urgency angle",
             "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy for segment 5...",
+            "primary_text": "Compelling ad copy creating urgency...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"]
+            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
+            "value_proposition": "Act now - limited time offer",
+            "emotion": "FOMO",
+            "visual_direction": "Dynamic scene with motion blur or urgency cues"
         }}
     ]
 }}
@@ -469,21 +487,32 @@ Return ONLY valid JSON, no markdown.
         # Always use business_name from AI-generated content (derived from scraped URL)
         store_name = business_name  # From ad_content - determined by AI from scraped content
 
-        # Get branding from SCRAPED data (current URL), not from store record
+        # Get branding from STORE first (user can edit), then fallback to SCRAPED data
         scraped_data = campaign.scraped_data or {}
         scraped_logo_url = scraped_data.get("logo_url")
-        scraped_color_theme = scraped_data.get("color_theme")
-        scraped_business_type = scraped_data.get("business_type")
+        scraped_color_theme = scraped_data.get("color_theme") or scraped_data.get("brand_color")
 
-        # Priority: Scraped data (current URL) > Store data (may be stale from different website)
-        # This ensures edgarsstores.co.zw doesn't get SecureSights branding
-        logo_url_to_use = scraped_logo_url  # Use scraped logo, not store logo
-        color_theme_to_use = scraped_color_theme  # Use scraped color, not store color
+        # Priority: Store data (edited by user) > Scraped data (extracted from URL)
+        # This allows users to set their logo/color once and use it across all campaigns
+        logo_url_to_use = None
+        color_theme_to_use = None
 
-        if logo_url_to_use:
-            logger.info(f"[CampaignService] Using SCRAPED logo URL: {logo_url_to_use[:80]}...")
-        if color_theme_to_use:
-            logger.info(f"[CampaignService] Using SCRAPED color theme: {color_theme_to_use}")
+        if store:
+            # Check store for user-set branding
+            if store.logo_url:
+                logo_url_to_use = store.logo_url
+                logger.info(f"[CampaignService] Using STORE logo URL: {logo_url_to_use[:80]}...")
+            if store.color_theme:
+                color_theme_to_use = store.color_theme
+                logger.info(f"[CampaignService] Using STORE color_theme (brand color): {color_theme_to_use}")
+
+        # Fallback to scraped data if store doesn't have branding
+        if not logo_url_to_use and scraped_logo_url:
+            logo_url_to_use = scraped_logo_url
+            logger.info(f"[CampaignService] Using SCRAPED logo URL (store had none): {logo_url_to_use[:80]}...")
+        if not color_theme_to_use and scraped_color_theme:
+            color_theme_to_use = scraped_color_theme
+            logger.info(f"[CampaignService] Using SCRAPED color theme (store had none): {color_theme_to_use}")
 
         # Map business type to industry template
         industry_mapping = {
@@ -610,7 +639,9 @@ Return ONLY valid JSON, no markdown.
                             angle_name=ad_set_data.get("name", f"Ad Set {i+1}"),
                             angle_value_proposition=ad_set_data.get("value_proposition", ""),
                             angle_emotion=ad_set_data.get("emotion", "Interest"),
-                            visual_direction=visual_direction
+                            visual_direction=visual_direction,
+                            logo_url=logo_url_to_use or "",
+                            brand_color=color_theme_to_use or ""
                         )
                     )
 

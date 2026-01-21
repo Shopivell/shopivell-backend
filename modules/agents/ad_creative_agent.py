@@ -90,10 +90,11 @@ Angle Name: {angle_name}
 Value Proposition: {angle_value_proposition}
 Emotion Target: {angle_emotion}
 Visual Direction: {visual_direction}
+Logo URL: {logo_url}
 
 Generate output in this EXACT format:
 
-IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Include: scene setup with business name, target audience context, SPECIFIC product/item descriptions, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - not generic.]
+IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Include: scene setup with business name, target audience context, SPECIFIC product/item descriptions, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - not generic. If a Logo URL is provided above, ADD this instruction at the end: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
 
 AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
 
@@ -148,15 +149,26 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         angle_name: str = "Default",
         angle_value_proposition: str = "",
         angle_emotion: str = "Interest",
-        visual_direction: str = ""
+        visual_direction: str = "",
+        logo_url: str = "",
+        brand_color: str = ""
     ) -> Dict[str, str]:
         """
         Generate ad creative with image prompt and ad angle.
         Uses Claude (Anthropic) first, falls back to OpenAI (GPT-4o).
 
+        Args:
+            logo_url: URL to the company logo - will be included in prompt for Gemini to incorporate
+            brand_color: Hex color code for brand color (e.g., "#0066CC") - extracted from website CSS
+
         Returns:
             Dict with 'image_prompt', 'ad_angle', and 'headline'
         """
+        # Build brand color instruction
+        color_instruction = ""
+        if brand_color:
+            color_instruction = f" IMPORTANT: The brand's primary color is {brand_color} - use this EXACT color as the accent color throughout the image."
+
         # Prepare data
         creative_data = {
             "product_name": product_name,
@@ -167,7 +179,8 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
             "angle_name": angle_name,
             "angle_value_proposition": angle_value_proposition or f"Experience the best of {product_name}",
             "angle_emotion": angle_emotion,
-            "visual_direction": visual_direction or "Modern, clean, professional advertising style"
+            "visual_direction": (visual_direction or "Modern, clean, professional advertising style") + color_instruction,
+            "logo_url": logo_url or "Not provided"
         }
 
         # Build prompt from template
