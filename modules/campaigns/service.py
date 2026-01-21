@@ -318,18 +318,29 @@ Based on your analysis, generate:
    - Include a call to action
    - DO NOT add random emojis - keep copy professional
 
-3. AD_SETS (5 different creative angles with):
-   - name: Creative angle name (e.g., "Trust & Security", "Innovation", "Value", "Lifestyle", "Urgency")
-   - title: Ad set title featuring actual products/services
-   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to buyers
-   - primary_text: Compelling ad copy (50-100 words) promoting actual offerings
-   - features: List of 3-4 key benefits customers get
+3. AD_SETS (5 different BUSINESS-SPECIFIC ad sets targeting different audiences or highlighting different products/services):
+   - name: UNIQUE business-specific angle name based on actual products, services, or target audiences found in the scraped content
+   - title: Ad set title featuring actual products/services from this business
+   - audience_tags: List of 10-15 Facebook interest/behavior targeting tags relevant to THIS SPECIFIC angle
+   - primary_text: Compelling ad copy (50-100 words) promoting the specific product/service/angle
+   - features: List of 3-4 key benefits specific to this angle
    - hashtags: List of 5-8 relevant hashtags for social media (without # symbol)
-   - value_proposition: One sentence value proposition for this angle
-   - emotion: Target emotion (e.g., "Trust", "Excitement", "Security", "Joy", "FOMO")
-   - visual_direction: Brief description of what the ad image should show for this angle
+   - value_proposition: One sentence value proposition for this specific angle
+   - emotion: Target emotion relevant to this audience/product
+   - visual_direction: Brief description of what the ad image should show - BE SPECIFIC to this business
 
-IMPORTANT: You MUST generate exactly 5 different ad sets with UNIQUE creative angles - each should evoke a different emotion and visual style.
+CRITICAL: DO NOT use generic angles like "Trust & Reliability", "Innovation", "Value", "Urgency".
+Instead, create BUSINESS-SPECIFIC angles based on:
+- Different PRODUCTS or SERVICES the business offers
+- Different TARGET AUDIENCES (families, youth, professionals, etc.)
+- Different USE CASES or OCCASIONS
+- Unique selling points from the scraped content
+
+EXAMPLES of business-specific ad sets:
+- Fashion retailer: "One-Stop Family Fashion", "Trend-Forward Youth", "Professional Workwear", "Beauty & Fragrance Collection", "Nationwide Store Access"
+- Fintech/Payments: "Business Payroll Solutions", "Seamless ATM Network", "E-commerce Merchants", "Mobile-First Payments", "Salary Disbursements"
+- Restaurant: "Family Dining Experience", "Quick Business Lunch", "Romantic Date Night", "Weekend Brunch Special", "Catering Services"
+- Security company: "Home Protection", "Business Security", "Smart Monitoring", "24/7 Response Team", "Property Management"
 
 Return as JSON:
 {{
@@ -341,60 +352,17 @@ Return as JSON:
     "descriptions": ["desc1", "desc2", "desc3", "desc4", "desc5"],
     "ad_sets": [
         {{
-            "name": "Trust & Reliability",
-            "title": "Ad Title for Trust angle",
-            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy emphasizing trust...",
+            "name": "Business-Specific Angle 1 (e.g., 'Family Fashion' or 'Business Payroll')",
+            "title": "Specific title for this product/service/audience",
+            "audience_tags": ["specific", "targeting", "tags", "for", "this", "audience"],
+            "primary_text": "Ad copy specific to this angle...",
             "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
-            "value_proposition": "Trust us for reliable service",
-            "emotion": "Trust",
-            "visual_direction": "Professional setting showing reliability and security"
-        }},
-        {{
-            "name": "Innovation & Technology",
-            "title": "Ad Title for Innovation angle",
-            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy about innovation...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
-            "value_proposition": "Cutting-edge solutions for modern needs",
-            "emotion": "Excitement",
-            "visual_direction": "Modern tech-forward imagery with sleek devices"
-        }},
-        {{
-            "name": "Value & Savings",
-            "title": "Ad Title for Value angle",
-            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy about value...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
-            "value_proposition": "Premium quality at affordable prices",
-            "emotion": "Satisfaction",
-            "visual_direction": "Products displayed elegantly showing quality and value"
-        }},
-        {{
-            "name": "Lifestyle & Aspiration",
-            "title": "Ad Title for Lifestyle angle",
-            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy about lifestyle...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
-            "value_proposition": "Elevate your lifestyle",
-            "emotion": "Aspiration",
-            "visual_direction": "Aspirational scene showing the product in an ideal lifestyle setting"
-        }},
-        {{
-            "name": "Urgency & Action",
-            "title": "Ad Title for Urgency angle",
-            "audience_tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-            "primary_text": "Compelling ad copy creating urgency...",
-            "features": ["benefit1", "benefit2", "benefit3"],
-            "hashtags": ["hashtag1", "hashtag2", "hashtag3", "hashtag4", "hashtag5"],
-            "value_proposition": "Act now - limited time offer",
-            "emotion": "FOMO",
-            "visual_direction": "Dynamic scene with motion blur or urgency cues"
+            "hashtags": ["relevant", "hashtags"],
+            "value_proposition": "Specific value prop for this angle",
+            "emotion": "Relevant emotion",
+            "visual_direction": "Specific scene showing this product/service in use"
         }}
+        // ... 4 more UNIQUE business-specific ad sets
     ]
 }}
 
