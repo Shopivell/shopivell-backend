@@ -68,13 +68,13 @@ Your prompts MUST follow this EXACT structure:
 4. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color throughout - on products, lighting, backgrounds."
 5. MOOD: "Mood: [specific mood words]."
 6. TECHNICAL: "High-quality commercial photography, clean composition, professional lighting, 8K quality."
-7. COMPLIANCE: "AVOID: [things to avoid]. No AI-generated human faces, no text in image."
+7. COMPLIANCE: "AVOID: [things to avoid]. No text in image."
 
 EXAMPLE for fashion retail:
-"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing stylish business casual clothing displayed on modern wooden hangers against a clean white backdrop, with a sleek leather briefcase and polished shoes arranged nearby. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on clothing items, shopping bags, and subtle lighting accents. Mood: aspirational, sophisticated, confident. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, price tags. No AI-generated human faces, no text in image."
+"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing stylish business casual clothing displayed on modern wooden hangers against a clean white backdrop, with a sleek leather briefcase and polished shoes arranged nearby. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on clothing items, shopping bags, and subtle lighting accents. Mood: aspirational, sophisticated, confident. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, price tags. No text in image."
 
 EXAMPLE for security company:
-"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a modern smart home security panel mounted on a clean white wall, with a hand reaching to touch the screen showing a green 'secured' status. A stylish front door with a smart lock visible in background. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on LED indicators, UI elements, and ambient lighting. Mood: professional, trustworthy, reassuring. High-quality commercial photography, clean modern interior, professional lighting, 8K quality. AVOID: weapons, armed guards, threatening imagery. No AI-generated human faces, no text in image."
+"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a modern smart home security panel mounted on a clean white wall, with a hand reaching to touch the screen showing a green 'secured' status. A stylish front door with a smart lock visible in background. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on LED indicators, UI elements, and ambient lighting. Mood: professional, trustworthy, reassuring. High-quality commercial photography, clean modern interior, professional lighting, 8K quality. AVOID: weapons, armed guards, threatening imagery. No text in image."
 
 ---
 
@@ -291,8 +291,8 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
         """Generate a structured fallback image prompt"""
         if visual_direction:
-            return f"Professional advertisement image for {product_name}. {visual_direction}. IMPORTANT COLOR THEME: Use brand-appropriate accent colors throughout the composition. Mood: professional, inviting, aspirational. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, low quality elements. No AI-generated human faces, no text in image."
-        return f"Professional advertisement image for {product_name}. Create a scene showing the product/service in an aspirational setting with clean, modern styling. IMPORTANT COLOR THEME: Use brand-appropriate accent colors on key elements and lighting. Mood: professional, trustworthy, inviting. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos. No AI-generated human faces, no text in image."
+            return f"Professional advertisement image for {product_name}. {visual_direction}. IMPORTANT COLOR THEME: Use brand-appropriate accent colors throughout the composition. Mood: professional, inviting, aspirational. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, low quality elements. No text in image."
+        return f"Professional advertisement image for {product_name}. Create a scene showing the product/service in an aspirational setting with clean, modern styling. IMPORTANT COLOR THEME: Use brand-appropriate accent colors on key elements and lighting. Mood: professional, trustworthy, inviting. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos. No text in image."
 
     async def generate_multiple_creatives(
         self,
