@@ -342,18 +342,80 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
                     print(f"[Colors] Failed to fetch CSS {href}: {e}")
 
         if css_content:
-            # Extract CSS variables
-            css_var_patterns = [
+            # Extract CSS variables - including WordPress preset patterns
+            # WordPress uses patterns like: --wp--preset--color--gold: #FFC000
+            css_var_patterns_with_names = [
+                # WordPress preset colors (highest priority - these are intentionally set)
+                r'--wp--preset--color--([a-z-]+):\s*(#[0-9a-fA-F]{3,6})',
+                # Custom color variables
+                r'--color-([a-z-]+):\s*(#[0-9a-fA-F]{3,6})',
+            ]
+
+            css_var_patterns_simple = [
+                # Standard naming patterns (no name capture)
                 r'--primary[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
                 r'--brand[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
                 r'--main[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
                 r'--accent[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
                 r'--theme[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--primary[^:]*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--brand[^:]*:\s*(#[0-9a-fA-F]{3,6})',
             ]
 
-            for pattern in css_var_patterns:
+            # Generic color names to skip
+            generic_color_names = {'black', 'white', 'gray', 'grey', 'light-gray', 'medium-gray', 'dark-gray'}
+            # Priority color names (brand-like)
+            priority_color_names = {'gold', 'primary', 'brand', 'main', 'accent', 'highlight', 'secondary'}
+
+            # Process patterns that capture color names (WordPress, custom)
+            for pattern in css_var_patterns_with_names:
+                matches = re.findall(pattern, css_content, re.IGNORECASE)
+                for match in matches:
+                    if isinstance(match, tuple) and len(match) == 2:
+                        name, color = match[0].lower(), match[1]
+                        # Skip generic color names
+                        if name in generic_color_names:
+                            continue
+                        color = color.upper()
+                        # Prioritize brand-like color names
+                        if name in priority_color_names:
+                            print(f"[Colors] Found priority CSS variable '{name}': {color}")
+                            colors_data["all_colors"].insert(0, {"color": color, "source": f"CSS variable ({name})"})
+                            if not colors_data["primary_color"]:
+                                colors_data["primary_color"] = color
+                                colors_data["source"] = f"CSS variable ({name})"
+                        else:
+                            colors_data["all_colors"].append({"color": color, "source": f"CSS variable ({name})"})
+                            print(f"[Colors] Found CSS variable '{name}': {color}")
+
+            # Generic colors to skip when setting primary (check early)
+            # Includes black, white, grays, and Bootstrap framework colors
+            early_skip_colors = {
+                '#000', '#000000', '#fff', '#ffffff', '#333', '#333333',
+                '#666', '#666666', '#999', '#999999', '#ccc', '#cccccc',
+                '#f5f5f5', '#f7f7f7', '#fafafa', '#eee', '#eeeeee',
+                '#e5e5e5', '#d4d4d4', '#f0f0f0',  # More grays
+                # Bootstrap colors (primary, hover, active states)
+                '#007bff', '#0069d9', '#0062cc', '#0056b3',  # Bootstrap blue
+                '#6c757d', '#5a6268', '#545b62',  # Bootstrap gray
+                '#28a745', '#218838', '#1e7e34',  # Bootstrap green
+                '#dc3545', '#c82333', '#bd2130',  # Bootstrap red
+                '#ffc107', '#e0a800', '#d39e00',  # Bootstrap yellow
+                '#17a2b8', '#138496', '#117a8b',  # Bootstrap cyan
+                '#343a40', '#23272b', '#1d2124',  # Bootstrap dark
+                '#f8f9fa', '#e2e6ea', '#dae0e5', '#212529',  # Bootstrap light/dark
+            }
+
+            # Process simple patterns (no name capture)
+            for pattern in css_var_patterns_simple:
                 matches = re.findall(pattern, css_content, re.IGNORECASE)
                 for color in matches:
+                    color = color.upper() if isinstance(color, str) else color
+                    color_lower = color.lower()
+                    # Skip generic/framework colors
+                    if color_lower in early_skip_colors:
+                        print(f"[Colors] Skipping generic color: {color}")
+                        continue
                     colors_data["all_colors"].append({"color": color, "source": "CSS variable"})
                     if not colors_data["primary_color"]:
                         colors_data["primary_color"] = color
@@ -372,6 +434,11 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
             for pattern in common_patterns:
                 matches = re.findall(pattern, css_content, re.IGNORECASE | re.DOTALL)
                 for color in matches:
+                    color_lower = color.lower()
+                    # Skip generic/framework colors
+                    if color_lower in early_skip_colors:
+                        print(f"[Colors] Skipping generic selector color: {color}")
+                        continue
                     colors_data["all_colors"].append({"color": color, "source": "CSS selector"})
                     if not colors_data["primary_color"]:
                         colors_data["primary_color"] = color
@@ -620,10 +687,20 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
             lambda: soup.find('img', src=lambda x: x and 'logo' in x.lower() if x else False),
             # By alt containing 'logo'
             lambda: soup.find('img', alt=lambda x: x and 'logo' in x.lower() if x else False),
+            # WordPress custom-logo class (common WordPress pattern)
+            lambda: soup.find('img', class_=lambda x: x and 'custom-logo' in x.lower() if x else False),
+            # WordPress site-logo class
+            lambda: soup.find('img', class_=lambda x: x and 'site-logo' in x.lower() if x else False),
             # In header
             lambda: soup.find('header', class_=lambda x: True).find('img') if soup.find('header') else None,
             # First image in navbar
             lambda: soup.find('nav').find('img') if soup.find('nav') else None,
+            # WordPress site branding area
+            lambda: soup.select_one('.site-branding img'),
+            lambda: soup.select_one('.custom-logo-link img'),
+            # Link with logo/brand class containing img
+            lambda: soup.select_one('a[class*="logo"] img'),
+            lambda: soup.select_one('a[class*="brand"] img'),
             # SVG logo
             lambda: soup.find('svg', class_=lambda x: x and 'logo' in x.lower() if x else False),
         ]

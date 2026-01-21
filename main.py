@@ -41,6 +41,7 @@ from modules.notifications.router import notification_router
 from modules.referral.router import referral_router
 from modules.feedback.router import feedback_router
 from modules.admin.router import admin_router
+from modules.pos.router import pos_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -111,6 +112,7 @@ app.include_router(notification_router, prefix="/v1")
 app.include_router(referral_router, prefix="/v1")
 app.include_router(feedback_router, prefix="/v1/api")
 app.include_router(admin_router, prefix="/v1")
+app.include_router(pos_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")

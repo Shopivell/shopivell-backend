@@ -245,13 +245,19 @@ class CampaignService:
             if logo_url:
                 print(f"[Tavily] Extracted logo URL: {logo_url}")
 
+            # Extract brand color from the website CSS
+            brand_color = self._extract_brand_color(base_url)
+            if brand_color:
+                print(f"[Tavily] Extracted brand color: {brand_color}")
+
             return {
                 "url": url,
                 "domain": domain,
                 "content": combined_content[:25000],  # Increased limit for more context
                 "pages_extracted": len(all_content),
                 "extracted_at": datetime.utcnow().isoformat(),
-                "logo_url": logo_url  # Store extracted logo URL
+                "logo_url": logo_url,  # Store extracted logo URL
+                "brand_color": brand_color  # Store extracted brand color
             }
 
         except Exception as e:
@@ -482,37 +488,20 @@ Return ONLY valid JSON, no markdown.
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
-        # IMPORTANT: Use SCRAPED data from the current URL, NOT stale store data
-        # Store data (store_name, logo, color, business_type) may be from a completely different website
+        # IMPORTANT: Use SCRAPED data from the current URL, NOT store data
+        # Store data may be stale or from a different website
         # Always use business_name from AI-generated content (derived from scraped URL)
         store_name = business_name  # From ad_content - determined by AI from scraped content
 
-        # Get branding from STORE first (user can edit), then fallback to SCRAPED data
+        # Get branding from SCRAPED data only (extracted from the URL being scraped)
         scraped_data = campaign.scraped_data or {}
-        scraped_logo_url = scraped_data.get("logo_url")
-        scraped_color_theme = scraped_data.get("color_theme") or scraped_data.get("brand_color")
+        logo_url_to_use = scraped_data.get("logo_url")
+        color_theme_to_use = scraped_data.get("color_theme") or scraped_data.get("brand_color")
 
-        # Priority: Store data (edited by user) > Scraped data (extracted from URL)
-        # This allows users to set their logo/color once and use it across all campaigns
-        logo_url_to_use = None
-        color_theme_to_use = None
-
-        if store:
-            # Check store for user-set branding
-            if store.logo_url:
-                logo_url_to_use = store.logo_url
-                logger.info(f"[CampaignService] Using STORE logo URL: {logo_url_to_use[:80]}...")
-            if store.color_theme:
-                color_theme_to_use = store.color_theme
-                logger.info(f"[CampaignService] Using STORE color_theme (brand color): {color_theme_to_use}")
-
-        # Fallback to scraped data if store doesn't have branding
-        if not logo_url_to_use and scraped_logo_url:
-            logo_url_to_use = scraped_logo_url
-            logger.info(f"[CampaignService] Using SCRAPED logo URL (store had none): {logo_url_to_use[:80]}...")
-        if not color_theme_to_use and scraped_color_theme:
-            color_theme_to_use = scraped_color_theme
-            logger.info(f"[CampaignService] Using SCRAPED color theme (store had none): {color_theme_to_use}")
+        if logo_url_to_use:
+            logger.info(f"[CampaignService] Using SCRAPED logo URL: {logo_url_to_use[:80]}...")
+        if color_theme_to_use:
+            logger.info(f"[CampaignService] Using SCRAPED color theme: {color_theme_to_use}")
 
         # Map business type to industry template
         industry_mapping = {
@@ -839,6 +828,85 @@ The image should reflect the brand identity and be suitable for social media adv
         domain = domain.split('/')[0]
         domain = domain.split('.')[0]
         return f"{domain.capitalize()} Campaign"
+
+    def _extract_brand_color(self, base_url: str) -> Optional[str]:
+        """Extract brand color from website CSS."""
+        import httpx
+
+        try:
+            with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                response = client.get(base_url)
+                html = response.text
+
+            # Generic colors to exclude (common framework/default colors)
+            generic_colors = {
+                '#000', '#000000', '#fff', '#ffffff', '#333', '#333333',
+                '#666', '#666666', '#999', '#999999', '#ccc', '#cccccc',
+                '#f5f5f5', '#e5e5e5', '#d4d4d4', '#fafafa', '#f0f0f0',
+                '#007bff', '#6c757d', '#28a745', '#dc3545',  # Bootstrap
+                '#17a2b8', '#343a40', '#f8f9fa', '#212529',  # More Bootstrap
+                '#32373c', '#abb8c3',  # WordPress defaults
+            }
+
+            # Priority color names (brand-like)
+            priority_names = {'gold', 'primary', 'brand', 'main', 'accent', 'highlight', 'secondary'}
+            # Generic color names to skip
+            skip_names = {'black', 'white', 'gray', 'grey', 'light-gray', 'medium-gray', 'dark-gray'}
+
+            found_colors = []
+
+            # 1. Check meta theme-color
+            theme_match = re.search(r'<meta[^>]*name=["\']theme-color["\'][^>]*content=["\']([^\'"]+)["\']', html, re.I)
+            if theme_match:
+                color = theme_match.group(1).lower().strip()
+                if color not in generic_colors:
+                    print(f"[ColorExtract] Found theme-color: {color}")
+                    found_colors.append(color)
+
+            # 2. Check WordPress preset colors (highest priority)
+            wp_pattern = r'--wp--preset--color--([a-z-]+):\s*(#[0-9a-fA-F]{3,6})'
+            wp_matches = re.findall(wp_pattern, html, re.I)
+            for name, color in wp_matches:
+                name_lower = name.lower()
+                color_lower = color.lower()
+                if name_lower in skip_names or color_lower in generic_colors:
+                    continue
+                if name_lower in priority_names:
+                    print(f"[ColorExtract] Found priority CSS variable '{name}': {color}")
+                    found_colors.insert(0, color)  # Priority colors go first
+                else:
+                    found_colors.append(color)
+
+            # 3. Check standard CSS variables
+            css_var_patterns = [
+                r'--primary[^:]*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--brand[^:]*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--main[^:]*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--accent[^:]*:\s*(#[0-9a-fA-F]{3,6})',
+            ]
+            for pattern in css_var_patterns:
+                matches = re.findall(pattern, html, re.I)
+                for color in matches:
+                    color_lower = color.lower()
+                    # Skip generic/framework colors
+                    if color_lower in generic_colors:
+                        print(f"[ColorExtract] Skipping generic color: {color}")
+                        continue
+                    if color_lower not in [c.lower() for c in found_colors]:
+                        print(f"[ColorExtract] Found CSS variable color: {color}")
+                        found_colors.append(color)
+
+            if found_colors:
+                result = found_colors[0].upper()
+                print(f"[ColorExtract] Selected brand color: {result}")
+                return result
+
+            print("[ColorExtract] No brand color found")
+            return None
+
+        except Exception as e:
+            print(f"[ColorExtract] Error: {e}")
+            return None
 
     def _mock_scrape_data(self, url: str) -> Dict[str, Any]:
         """Generate mock data when scraping is unavailable."""
