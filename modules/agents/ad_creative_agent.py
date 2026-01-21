@@ -23,12 +23,19 @@ except ImportError:
     from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
 
+# Import OpenAI for direct fallback
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 class AdCreativeAgent:
-    """AI Agent for generating ad creatives with image prompts and ad angles"""
+    """AI Agent for generating ad creatives with high-quality structured image prompts"""
 
     def __init__(self):
         # Use OpenRouter with gpt-4o model
@@ -38,11 +45,26 @@ class AdCreativeAgent:
         )
         logger.info(f"[AdCreativeAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 
-        # Prompt for generating image prompt and ad angle
-        self.prompt = ChatPromptTemplate.from_template("""
-You are an expert ad creative director. Based on the product information and creative angle, generate:
-1. A detailed IMAGE PROMPT for AI image generation
-2. An AD ANGLE (compelling description/copy for the ad)
+        # STRUCTURED prompt that generates high-quality image prompts
+        # This format produces prompts like a professional creative director would write
+        self.prompt = ChatPromptTemplate.from_template("""You are an expert advertising creative director who writes EXCEPTIONAL image generation prompts for AI tools like Gemini and DALL-E.
+
+Your prompts MUST follow this EXACT structure:
+1. SCENE SETUP: "Professional advertisement image for a [industry] company: [business name]."
+2. TARGET AUDIENCE: "Target audience: [audience]. Create a scene showing [industry-specific visuals] that appeals to this audience."
+3. VISUAL DESCRIPTION: Describe EXACTLY what should be in the image - specific products, settings, compositions
+4. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color throughout - on products, lighting, backgrounds."
+5. MOOD: "Mood: [specific mood words]."
+6. TECHNICAL: "High-quality commercial photography, clean composition, professional lighting, 8K quality."
+7. COMPLIANCE: "AVOID: [things to avoid]. No AI-generated human faces, no text in image."
+
+EXAMPLE for fashion retail:
+"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing stylish business casual clothing displayed on modern wooden hangers against a clean white backdrop, with a sleek leather briefcase and polished shoes arranged nearby. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on clothing items, shopping bags, and subtle lighting accents. Mood: aspirational, sophisticated, confident. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, price tags. No AI-generated human faces, no text in image."
+
+EXAMPLE for security company:
+"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a modern smart home security panel mounted on a clean white wall, with a hand reaching to touch the screen showing a green 'secured' status. A stylish front door with a smart lock visible in background. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on LED indicators, UI elements, and ambient lighting. Mood: professional, trustworthy, reassuring. High-quality commercial photography, clean modern interior, professional lighting, 8K quality. AVOID: weapons, armed guards, threatening imagery. No AI-generated human faces, no text in image."
+
+---
 
 PRODUCT INFORMATION:
 Product Name: {product_name}
@@ -59,11 +81,11 @@ Visual Direction: {visual_direction}
 
 Generate output in this EXACT format:
 
-IMAGE_PROMPT: [Write a detailed, vivid image prompt for AI image generation. Include specific details about composition, colors, mood, lighting, style, and visual elements. The prompt should be 2-3 sentences that will produce a professional advertising image. Do NOT include any text in the image description.]
+IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Include: scene setup with business name, target audience context, SPECIFIC product/item descriptions, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - not generic.]
 
-AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle. This will be the primary text shown with the ad.]
+AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
 
-HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, keep it clean and professional]
+HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and professional]
 """)
 
     def _parse_creative_response(self, response_text: str) -> Dict[str, str]:
@@ -154,7 +176,14 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, keep it c
             return result
 
         except Exception as e:
-            print(f"[AdCreativeAgent] Error generating creative: {e}")
+            print(f"[AdCreativeAgent] OpenRouter error: {e}")
+            # Try OpenAI as fallback
+            if OPENAI_AVAILABLE:
+                try:
+                    return await self._generate_with_openai_fallback(creative_data, product_name, visual_direction, angle_value_proposition)
+                except Exception as openai_error:
+                    print(f"[AdCreativeAgent] OpenAI fallback error: {openai_error}")
+
             # Return fallback values
             return {
                 "image_prompt": self._generate_fallback_prompt(product_name, visual_direction),
@@ -162,11 +191,48 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, keep it c
                 "headline": f"Discover {product_name}"
             }
 
+    async def _generate_with_openai_fallback(self, creative_data: Dict, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
+        """Fallback to OpenAI when OpenRouter fails"""
+        print("[AdCreativeAgent] Trying OpenAI fallback...")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            raise ValueError("OpenAI API key not configured")
+
+        client = OpenAI(api_key=openai_key)
+
+        # Build the prompt text
+        prompt_text = self.prompt.format(**creative_data)
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "user", "content": prompt_text}
+            ],
+            temperature=0.7,
+            max_tokens=1500
+        )
+
+        response_text = response.choices[0].message.content
+
+        # Parse response
+        result = self._parse_creative_response(response_text)
+
+        # Ensure we have valid values
+        if not result["image_prompt"]:
+            result["image_prompt"] = self._generate_fallback_prompt(product_name, visual_direction)
+        if not result["ad_angle"]:
+            result["ad_angle"] = f"Discover {product_name} - {angle_value_proposition or 'Your perfect choice'}"
+        if not result["headline"]:
+            result["headline"] = f"Discover {product_name}"
+
+        print("[AdCreativeAgent] OpenAI fallback successful")
+        return result
+
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
-        """Generate a fallback image prompt"""
+        """Generate a structured fallback image prompt"""
         if visual_direction:
-            return f"Professional advertisement for {product_name}. {visual_direction}. High-quality, commercial photography style with clean composition and modern aesthetic."
-        return f"Professional advertisement for {product_name}. Clean, modern design with high-quality product photography. Bright, welcoming colors with professional lighting. Commercial advertising style."
+            return f"Professional advertisement image for {product_name}. {visual_direction}. IMPORTANT COLOR THEME: Use brand-appropriate accent colors throughout the composition. Mood: professional, inviting, aspirational. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, low quality elements. No AI-generated human faces, no text in image."
+        return f"Professional advertisement image for {product_name}. Create a scene showing the product/service in an aspirational setting with clean, modern styling. IMPORTANT COLOR THEME: Use brand-appropriate accent colors on key elements and lighting. Mood: professional, trustworthy, inviting. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos. No AI-generated human faces, no text in image."
 
     async def generate_multiple_creatives(
         self,

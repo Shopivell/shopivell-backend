@@ -566,7 +566,18 @@ Return ONLY valid JSON, no markdown.
             description = ad_content.get("descriptions", [""])[i] if i < len(ad_content.get("descriptions", [])) else ""
             primary_text = ad_set_data.get("primary_text", "")
             features = ad_set_data.get("features", [])
-            visual_direction = ad_set_data.get("visual_direction", "")
+            base_visual_direction = ad_set_data.get("visual_direction", "")
+
+            # Build enhanced visual direction with brand colors and business type
+            # This helps the AdCreativeAgent generate better structured prompts
+            visual_direction_parts = []
+            if detected_industry:
+                visual_direction_parts.append(f"Business type: {detected_industry.replace('_', ' ')}")
+            if color_theme_to_use:
+                visual_direction_parts.append(f"Brand color: {color_theme_to_use} - use as accent throughout")
+            if base_visual_direction:
+                visual_direction_parts.append(base_visual_direction)
+            visual_direction = ". ".join(visual_direction_parts) if visual_direction_parts else ""
 
             generated_image_base64 = None
             generated_cloudinary_url = None  # Cloudinary URL for AI-generated image
