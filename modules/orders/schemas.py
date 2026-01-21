@@ -6,8 +6,9 @@ import uuid
 # Base schema
 class CustomerOrderBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
-    customer_id: uuid.UUID
+
+    store_id: uuid.UUID
+    customer_id: Optional[uuid.UUID] = None
     order_number: str
     total_amount: float
     status: str
