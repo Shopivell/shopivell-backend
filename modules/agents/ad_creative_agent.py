@@ -196,18 +196,14 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
 
     async def _generate_with_claude(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
         """Generate creative using Claude (Anthropic API)"""
-        print("[AdCreativeAgent] Using Claude (Anthropic)...")
+        model_name = "claude-sonnet-4-20250514"
+        max_tokens = 800  # Reduced from 1500 to save costs
 
-        # LOG THE PROMPT
-        print("\n" + "=" * 60)
-        print("[AdCreativeAgent] PROMPT SENT TO CLAUDE:")
-        print("=" * 60)
-        print(prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text)
-        print("=" * 60 + "\n")
+        print(f"[AdCreativeAgent] Using Claude ({model_name}, max_tokens={max_tokens})...")
 
         message = self.anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1500,
+            model=model_name,
+            max_tokens=max_tokens,
             messages=[
                 {"role": "user", "content": prompt_text}
             ]
@@ -215,12 +211,10 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
 
         response_text = message.content[0].text
 
-        # LOG THE RESPONSE
-        print("\n" + "-" * 60)
-        print("[AdCreativeAgent] RAW RESPONSE FROM CLAUDE:")
-        print("-" * 60)
-        print(response_text)
-        print("-" * 60 + "\n")
+        # Log token usage
+        input_tokens = message.usage.input_tokens
+        output_tokens = message.usage.output_tokens
+        print(f"[AdCreativeAgent] Claude tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
 
         # Parse response
         result = self._parse_creative_response(response_text)
@@ -233,37 +227,35 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         if not result["headline"]:
             result["headline"] = f"Discover {product_name}"
 
-        print("[AdCreativeAgent] Claude generation successful")
+        # Add AI model info to result
+        result["ai_model"] = model_name
+        result["tokens_used"] = input_tokens + output_tokens
+
+        print(f"[AdCreativeAgent] Claude generation successful (used {input_tokens + output_tokens} tokens)")
         return result
 
     async def _generate_with_openai(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
         """Generate creative using OpenAI (GPT-4o) as fallback"""
-        print("[AdCreativeAgent] Using OpenAI (GPT-4o) fallback...")
+        model_name = "gpt-4o"
+        max_tokens = 800  # Reduced from 1500 to save costs
 
-        # LOG THE PROMPT
-        print("\n" + "=" * 60)
-        print("[AdCreativeAgent] PROMPT SENT TO OPENAI:")
-        print("=" * 60)
-        print(prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text)
-        print("=" * 60 + "\n")
+        print(f"[AdCreativeAgent] Using OpenAI ({model_name}, max_tokens={max_tokens}) as fallback...")
 
         response = self.openai_client.chat.completions.create(
-            model="gpt-4o",  # Using gpt-4o for better quality
+            model=model_name,
             messages=[
                 {"role": "user", "content": prompt_text}
             ],
             temperature=0.7,
-            max_tokens=1500
+            max_tokens=max_tokens
         )
 
         response_text = response.choices[0].message.content
 
-        # LOG THE RESPONSE
-        print("\n" + "-" * 60)
-        print("[AdCreativeAgent] RAW RESPONSE FROM OPENAI:")
-        print("-" * 60)
-        print(response_text)
-        print("-" * 60 + "\n")
+        # Log token usage
+        input_tokens = response.usage.prompt_tokens
+        output_tokens = response.usage.completion_tokens
+        print(f"[AdCreativeAgent] OpenAI tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
 
         # Parse response
         result = self._parse_creative_response(response_text)
@@ -276,7 +268,11 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         if not result["headline"]:
             result["headline"] = f"Discover {product_name}"
 
-        print("[AdCreativeAgent] OpenAI generation successful")
+        # Add AI model info to result
+        result["ai_model"] = model_name
+        result["tokens_used"] = input_tokens + output_tokens
+
+        print(f"[AdCreativeAgent] OpenAI generation successful (used {input_tokens + output_tokens} tokens)")
         return result
 
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
