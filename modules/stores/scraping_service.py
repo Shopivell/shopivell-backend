@@ -111,6 +111,10 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
             print(f"[Images] No Tavily images, extracting from {base_url}")
             images_data = _extract_images_from_website(base_url)
 
+        # Extract brand colors from CSS
+        print(f"[Colors] Extracting brand colors from {base_url}")
+        colors_data = _extract_brand_colors_from_css(base_url)
+
         # Analyze images with OpenAI Vision
         image_analysis = None
         if images_data.get("logo_url") or images_data.get("og_image") or images_data.get("images"):
@@ -139,6 +143,14 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         # Add extracted images
         if images_data.get("images"):
             store_data["extracted_images"] = images_data["images"][:10]  # Limit to 10 images
+
+        # Add brand colors from CSS
+        if colors_data.get("primary_color"):
+            store_data["brand_color"] = colors_data["primary_color"]
+            store_data["brand_color_source"] = colors_data.get("source", "unknown")
+            print(f"[Colors] Added brand color to store_data: {colors_data['primary_color']} (from {colors_data.get('source')})")
+        if colors_data.get("all_colors"):
+            store_data["all_brand_colors"] = colors_data["all_colors"]
 
         # Also fetch raw HTML for better contact extraction (Tavily may miss footer/contact sections)
         try:
@@ -245,6 +257,172 @@ def _process_tavily_images(tavily_images: List[str], base_url: str) -> Dict[str,
 
     print(f"[Images] Processed {len(images_data['images'])} Tavily images, logo: {images_data['logo_url']}")
     return images_data
+
+
+def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
+    """
+    Extract brand colors from website CSS.
+    Looks for:
+    - CSS variables (--primary-color, --brand-color, etc.)
+    - Common color selectors (.brand, .primary, header, nav)
+    - Inline styles on key elements
+    - Meta theme-color tag
+    """
+    colors_data = {
+        "primary_color": None,
+        "secondary_color": None,
+        "accent_color": None,
+        "all_colors": [],
+        "source": None
+    }
+
+    try:
+        base_url = url.rstrip('/')
+        if not base_url.startswith('http'):
+            base_url = 'https://' + base_url
+
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(base_url, headers=headers, timeout=15)
+
+        if response.status_code != 200:
+            print(f"[Colors] Failed to fetch {base_url}: {response.status_code}")
+            return colors_data
+
+        html = response.text
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # Method 1: Meta theme-color tag
+        theme_meta = soup.find('meta', attrs={'name': 'theme-color'})
+        if theme_meta and theme_meta.get('content'):
+            color = theme_meta.get('content')
+            colors_data["primary_color"] = color
+            colors_data["source"] = "meta theme-color"
+            colors_data["all_colors"].append({"color": color, "source": "meta theme-color"})
+            print(f"[Colors] Found theme-color meta: {color}")
+
+        # Method 2: Extract inline styles from key elements
+        key_selectors = ['header', 'nav', '.navbar', '.header', '.brand', '.logo', 'a.brand']
+        for selector in key_selectors:
+            try:
+                elements = soup.select(selector)
+                for el in elements:
+                    style = el.get('style', '')
+                    if style:
+                        # Extract colors from inline style
+                        color_matches = re.findall(r'(?:background-color|color|border-color)\s*:\s*(#[0-9a-fA-F]{3,6}|rgb[a]?\([^)]+\))', style)
+                        for color in color_matches:
+                            colors_data["all_colors"].append({"color": color, "source": f"inline style on {selector}"})
+                            if not colors_data["primary_color"]:
+                                colors_data["primary_color"] = color
+                                colors_data["source"] = f"inline style on {selector}"
+                                print(f"[Colors] Found color from {selector}: {color}")
+            except Exception:
+                pass
+
+        # Method 3: Extract from <style> tags
+        style_tags = soup.find_all('style')
+        css_content = ""
+        for style_tag in style_tags:
+            if style_tag.string:
+                css_content += style_tag.string + "\n"
+
+        # Method 4: Fetch external CSS files
+        css_links = soup.find_all('link', rel='stylesheet')
+        for link in css_links[:5]:  # Limit to first 5 CSS files
+            href = link.get('href')
+            if href:
+                if not href.startswith('http'):
+                    href = urljoin(base_url, href)
+                try:
+                    css_response = requests.get(href, headers=headers, timeout=10)
+                    if css_response.status_code == 200:
+                        css_content += css_response.text + "\n"
+                        print(f"[Colors] Fetched CSS: {href[:50]}...")
+                except Exception as e:
+                    print(f"[Colors] Failed to fetch CSS {href}: {e}")
+
+        if css_content:
+            # Extract CSS variables
+            css_var_patterns = [
+                r'--primary[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--brand[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--main[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--accent[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'--theme[-_]?color\s*:\s*(#[0-9a-fA-F]{3,6})',
+            ]
+
+            for pattern in css_var_patterns:
+                matches = re.findall(pattern, css_content, re.IGNORECASE)
+                for color in matches:
+                    colors_data["all_colors"].append({"color": color, "source": "CSS variable"})
+                    if not colors_data["primary_color"]:
+                        colors_data["primary_color"] = color
+                        colors_data["source"] = "CSS variable"
+                        print(f"[Colors] Found CSS variable color: {color}")
+
+            # Extract colors from common class selectors
+            common_patterns = [
+                r'\.brand[^{]*\{[^}]*(?:background-color|color)\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'\.primary[^{]*\{[^}]*(?:background-color|color)\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'header[^{]*\{[^}]*background-color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'\.navbar[^{]*\{[^}]*background-color\s*:\s*(#[0-9a-fA-F]{3,6})',
+                r'\.btn-primary[^{]*\{[^}]*background-color\s*:\s*(#[0-9a-fA-F]{3,6})',
+            ]
+
+            for pattern in common_patterns:
+                matches = re.findall(pattern, css_content, re.IGNORECASE | re.DOTALL)
+                for color in matches:
+                    colors_data["all_colors"].append({"color": color, "source": "CSS selector"})
+                    if not colors_data["primary_color"]:
+                        colors_data["primary_color"] = color
+                        colors_data["source"] = "CSS selector"
+                        print(f"[Colors] Found CSS selector color: {color}")
+
+        # Filter out common framework/generic colors
+        generic_colors = {
+            '#000', '#000000', '#fff', '#ffffff', '#333', '#333333',
+            '#666', '#666666', '#999', '#999999', '#ccc', '#cccccc',
+            '#f5f5f5', '#f7f7f7', '#fafafa', '#eee', '#eeeeee',
+            '#007bff', '#0069d9', '#0062cc',  # Bootstrap blue
+            '#28a745', '#218838', '#1e7e34',  # Bootstrap green
+            '#dc3545', '#c82333', '#bd2130',  # Bootstrap red
+            '#ffc107', '#e0a800', '#d39e00',  # Bootstrap yellow
+            '#17a2b8', '#138496', '#117a8b',  # Bootstrap cyan
+            '#6c757d', '#5a6268', '#545b62',  # Bootstrap gray
+        }
+
+        # Remove duplicates and filter generic colors
+        seen = set()
+        unique_colors = []
+        brand_color_candidates = []
+
+        for c in colors_data["all_colors"]:
+            color_lower = c["color"].lower()
+            if color_lower not in seen and color_lower not in generic_colors:
+                seen.add(color_lower)
+                unique_colors.append(c)
+                # Prefer colors from theme-color or CSS variables
+                if c["source"] in ["meta theme-color", "CSS variable"]:
+                    brand_color_candidates.insert(0, c)
+                else:
+                    brand_color_candidates.append(c)
+
+        colors_data["all_colors"] = unique_colors[:10]
+
+        # Set primary color from best candidate (prefer non-generic)
+        if brand_color_candidates and not colors_data["primary_color"]:
+            colors_data["primary_color"] = brand_color_candidates[0]["color"]
+            colors_data["source"] = brand_color_candidates[0]["source"]
+        elif unique_colors and not colors_data["primary_color"]:
+            colors_data["primary_color"] = unique_colors[0]["color"]
+            colors_data["source"] = unique_colors[0]["source"]
+
+        print(f"[Colors] Extracted {len(colors_data['all_colors'])} unique brand colors, primary: {colors_data['primary_color']}")
+        return colors_data
+
+    except Exception as e:
+        print(f"[Colors] Error extracting colors: {e}")
+        return colors_data
 
 
 def _extract_images_from_spa_bundle(url: str, soup: BeautifulSoup) -> List[str]:

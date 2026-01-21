@@ -203,6 +203,13 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         # Build the prompt text
         prompt_text = self.prompt.format(**creative_data)
 
+        # LOG THE EXACT PROMPT BEING SENT
+        print("\n" + "=" * 60)
+        print("[AdCreativeAgent] PROMPT SENT TO LLM:")
+        print("=" * 60)
+        print(prompt_text)
+        print("=" * 60 + "\n")
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -213,6 +220,13 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         )
 
         response_text = response.choices[0].message.content
+
+        # LOG THE RESPONSE FROM LLM
+        print("\n" + "-" * 60)
+        print("[AdCreativeAgent] RAW RESPONSE FROM LLM:")
+        print("-" * 60)
+        print(response_text)
+        print("-" * 60 + "\n")
 
         # Parse response
         result = self._parse_creative_response(response_text)
