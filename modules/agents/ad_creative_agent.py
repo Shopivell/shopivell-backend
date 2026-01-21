@@ -4,7 +4,7 @@ This agent takes creative angles and generates:
 1. Detailed image prompts for AI image generation
 2. Ad angles (descriptions) for the ad content
 
-Uses OpenRouter API via ChatOpenRouter adapter for AI generation.
+Uses Claude (Anthropic API) for best quality prompts, with OpenAI fallback.
 """
 
 import os
@@ -12,18 +12,15 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
+# Import Anthropic (Claude) - primary choice for prompt generation
 try:
-    from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
+    import anthropic
+    ANTHROPIC_AVAILABLE = True
 except ImportError:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
-    OPENROUTER_AVAILABLE = False
+    ANTHROPIC_AVAILABLE = False
 
-# Import OpenAI for direct fallback
+# Import OpenAI for fallback
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -35,19 +32,34 @@ logger = logging.getLogger(__name__)
 
 
 class AdCreativeAgent:
-    """AI Agent for generating ad creatives with high-quality structured image prompts"""
+    """AI Agent for generating ad creatives with high-quality structured image prompts.
+
+    Uses Claude (Anthropic) for best quality prompts, with OpenAI (GPT-4o) fallback.
+    """
 
     def __init__(self):
-        # Use OpenRouter with gpt-4o model
-        self.llm = ChatOpenRouter(
-            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
-            temperature=0.7
-        )
-        logger.info(f"[AdCreativeAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        # Initialize Claude client if available
+        self.anthropic_client = None
+        self.openai_client = None
 
-        # STRUCTURED prompt that generates high-quality image prompts
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+
+        if ANTHROPIC_AVAILABLE and anthropic_key:
+            self.anthropic_client = anthropic.Anthropic(api_key=anthropic_key)
+            logger.info("[AdCreativeAgent] Initialized with Claude (Anthropic API)")
+
+        if OPENAI_AVAILABLE and openai_key:
+            self.openai_client = OpenAI(api_key=openai_key)
+            if not self.anthropic_client:
+                logger.info("[AdCreativeAgent] Initialized with OpenAI (fallback)")
+
+        if not self.anthropic_client and not self.openai_client:
+            logger.warning("[AdCreativeAgent] No API clients available!")
+
+        # STRUCTURED prompt template that generates high-quality image prompts
         # This format produces prompts like a professional creative director would write
-        self.prompt = ChatPromptTemplate.from_template("""You are an expert advertising creative director who writes EXCEPTIONAL image generation prompts for AI tools like Gemini and DALL-E.
+        self.prompt_template = """You are an expert advertising creative director who writes EXCEPTIONAL image generation prompts for AI tools like Gemini and DALL-E.
 
 Your prompts MUST follow this EXACT structure:
 1. SCENE SETUP: "Professional advertisement image for a [industry] company: [business name]."
@@ -86,7 +98,7 @@ IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format 
 AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
 
 HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and professional]
-""")
+"""
 
     def _parse_creative_response(self, response_text: str) -> Dict[str, str]:
         """Parse the AI response into structured creative data"""
@@ -140,78 +152,103 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
     ) -> Dict[str, str]:
         """
         Generate ad creative with image prompt and ad angle.
+        Uses Claude (Anthropic) first, falls back to OpenAI (GPT-4o).
 
         Returns:
             Dict with 'image_prompt', 'ad_angle', and 'headline'
         """
-        try:
-            # Prepare data
-            creative_data = {
-                "product_name": product_name,
-                "product_description": product_description,
-                "target_audience": target_audience,
-                "key_benefits": ", ".join(key_benefits) if key_benefits else "Quality, Value, Convenience",
-                "call_to_action": call_to_action,
-                "angle_name": angle_name,
-                "angle_value_proposition": angle_value_proposition or f"Experience the best of {product_name}",
-                "angle_emotion": angle_emotion,
-                "visual_direction": visual_direction or "Modern, clean, professional advertising style"
-            }
+        # Prepare data
+        creative_data = {
+            "product_name": product_name,
+            "product_description": product_description,
+            "target_audience": target_audience,
+            "key_benefits": ", ".join(key_benefits) if key_benefits else "Quality, Value, Convenience",
+            "call_to_action": call_to_action,
+            "angle_name": angle_name,
+            "angle_value_proposition": angle_value_proposition or f"Experience the best of {product_name}",
+            "angle_emotion": angle_emotion,
+            "visual_direction": visual_direction or "Modern, clean, professional advertising style"
+        }
 
-            # Run the LLM chain
-            chain = self.prompt | self.llm | StrOutputParser()
-            response_text = await chain.ainvoke(creative_data)
+        # Build prompt from template
+        prompt_text = self.prompt_template.format(**creative_data)
 
-            # Parse response
-            result = self._parse_creative_response(response_text)
+        # Try Claude first (best for creative prompts)
+        if self.anthropic_client:
+            try:
+                return await self._generate_with_claude(prompt_text, product_name, visual_direction, angle_value_proposition)
+            except Exception as e:
+                print(f"[AdCreativeAgent] Claude error: {e}")
 
-            # Ensure we have valid values
-            if not result["image_prompt"]:
-                result["image_prompt"] = self._generate_fallback_prompt(product_name, visual_direction)
-            if not result["ad_angle"]:
-                result["ad_angle"] = f"Discover {product_name} - {angle_value_proposition or 'Your perfect choice'}"
-            if not result["headline"]:
-                result["headline"] = f"Discover {product_name}"
+        # Fall back to OpenAI
+        if self.openai_client:
+            try:
+                return await self._generate_with_openai(prompt_text, product_name, visual_direction, angle_value_proposition)
+            except Exception as e:
+                print(f"[AdCreativeAgent] OpenAI error: {e}")
 
-            return result
+        # Return fallback values if all fails
+        return {
+            "image_prompt": self._generate_fallback_prompt(product_name, visual_direction),
+            "ad_angle": f"Discover {product_name} - Quality you can trust",
+            "headline": f"Discover {product_name}"
+        }
 
-        except Exception as e:
-            print(f"[AdCreativeAgent] OpenRouter error: {e}")
-            # Try OpenAI as fallback
-            if OPENAI_AVAILABLE:
-                try:
-                    return await self._generate_with_openai_fallback(creative_data, product_name, visual_direction, angle_value_proposition)
-                except Exception as openai_error:
-                    print(f"[AdCreativeAgent] OpenAI fallback error: {openai_error}")
+    async def _generate_with_claude(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
+        """Generate creative using Claude (Anthropic API)"""
+        print("[AdCreativeAgent] Using Claude (Anthropic)...")
 
-            # Return fallback values
-            return {
-                "image_prompt": self._generate_fallback_prompt(product_name, visual_direction),
-                "ad_angle": f"Discover {product_name} - Quality you can trust",
-                "headline": f"Discover {product_name}"
-            }
-
-    async def _generate_with_openai_fallback(self, creative_data: Dict, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
-        """Fallback to OpenAI when OpenRouter fails"""
-        print("[AdCreativeAgent] Trying OpenAI fallback...")
-        openai_key = os.getenv("OPENAI_API_KEY")
-        if not openai_key:
-            raise ValueError("OpenAI API key not configured")
-
-        client = OpenAI(api_key=openai_key)
-
-        # Build the prompt text
-        prompt_text = self.prompt.format(**creative_data)
-
-        # LOG THE EXACT PROMPT BEING SENT
+        # LOG THE PROMPT
         print("\n" + "=" * 60)
-        print("[AdCreativeAgent] PROMPT SENT TO LLM:")
+        print("[AdCreativeAgent] PROMPT SENT TO CLAUDE:")
         print("=" * 60)
-        print(prompt_text)
+        print(prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text)
         print("=" * 60 + "\n")
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        message = self.anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[
+                {"role": "user", "content": prompt_text}
+            ]
+        )
+
+        response_text = message.content[0].text
+
+        # LOG THE RESPONSE
+        print("\n" + "-" * 60)
+        print("[AdCreativeAgent] RAW RESPONSE FROM CLAUDE:")
+        print("-" * 60)
+        print(response_text)
+        print("-" * 60 + "\n")
+
+        # Parse response
+        result = self._parse_creative_response(response_text)
+
+        # Ensure valid values
+        if not result["image_prompt"]:
+            result["image_prompt"] = self._generate_fallback_prompt(product_name, visual_direction)
+        if not result["ad_angle"]:
+            result["ad_angle"] = f"Discover {product_name} - {angle_value_proposition or 'Your perfect choice'}"
+        if not result["headline"]:
+            result["headline"] = f"Discover {product_name}"
+
+        print("[AdCreativeAgent] Claude generation successful")
+        return result
+
+    async def _generate_with_openai(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
+        """Generate creative using OpenAI (GPT-4o) as fallback"""
+        print("[AdCreativeAgent] Using OpenAI (GPT-4o) fallback...")
+
+        # LOG THE PROMPT
+        print("\n" + "=" * 60)
+        print("[AdCreativeAgent] PROMPT SENT TO OPENAI:")
+        print("=" * 60)
+        print(prompt_text[:500] + "..." if len(prompt_text) > 500 else prompt_text)
+        print("=" * 60 + "\n")
+
+        response = self.openai_client.chat.completions.create(
+            model="gpt-4o",  # Using gpt-4o for better quality
             messages=[
                 {"role": "user", "content": prompt_text}
             ],
@@ -221,9 +258,9 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
 
         response_text = response.choices[0].message.content
 
-        # LOG THE RESPONSE FROM LLM
+        # LOG THE RESPONSE
         print("\n" + "-" * 60)
-        print("[AdCreativeAgent] RAW RESPONSE FROM LLM:")
+        print("[AdCreativeAgent] RAW RESPONSE FROM OPENAI:")
         print("-" * 60)
         print(response_text)
         print("-" * 60 + "\n")
@@ -231,7 +268,7 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         # Parse response
         result = self._parse_creative_response(response_text)
 
-        # Ensure we have valid values
+        # Ensure valid values
         if not result["image_prompt"]:
             result["image_prompt"] = self._generate_fallback_prompt(product_name, visual_direction)
         if not result["ad_angle"]:
@@ -239,7 +276,7 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         if not result["headline"]:
             result["headline"] = f"Discover {product_name}"
 
-        print("[AdCreativeAgent] OpenAI fallback successful")
+        print("[AdCreativeAgent] OpenAI generation successful")
         return result
 
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
