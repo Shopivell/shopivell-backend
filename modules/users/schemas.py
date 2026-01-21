@@ -21,16 +21,21 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    
+
     name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     phone_number: Optional[str] = None
     gender: Optional[str] = None
     age: Optional[int] = None
     marital_status: Optional[str] = None
     address: Optional[str] = None
+    profile_picture: Optional[str] = None
 
 class UserResponse(UserBase):
     id: uuid.UUID
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     role: UserRole
     is_verified: bool
     is_active: bool
