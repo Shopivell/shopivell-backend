@@ -8,7 +8,7 @@ from uuid import UUID
 from calendar import monthrange
 
 from database import get_db
-from modules.users.auth import get_current_user, CurrentUser
+from dependencies import get_current_user, CurrentUser
 from modules.stores.models import Store
 
 from .models import (
