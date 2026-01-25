@@ -35,14 +35,18 @@ def generate_unique_slug(db: Session, base_name: str) -> str:
     counter = 1
     max_attempts = 100  # Safety limit
 
-    while counter <= max_attempts:
-        result = db.execute(text("SELECT 1 FROM agencies WHERE slug = :slug"), {"slug": slug}).fetchone()
-        if not result:
-            return slug
-        slug = f"{base_slug}-{counter}"
-        counter += 1
+    try:
+        while counter <= max_attempts:
+            result = db.execute(text("SELECT 1 FROM agencies WHERE slug = :slug"), {"slug": slug}).fetchone()
+            if not result:
+                return slug
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+    except Exception:
+        # If agencies table doesn't exist, just use UUID-based slug
+        pass
 
-    # Fallback: use UUID suffix if too many attempts
+    # Fallback: use UUID suffix
     return f"{base_slug}-{uuid_module.uuid4().hex[:8]}"
 
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
