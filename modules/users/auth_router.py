@@ -274,7 +274,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             db.execute(
                 text("""
                     INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
                     "id": agency_id,
@@ -474,7 +474,7 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
             db.execute(
                 text("""
                     INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
                     "id": agency_id,
@@ -600,7 +600,7 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             db.execute(
                 text("""
                     INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'ACTIVE', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """),
                 {
                     "id": agency_id,
