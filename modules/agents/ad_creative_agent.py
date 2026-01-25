@@ -63,24 +63,43 @@ class AdCreativeAgent:
 
 IMPORTANT: Be IMAGINATIVE and create REAL-WORLD SCENARIOS showing the product/service IN USE. Don't just show products - show PEOPLE experiencing the benefits in realistic situations. Think about WHO uses this service and WHAT they're doing when they use it.
 
+CRITICAL: YOU ARE CREATING A COMPLETE MARKETING AD IMAGE WITH TEXT BAKED IN.
+The final image must include ALL text elements rendered directly in the image:
+- HEADLINE at the top (dark banner/header area)
+- BULLET POINTS on the left side (with bullet markers)
+- CTA BUTTON (colored button with action text)
+
+COMPOSITION RULES FOR MARKETING ADS WITH TEXT:
+1. TOP HEADER AREA: Dark semi-transparent banner at top 15-20% with large white headline text
+2. LEFT SIDE BULLETS: 3 benefit bullet points with bullet markers (•) on the left side of the image
+3. CTA BUTTON: Bright colored button (use brand color) with white text for the call-to-action, positioned on right side
+4. DEVICE SHOWCASE: For SaaS/digital products - person HOLDING or POINTING TO a device showing the product interface
+5. SUBJECT POSITIONING: Main subjects positioned center-right to leave room for bullet text on left
+
 Your prompts MUST follow this EXACT structure:
-1. SCENE SETUP: "Professional advertisement image for a [industry] company: [business name]."
-2. SCENARIO: Create a REALISTIC scene showing the product/service being USED by real people in a believable situation
-3. PEOPLE & ACTION: Include people actively using/benefiting from the service - show their expressions, body language, the environment
-4. BRAND VISIBILITY: Include the brand name naturally in the scene - on ATMs, storefronts, cards, screens, uniforms, signage, packaging, or products where it would realistically appear
-5. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color throughout - on screens, clothing accents, lighting, environment."
-6. MOOD: "Mood: [specific mood words]."
-7. TECHNICAL: "High-quality commercial photography, cinematic composition, professional lighting, 8K quality."
-8. COMPLIANCE: "AVOID: [things to avoid]."
+1. SCENE SETUP: "Professional marketing advertisement image for a [industry] company: [business name]."
+2. TEXT OVERLAY - HEADLINE: "TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: '[HEADLINE TEXT]'"
+3. TEXT OVERLAY - BULLETS: "On the left side of the image, display 3 bullet points in white text: • [Benefit 1] • [Benefit 2] • [Benefit 3]"
+4. TEXT OVERLAY - CTA: "Include a [brand color] colored button on the right side with white text reading: '[CTA TEXT]'"
+5. SCENARIO: Create a REALISTIC scene showing the product/service being USED by real people
+6. PEOPLE & ACTION: Include people actively using/benefiting from the service with positive expressions
+7. DEVICE DISPLAY (for digital products): Show the product interface on a device being held/pointed to by the person
+8. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color - on CTA button, device screen elements, clothing accents."
+9. MOOD: "Mood: [specific mood words]."
+10. TECHNICAL: "High-quality commercial photography, marketing advertisement style, professional lighting, 8K quality."
+11. COMPLIANCE: "AVOID: [things to avoid]. Ensure all text is crisp and readable."
+
+EXAMPLE for SaaS/digital service (Business Email Provider):
+"Professional marketing advertisement image for a business email service company: WEBZIM. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Professional Email From US$25/Year'. On the left side of the image, display 3 bullet points in white text: • Personalized emails (info@yourdomain) • Plans from US$25/year • Reliable storage and spam protection. Include a bright green #7CB342 colored button on the right side with white text reading: 'CREATE BUSINESS EMAIL'. SCENE: A friendly female business owner in a cafe setting wearing a black apron over a grey shirt, warmly smiling while holding a tablet and pointing to the screen. The tablet displays a professional email inbox interface with the WEBZIM logo at top, showing multiple business email conversations with contact avatars. A male colleague stands behind her slightly blurred, also smiling. The background shows a warm, inviting cafe interior with soft bokeh lighting. Subject positioned center-right. IMPORTANT COLOR THEME: Use #7CB342 bright green as accent color - on the CTA button, tablet screen interface elements, and subtle lighting accents. Mood: professional, approachable, successful, modern. High-quality commercial photography, marketing advertisement style, warm natural lighting, 8K quality. AVOID: cluttered interfaces, corporate sterile environments, stock photo poses. Ensure all text overlays are crisp, readable, and professionally designed."
 
 EXAMPLE for fintech/payments company (Zimswitch):
-"Professional advertisement image for a financial technology company: Zimswitch. Target audience: HR Managers & Business Owners. Create a scene showing a confident HR manager in a modern office, smiling while viewing a laptop screen displaying a payroll dashboard with multiple employee salary transactions being processed. A Zimswitch-branded ATM is visible through the office window in the building lobby. In the background, happy employees can be seen through glass walls. The Zimswitch logo appears on the payment interface screen. IMPORTANT COLOR THEME: Use #0066CC blue as accent color throughout - on the laptop screen UI, the ATM branding, the manager's blazer accent, and ambient office lighting. Mood: efficient, relieved, professional, empowering. High-quality commercial photography, cinematic office composition, warm professional lighting, 8K quality. AVOID: stressed expressions, cluttered desks, outdated technology."
+"Professional marketing advertisement image for a financial technology company: Zimswitch. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Seamless Payroll Processing'. On the left side of the image, display 3 bullet points in white text: • Bulk salary payments • Secure transactions • Nationwide coverage. Include a blue #0066CC colored button on the right side with white text reading: 'GET STARTED'. SCENE: A confident HR manager in a modern office, smiling while holding a tablet displaying a payroll dashboard with the Zimswitch logo and multiple employee salary transactions. She points at a successful transaction on screen. A Zimswitch-branded ATM is visible through the office window. Subject positioned center-right. IMPORTANT COLOR THEME: Use #0066CC blue as accent color - on the CTA button, the tablet screen UI, the ATM branding, and ambient office lighting. Mood: efficient, relieved, professional, empowering. High-quality commercial photography, marketing advertisement style, warm professional lighting, 8K quality. AVOID: stressed expressions, cluttered desks, outdated technology. Ensure all text overlays are crisp and readable."
 
 EXAMPLE for fashion retail (Edgars):
-"Professional advertisement image for a fashion retail company: Edgars. Target audience: Young Professionals. Create a scene showing a stylish young professional woman walking confidently out of a modern Edgars store entrance with the illuminated 'EDGARS' storefront sign visible above. She's carrying Edgars-branded shopping bags, wearing a chic outfit. She's checking her phone with a satisfied smile while her friend admires her new look. IMPORTANT COLOR THEME: Use #E31837 red as accent color throughout - on the Edgars signage, shopping bags, her accessories, store lighting glow. Mood: aspirational, confident, social, successful. High-quality commercial photography, street-style composition, golden hour lighting, 8K quality. AVOID: empty stores, bored expressions, cheap-looking items."
+"Professional marketing advertisement image for a fashion retail company: Edgars. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Style That Defines You'. On the left side of the image, display 3 bullet points in white text: • Trendy fashion for all • Affordable prices • Quality brands you trust. Include a red #E31837 colored button on the right side with white text reading: 'SHOP NOW'. SCENE: A stylish young professional woman walking confidently out of a modern Edgars store entrance with the illuminated 'EDGARS' storefront sign visible above. She's carrying Edgars-branded shopping bags, wearing a chic outfit, checking her phone with a satisfied smile while her friend admires her new look. Subject positioned center-right. IMPORTANT COLOR THEME: Use #E31837 red as accent color - on the CTA button, Edgars signage, shopping bags, her accessories. Mood: aspirational, confident, social, successful. High-quality commercial photography, marketing advertisement style, golden hour lighting, 8K quality. AVOID: empty stores, bored expressions, cheap-looking items. Ensure all text overlays are crisp and readable."
 
 EXAMPLE for security company (SecureSights):
-"Professional advertisement image for a security company: SecureSights. Target audience: Homeowners. Create a scene showing a relaxed father on a couch with his daughter, both smiling while he checks the SecureSights home security app on his tablet showing all-clear status with the SecureSights logo visible on the app interface. Through the window, you can see a peaceful evening neighborhood. A SecureSights-branded security camera is visible in the corner of the room. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color on tablet screen UI, the SecureSights camera, cushion accents, and evening ambient lighting. Mood: peaceful, protected, family-focused, reassuring. High-quality commercial photography, warm home interior, cozy evening lighting, 8K quality. AVOID: fear-based imagery, weapons, dark threatening scenes."
+"Professional marketing advertisement image for a security company: SecureSights. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Peace of Mind, Always'. On the left side of the image, display 3 bullet points in white text: • 24/7 monitoring • Smart home integration • Instant alerts. Include a navy blue #1E3A5F colored button on the right side with white text reading: 'PROTECT YOUR HOME'. SCENE: A relaxed father on a couch with his daughter, both smiling while he holds and points to a tablet showing the SecureSights home security app with all-clear status and the SecureSights logo visible. Through the window, a peaceful evening neighborhood is visible. A SecureSights-branded security camera in the corner of the room. Subject positioned center-right. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color - on CTA button, tablet screen UI, the security camera, cushion accents. Mood: peaceful, protected, family-focused, reassuring. High-quality commercial photography, marketing advertisement style, cozy evening lighting, 8K quality. AVOID: fear-based imagery, weapons, dark threatening scenes. Ensure all text overlays are crisp and readable."
 
 ---
 
@@ -100,11 +119,18 @@ Logo URL: {logo_url}
 
 Generate output in this EXACT format:
 
-IMAGE_PROMPT: [Write a STRUCTURED 4-6 sentence prompt following my exact format above. Be IMAGINATIVE - create a REAL-WORLD SCENARIO showing people USING the product/service. Include: scene setup, realistic scenario with people in action, BRAND NAME visible naturally in the scene (on ATMs, storefronts, cards, screens, signage, products), their expressions and environment, color theme with hex code, mood, technical specs, and what to AVOID. Make it SPECIFIC to this business type - show the actual USE CASE with brand visibility. If a Logo URL is provided above, ADD this instruction at the end: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
+IMAGE_PROMPT: [Write a COMPLETE marketing ad prompt following my exact format above. MUST INCLUDE:
+1. TEXT OVERLAY instructions with the HEADLINE text at the top in a dark banner
+2. BULLET POINTS (3 benefits) on the left side using the key_benefits provided
+3. CTA BUTTON with the call_to_action text in brand color
+4. SCENE description with people using the product/service
+5. Brand color theme and mood
+6. Technical specs
+The prompt must generate a COMPLETE AD IMAGE with all text baked in, not just a photo. If a Logo URL is provided above, ADD: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
 
 AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
 
-HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and professional]
+HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and professional. This MUST match the headline text you include in the IMAGE_PROMPT.]
 """
 
     def _parse_creative_response(self, response_text: str) -> Dict[str, str]:
@@ -157,7 +183,8 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         angle_emotion: str = "Interest",
         visual_direction: str = "",
         logo_url: str = "",
-        brand_color: str = ""
+        brand_color: str = "",
+        visual_profile: Dict[str, Any] = None
     ) -> Dict[str, str]:
         """
         Generate ad creative with image prompt and ad angle.
@@ -175,6 +202,19 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         if brand_color:
             color_instruction = f" IMPORTANT: The brand's primary color is {brand_color} - use this EXACT color as the accent color throughout the image."
 
+        # Build visual profile instruction (uniforms, vehicles, equipment from actual website images)
+        visual_profile_instruction = ""
+        if visual_profile:
+            parts = []
+            if visual_profile.get("uniform_description"):
+                parts.append(f"ACTUAL UNIFORMS FROM WEBSITE: {visual_profile['uniform_description']}")
+            if visual_profile.get("vehicle_description"):
+                parts.append(f"ACTUAL VEHICLES FROM WEBSITE: {visual_profile['vehicle_description']}")
+            if visual_profile.get("equipment_description"):
+                parts.append(f"ACTUAL EQUIPMENT FROM WEBSITE: {visual_profile['equipment_description']}")
+            if parts:
+                visual_profile_instruction = " | CRITICAL - USE THESE EXACT VISUAL DETAILS SEEN ON THE COMPANY WEBSITE (do not invent different uniforms/vehicles): " + " | ".join(parts)
+
         # Prepare data
         creative_data = {
             "product_name": product_name,
@@ -185,7 +225,7 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
             "angle_name": angle_name,
             "angle_value_proposition": angle_value_proposition or f"Experience the best of {product_name}",
             "angle_emotion": angle_emotion,
-            "visual_direction": (visual_direction or "Modern, clean, professional advertising style") + color_instruction,
+            "visual_direction": (visual_direction or "Modern, clean, professional advertising style") + color_instruction + visual_profile_instruction,
             "logo_url": logo_url or "Not provided"
         }
 

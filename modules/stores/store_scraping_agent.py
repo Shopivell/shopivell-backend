@@ -21,6 +21,21 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
+# Import screenshot and brand analysis functions
+try:
+    from modules.stores.scraping_service import (
+        capture_homepage_screenshot_sync,
+        analyze_brand_from_screenshot_sync,
+        PLAYWRIGHT_AVAILABLE,
+        GEMINI_AVAILABLE
+    )
+    SCREENSHOT_AVAILABLE = PLAYWRIGHT_AVAILABLE
+except ImportError:
+    SCREENSHOT_AVAILABLE = False
+    GEMINI_AVAILABLE = False
+    capture_homepage_screenshot_sync = None
+    analyze_brand_from_screenshot_sync = None
+
 # Import LangChain components
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -244,7 +259,8 @@ If no information can be extracted, return an empty array: []
                 '/about', '/about-us', '/aboutus', '/who-we-are',
                 '/products', '/services', '/our-services', '/what-we-do',
                 '/faq', '/faqs', '/help', '/support',
-                '/pricing', '/prices', '/rates',
+                '/pricing', '/prices', '/rates', '/plans', '/packages',  # Pricing pages
+                '/solutions', '/offerings', '/features',  # Product pages
                 '/locations', '/branches', '/find-us',
             ]
 
@@ -781,6 +797,63 @@ If no information can be extracted, return an empty array: []
         result["pages_scraped"] = scraped_data.get("pages_extracted", 0)
         result["scraped_at"] = scraped_data.get("extracted_at")
 
+        # Step 8: Capture homepage screenshot and analyze brand with Gemini
+        if SCREENSHOT_AVAILABLE and capture_homepage_screenshot_sync:
+            logger.info(f"[StoreScrapingAgent] Capturing full homepage screenshot...")
+            screenshot_data = capture_homepage_screenshot_sync(url, full_page=True)
+
+            if screenshot_data.get("success"):
+                result["homepage_screenshot"] = {
+                    "path": screenshot_data.get("screenshot_path"),
+                    "filename": screenshot_data.get("screenshot_filename"),
+                    "base64": screenshot_data.get("screenshot_base64"),
+                    "width": screenshot_data.get("width"),
+                    "height": screenshot_data.get("height"),
+                    "url": screenshot_data.get("url"),
+                    "screenshot_url": screenshot_data.get("screenshot_url"),  # Cloudinary URL
+                    "thumbnail_url": screenshot_data.get("thumbnail_url"),
+                }
+                # Also add screenshot_url at top level for easy database access
+                if screenshot_data.get("screenshot_url"):
+                    result["screenshot_url"] = screenshot_data.get("screenshot_url")
+                    result["screenshot_thumbnail_url"] = screenshot_data.get("thumbnail_url")
+                logger.info(f"[StoreScrapingAgent] Screenshot captured: {screenshot_data.get('screenshot_filename')}")
+                if screenshot_data.get("screenshot_url"):
+                    logger.info(f"[StoreScrapingAgent] Cloudinary URL: {screenshot_data.get('screenshot_url')}")
+
+                # Analyze brand from screenshot using Gemini
+                if GEMINI_AVAILABLE and analyze_brand_from_screenshot_sync:
+                    logger.info(f"[StoreScrapingAgent] Analyzing brand with Gemini...")
+                    brand_analysis = analyze_brand_from_screenshot_sync(
+                        screenshot_base64=screenshot_data.get("screenshot_base64"),
+                        url=url
+                    )
+
+                    if brand_analysis.get("success"):
+                        brand = brand_analysis.get("brand_analysis", {})
+                        result["brand_analysis"] = brand
+
+                        # Use Gemini-extracted colors if available
+                        if brand.get("primary_color"):
+                            result["brand_color"] = brand["primary_color"]
+                            result["brand_color_source"] = "gemini_screenshot_analysis"
+                            logger.info(f"[StoreScrapingAgent] Brand color from Gemini: {brand['primary_color']}")
+
+                        if brand.get("color_palette"):
+                            result["all_brand_colors"] = [
+                                {"color": c, "source": "gemini_screenshot_analysis"}
+                                for c in brand["color_palette"]
+                            ]
+
+                        if brand.get("industry_guess"):
+                            result["detected_industry"] = brand["industry_guess"]
+
+                        logger.info(f"[StoreScrapingAgent] Brand analysis complete")
+                    else:
+                        logger.warning(f"[StoreScrapingAgent] Brand analysis failed: {brand_analysis.get('error')}")
+            else:
+                logger.warning(f"[StoreScrapingAgent] Screenshot failed: {screenshot_data.get('error')}")
+
         logger.info(f"[StoreScrapingAgent] Extraction complete: {result.get('store_name')}")
         logger.info(f"[StoreScrapingAgent] Email: {result.get('store_email')}, Phone: {result.get('store_phone')}")
         logger.info(f"[StoreScrapingAgent] FAQs: {len(valid_faqs)}, Logo: {'Yes' if logo_url else 'No'}")
@@ -802,8 +875,8 @@ If no information can be extracted, return an empty array: []
 
     async def extract_products(self, url: str) -> Dict[str, Any]:
         """
-        Extract products/services from a website.
-        Returns a list of products with name, description, price, and category.
+        Extract products/services from a website with prices and pricing tiers.
+        Returns structured data with products, services, and pricing tiers.
         """
         logger.info(f"[StoreScrapingAgent] Starting products extraction for: {url}")
 
@@ -812,87 +885,181 @@ If no information can be extracted, return an empty array: []
 
         if not scraped_data.get("content"):
             logger.warning("[StoreScrapingAgent] No content scraped for products")
-            return {"products": [], "message": "Could not scrape website content"}
+            return {"products": [], "services": [], "pricing_tiers": [], "message": "Could not scrape website content"}
 
         domain = scraped_data.get("domain", "")
         content = scraped_data.get("content", "")
 
-        # Products extraction prompt
+        # Enhanced products extraction prompt with industry-specific guidance
         products_prompt = ChatPromptTemplate.from_template("""
-You are an expert at extracting products and services from website content.
+You are an expert at extracting product and service information from websites.
 
-TASK: Extract ALL products, services, or packages mentioned on this website.
+TASK: Extract ALL products, services, and pricing from this website content.
 
 Website URL: {url}
 Domain: {domain}
 
-CONTENT:
+EXTRACT THE FOLLOWING:
+
+1. **PRODUCTS** (physical or digital items for sale):
+   - name: Exact product name as shown on website
+   - description: What it is (1-2 sentences)
+   - price: Actual price with currency (e.g., "$25/year", "$3.50/month", "From $99")
+   - price_numeric: Just the number (e.g., 25, 3.50, 99)
+   - currency: Currency code (USD, ZAR, ZWL)
+   - billing_period: monthly, yearly, once-off, or null
+   - category: Product category
+
+2. **SERVICES** (services offered):
+   - name: Exact service name
+   - description: What the service includes
+   - price: Price if shown (e.g., "$100/hour", "From $500")
+   - price_numeric: Just the number
+   - currency: Currency code
+   - billing_period: monthly, yearly, hourly, once-off, or null
+   - category: Service category
+
+3. **PRICING TIERS** (for subscription/SaaS/tiered businesses):
+   - tier_name: Name of the plan (e.g., "Bronze", "Premium", "Enterprise")
+   - price: Price with billing period (e.g., "$10/month", "$99/year")
+   - price_numeric: Just the number
+   - currency: Currency code
+   - billing_period: monthly, yearly
+   - features: Key features included (list of strings)
+
+4. **BUSINESS INFO**:
+   - industry: Specific industry (e.g., "web_hosting", "security_services", "restaurant", "retail")
+   - target_market: Who they sell to
+
+INDUSTRY-SPECIFIC GUIDANCE:
+- For HOSTING companies: Look for Domain Registration, Web Hosting plans, Email Hosting, SSL Certificates
+- For SECURITY companies: Look for Armed Response, CCTV Installation, Access Control, Monitoring packages
+- For RESTAURANTS: Look for menu items, meal deals, catering packages
+- For RETAIL: Look for product categories, individual items with prices
+- For CONSULTANTS: Look for service packages, hourly rates, project-based pricing
+
+WEBSITE CONTENT:
 {content}
 
-EXTRACT products/services with these fields:
-- name: Product or service name (required)
-- description: Short description (1-2 sentences)
-- price: Price as a number (0 if not found, extract from USD, ZAR, ZWL, etc.)
-- currency: Currency code (USD, ZAR, ZWL, etc.) - default to USD if unclear
-- category: Product category (e.g., "Security Services", "Electronics", "Consulting")
-- image_url: Product image URL if found
+IMPORTANT RULES:
+- Extract ONLY products/services that ACTUALLY appear in the content
+- Include ACTUAL prices if shown - don't make up prices
+- Be SPECIFIC - use exact names from the website, not generic terms
+- If no price is shown, use "Contact for quote" for price and 0 for price_numeric
+- Extract up to 20 products, 10 services, and 10 pricing tiers
 
-IMPORTANT:
-- Extract ACTUAL products/services from the content, not placeholders
-- For service-based businesses, extract service packages/tiers
-- Include pricing if mentioned (monthly, yearly, per unit)
-- If no specific price, set price to 0
-- Maximum 20 products
-
-Return a JSON array of products:
-[
-    {{"name": "Product Name", "description": "Description", "price": 99.99, "currency": "USD", "category": "Category", "image_url": null}},
-    ...
-]
-
-Return ONLY the JSON array, no other text.
+Return ONLY valid JSON in this format:
+{{
+  "products": [
+    {{"name": "Product Name", "description": "What it is", "price": "$XX/year", "price_numeric": 25, "currency": "USD", "billing_period": "yearly", "category": "category"}}
+  ],
+  "services": [
+    {{"name": "Service Name", "description": "What it includes", "price": "$XX/month", "price_numeric": 100, "currency": "USD", "billing_period": "monthly", "category": "category"}}
+  ],
+  "pricing_tiers": [
+    {{"tier_name": "Basic", "price": "$10/month", "price_numeric": 10, "currency": "USD", "billing_period": "monthly", "features": ["feature 1", "feature 2"]}}
+  ],
+  "industry": "specific_industry",
+  "target_market": "who they sell to"
+}}
 """)
 
         try:
-            products_chain = products_prompt | self.llm | StrOutputParser()
-            products_response = await products_chain.ainvoke({
-                "url": url,
-                "domain": domain,
-                "content": content[:25000]
-            })
+            # Use OpenAI directly for better extraction (bypass OpenRouter for this)
+            from openai import OpenAI
+            openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+            response = openai_client.chat.completions.create(
+                model="gpt-4o",  # Use stronger model for accurate extraction
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert at extracting product and pricing information from websites. Always return valid JSON only. Be specific and accurate - extract actual product names and prices."
+                    },
+                    {
+                        "role": "user",
+                        "content": products_prompt.format(url=url, domain=domain, content=content[:30000])
+                    }
+                ],
+                temperature=0.1,
+                max_tokens=3000
+            )
+
+            products_response = response.choices[0].message.content.strip()
             products_response = self._clean_json_response(products_response)
-            products = json.loads(products_response)
+            data = json.loads(products_response)
 
             # Validate and normalize products
             valid_products = []
-            for i, product in enumerate(products):
+            for i, product in enumerate(data.get("products", [])):
                 if isinstance(product, dict) and product.get("name"):
                     valid_products.append({
                         "id": i + 1,
-                        "name": product.get("name", "Unnamed Product"),
+                        "name": product.get("name", ""),
                         "description": product.get("description", ""),
-                        "price": float(product.get("price", 0)) if product.get("price") else 0,
+                        "price": product.get("price", "Contact for quote"),
+                        "price_numeric": float(product.get("price_numeric", 0)) if product.get("price_numeric") else 0,
                         "currency": product.get("currency", "USD"),
+                        "billing_period": product.get("billing_period"),
                         "category": product.get("category", "General"),
-                        "image_url": product.get("image_url"),
                         "sku": f"SKU-{i+1:04d}"
                     })
 
-            logger.info(f"[StoreScrapingAgent] Extracted {len(valid_products)} products")
+            # Validate services
+            valid_services = []
+            for i, service in enumerate(data.get("services", [])):
+                if isinstance(service, dict) and service.get("name"):
+                    valid_services.append({
+                        "id": i + 1,
+                        "name": service.get("name", ""),
+                        "description": service.get("description", ""),
+                        "price": service.get("price", "Contact for quote"),
+                        "price_numeric": float(service.get("price_numeric", 0)) if service.get("price_numeric") else 0,
+                        "currency": service.get("currency", "USD"),
+                        "billing_period": service.get("billing_period"),
+                        "category": service.get("category", "General")
+                    })
+
+            # Validate pricing tiers
+            valid_tiers = []
+            for i, tier in enumerate(data.get("pricing_tiers", [])):
+                if isinstance(tier, dict) and tier.get("tier_name"):
+                    valid_tiers.append({
+                        "id": i + 1,
+                        "tier_name": tier.get("tier_name", ""),
+                        "price": tier.get("price", "Contact for quote"),
+                        "price_numeric": float(tier.get("price_numeric", 0)) if tier.get("price_numeric") else 0,
+                        "currency": tier.get("currency", "USD"),
+                        "billing_period": tier.get("billing_period"),
+                        "features": tier.get("features", [])
+                    })
+
+            logger.info(f"[StoreScrapingAgent] Extracted {len(valid_products)} products, {len(valid_services)} services, {len(valid_tiers)} pricing tiers")
 
             return {
                 "products": valid_products,
-                "total": len(valid_products),
+                "services": valid_services,
+                "pricing_tiers": valid_tiers,
+                "industry": data.get("industry", "general"),
+                "target_market": data.get("target_market", ""),
+                "total_products": len(valid_products),
+                "total_services": len(valid_services),
+                "total_tiers": len(valid_tiers),
                 "source_url": url,
-                "message": f"Successfully extracted {len(valid_products)} products/services"
+                "message": f"Successfully extracted {len(valid_products)} products, {len(valid_services)} services, {len(valid_tiers)} pricing tiers"
             }
 
         except Exception as e:
             logger.error(f"[StoreScrapingAgent] Products extraction error: {e}")
             return {
                 "products": [],
-                "total": 0,
+                "services": [],
+                "pricing_tiers": [],
+                "industry": "general",
+                "target_market": "",
+                "total_products": 0,
+                "total_services": 0,
+                "total_tiers": 0,
                 "source_url": url,
                 "message": f"Failed to extract products: {str(e)}"
             }

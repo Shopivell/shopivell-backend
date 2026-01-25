@@ -7,8 +7,10 @@ import os
 import json
 import re
 import base64
+import asyncio
 from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin, urlparse
+from pathlib import Path
 from tavily import TavilyClient
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -17,14 +19,598 @@ from bs4 import BeautifulSoup
 import phonenumbers
 from phonenumbers import PhoneNumberMatcher, PhoneNumberFormat
 
+# Screenshot capture imports
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    print("[Screenshot] Playwright not installed. Run: pip install playwright && playwright install chromium")
+
 load_dotenv()
 
 # Initialize clients
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
+# Screenshot storage directory
+SCREENSHOT_DIR = Path("uploads/screenshots")
+SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-def extract_store_info_from_website(url: str) -> Dict[str, Any]:
+# Cloudinary configuration for screenshot uploads
+try:
+    import cloudinary
+    import cloudinary.uploader
+
+    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+    CLOUDINARY_CONFIGURED = (
+        CLOUDINARY_CLOUD_NAME and
+        CLOUDINARY_API_KEY and
+        CLOUDINARY_API_SECRET and
+        CLOUDINARY_CLOUD_NAME != "your_cloud_name"
+    )
+
+    if CLOUDINARY_CONFIGURED:
+        cloudinary.config(
+            cloud_name=CLOUDINARY_CLOUD_NAME,
+            api_key=CLOUDINARY_API_KEY,
+            api_secret=CLOUDINARY_API_SECRET,
+            secure=True
+        )
+        print("[Screenshot] Cloudinary configured for screenshot uploads")
+    else:
+        print("[Screenshot] Cloudinary not configured - screenshots will be stored locally only")
+
+except ImportError:
+    CLOUDINARY_CONFIGURED = False
+    print("[Screenshot] Cloudinary not installed - screenshots will be stored locally only")
+
+
+def upload_screenshot_to_cloudinary(
+    screenshot_bytes: bytes,
+    filename: str,
+    folder: str = "shopivell/screenshots"
+) -> Dict[str, Any]:
+    """
+    Upload a screenshot to Cloudinary.
+
+    Args:
+        screenshot_bytes: The screenshot image bytes
+        filename: The filename for the screenshot
+        folder: Cloudinary folder path
+
+    Returns:
+        Dict with upload result including secure_url, or error info
+    """
+    if not CLOUDINARY_CONFIGURED:
+        return {
+            "success": False,
+            "error": "Cloudinary not configured"
+        }
+
+    try:
+        import uuid as uuid_module
+
+        # Upload to Cloudinary
+        result = cloudinary.uploader.upload(
+            screenshot_bytes,
+            folder=folder,
+            public_id=f"screenshot_{uuid_module.uuid4().hex[:12]}",
+            resource_type="image",
+            overwrite=True,
+            eager=[
+                {"width": 400, "height": 300, "crop": "fill", "format": "jpg"}  # Thumbnail
+            ],
+            eager_async=False
+        )
+
+        # Extract thumbnail URL
+        thumbnail_url = None
+        if result.get("eager") and len(result["eager"]) > 0:
+            thumbnail_url = result["eager"][0].get("secure_url")
+
+        print(f"[Screenshot] Uploaded to Cloudinary: {result.get('secure_url')}")
+
+        return {
+            "success": True,
+            "public_id": result.get("public_id"),
+            "url": result.get("url"),
+            "secure_url": result.get("secure_url"),
+            "thumbnail_url": thumbnail_url,
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "format": result.get("format"),
+            "bytes": result.get("bytes")
+        }
+
+    except Exception as e:
+        print(f"[Screenshot] Cloudinary upload error: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict[str, Any]:
+    """
+    Capture a screenshot of the website homepage using Playwright.
+
+    Args:
+        url: The website URL to capture
+        full_page: If True, captures the full scrollable page. If False, captures viewport only.
+
+    Returns:
+        Dict with screenshot_path, screenshot_base64, width, height, or error info
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Playwright not installed. Run: pip install playwright && playwright install chromium"
+        }
+
+    # Normalize URL
+    if not url.startswith('http'):
+        url = 'https://' + url
+
+    try:
+        async with async_playwright() as p:
+            # Try to find system Chrome installation
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            ]
+
+            executable_path = None
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    executable_path = path
+                    print(f"[Screenshot] Using system Chrome: {path}")
+                    break
+
+            # Launch headless browser (use system Chrome if available)
+            launch_options = {"headless": True}
+            if executable_path:
+                launch_options["executable_path"] = executable_path
+                launch_options["channel"] = None  # Don't use channel when specifying executable
+                browser = await p.chromium.launch(**launch_options)
+            else:
+                # Fall back to Playwright's bundled Chromium
+                browser = await p.chromium.launch(headless=True)
+
+            # Create context with desktop viewport
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            page = await context.new_page()
+
+            # Navigate to URL with timeout
+            print(f"[Screenshot] Navigating to {url}")
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+
+            # Wait for content to load
+            await page.wait_for_timeout(2000)
+
+            # Generate unique filename
+            domain = urlparse(url).netloc.replace("www.", "").replace(".", "_")
+            import uuid as uuid_module
+            filename = f"{domain}_{uuid_module.uuid4().hex[:8]}.png"
+            screenshot_path = SCREENSHOT_DIR / filename
+
+            # Capture screenshot
+            screenshot_bytes = await page.screenshot(
+                full_page=full_page,
+                type="png"
+            )
+
+            # Save to file locally
+            with open(screenshot_path, "wb") as f:
+                f.write(screenshot_bytes)
+
+            # Get viewport size
+            viewport_size = page.viewport_size
+
+            await browser.close()
+
+            print(f"[Screenshot] Captured: {screenshot_path} ({len(screenshot_bytes)} bytes)")
+
+            # Upload to Cloudinary
+            cloudinary_url = None
+            cloudinary_thumbnail = None
+            if CLOUDINARY_CONFIGURED:
+                cloudinary_result = upload_screenshot_to_cloudinary(
+                    screenshot_bytes=screenshot_bytes,
+                    filename=filename
+                )
+                if cloudinary_result.get("success"):
+                    cloudinary_url = cloudinary_result.get("secure_url")
+                    cloudinary_thumbnail = cloudinary_result.get("thumbnail_url")
+                    print(f"[Screenshot] Cloudinary URL: {cloudinary_url}")
+
+            return {
+                "success": True,
+                "screenshot_path": str(screenshot_path),
+                "screenshot_filename": filename,
+                "screenshot_base64": base64.b64encode(screenshot_bytes).decode("utf-8"),
+                "screenshot_url": cloudinary_url,  # Cloudinary URL for database storage
+                "thumbnail_url": cloudinary_thumbnail,
+                "width": viewport_size["width"] if viewport_size else 1920,
+                "height": viewport_size["height"] if viewport_size else 1080,
+                "full_page": full_page,
+                "url": url
+            }
+
+    except Exception as e:
+        print(f"[Screenshot] Error capturing screenshot: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "url": url
+        }
+
+
+def capture_homepage_screenshot_sync(url: str, full_page: bool = False) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for capture_homepage_screenshot.
+    """
+    try:
+        # Try to get existing event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running (e.g., in FastAPI), create a new thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    capture_homepage_screenshot(url, full_page)
+                )
+                return future.result(timeout=60)
+        else:
+            return loop.run_until_complete(capture_homepage_screenshot(url, full_page))
+    except RuntimeError:
+        # No event loop exists
+        return asyncio.run(capture_homepage_screenshot(url, full_page))
+
+
+async def capture_website_screenshots(url: str, full_page: bool = False) -> Dict[str, Any]:
+    """
+    Capture screenshots of multiple pages on a website.
+
+    Args:
+        url: The base website URL
+        full_page: If True, captures the full scrollable page. If False, captures viewport only.
+
+    Returns:
+        Dict with screenshots list containing data for each captured page
+    """
+    if not PLAYWRIGHT_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Playwright not installed. Run: pip install playwright && playwright install chromium"
+        }
+
+    # Normalize URL
+    base_url = url.rstrip('/')
+    if not base_url.startswith('http'):
+        base_url = 'https://' + base_url
+
+    # Pages to capture (same as Tavily extraction)
+    pages_to_capture = [
+        {"path": "", "name": "homepage"},
+        {"path": "/about", "name": "about"},
+        {"path": "/about-us", "name": "about_us"},
+        {"path": "/contact", "name": "contact"},
+        {"path": "/contact-us", "name": "contact_us"},
+        {"path": "/services", "name": "services"},
+        {"path": "/products", "name": "products"},
+    ]
+
+    screenshots = []
+
+    try:
+        async with async_playwright() as p:
+            # Try to find system Chrome installation
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            ]
+
+            executable_path = None
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    executable_path = path
+                    print(f"[Screenshot] Using system Chrome: {path}")
+                    break
+
+            # Launch headless browser
+            launch_options = {"headless": True}
+            if executable_path:
+                launch_options["executable_path"] = executable_path
+                browser = await p.chromium.launch(**launch_options)
+            else:
+                browser = await p.chromium.launch(headless=True)
+
+            # Create context with desktop viewport
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            page = await context.new_page()
+            domain = urlparse(base_url).netloc.replace("www.", "").replace(".", "_")
+
+            for page_info in pages_to_capture:
+                page_url = base_url + page_info["path"]
+                page_name = page_info["name"]
+
+                try:
+                    print(f"[Screenshot] Capturing {page_name}: {page_url}")
+
+                    # Navigate with domcontentloaded (faster than networkidle)
+                    response = await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+
+                    # Skip if page doesn't exist (404, etc.)
+                    if response and response.status >= 400:
+                        print(f"[Screenshot] Skipping {page_name}: HTTP {response.status}")
+                        continue
+
+                    # Wait for content to settle
+                    await page.wait_for_timeout(2000)
+
+                    # Generate unique filename
+                    import uuid as uuid_module
+                    filename = f"{domain}_{page_name}_{uuid_module.uuid4().hex[:8]}.png"
+                    screenshot_path = SCREENSHOT_DIR / filename
+
+                    # Capture screenshot
+                    screenshot_bytes = await page.screenshot(
+                        full_page=full_page,
+                        type="png"
+                    )
+
+                    # Save to file
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot_bytes)
+
+                    viewport_size = page.viewport_size
+
+                    screenshots.append({
+                        "success": True,
+                        "page_name": page_name,
+                        "page_url": page_url,
+                        "screenshot_path": str(screenshot_path),
+                        "screenshot_filename": filename,
+                        "screenshot_base64": base64.b64encode(screenshot_bytes).decode("utf-8"),
+                        "width": viewport_size["width"] if viewport_size else 1920,
+                        "height": viewport_size["height"] if viewport_size else 1080,
+                    })
+
+                    print(f"[Screenshot] Captured {page_name}: {filename} ({len(screenshot_bytes)} bytes)")
+
+                except Exception as e:
+                    print(f"[Screenshot] Failed to capture {page_name}: {e}")
+                    # Continue to next page even if one fails
+
+            await browser.close()
+
+            return {
+                "success": len(screenshots) > 0,
+                "screenshots": screenshots,
+                "total_captured": len(screenshots),
+                "base_url": base_url
+            }
+
+    except Exception as e:
+        print(f"[Screenshot] Error capturing screenshots: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "screenshots": screenshots,
+            "base_url": base_url
+        }
+
+
+def capture_website_screenshots_sync(url: str, full_page: bool = False) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for capture_website_screenshots.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    capture_website_screenshots(url, full_page)
+                )
+                return future.result(timeout=300)  # 5 min timeout for multiple pages
+        else:
+            return loop.run_until_complete(capture_website_screenshots(url, full_page))
+    except RuntimeError:
+        return asyncio.run(capture_website_screenshots(url, full_page))
+
+
+# Gemini brand analysis imports
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    print("[BrandAnalysis] google-genai package not installed. Run: pip install google-genai")
+
+# Gemini API key
+gemini_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+
+async def analyze_brand_from_screenshot(
+    screenshot_base64: str = None,
+    screenshot_path: str = None,
+    url: str = None
+) -> Dict[str, Any]:
+    """
+    Analyze a website screenshot using Gemini to extract brand elements.
+
+    Args:
+        screenshot_base64: Base64-encoded screenshot image
+        screenshot_path: Path to screenshot file (alternative to base64)
+        url: Original website URL (for context)
+
+    Returns:
+        Dict with brand analysis including:
+        - logo_description: Description of the logo
+        - logo_location: Where the logo appears in the screenshot
+        - primary_color: Main brand color (hex)
+        - secondary_color: Secondary brand color (hex)
+        - accent_color: Accent color (hex)
+        - color_palette: List of all detected brand colors
+        - typography_style: Description of fonts/typography
+        - design_style: Overall design aesthetic
+        - brand_personality: Inferred brand personality traits
+        - key_visual_elements: Notable visual elements
+    """
+    if not GEMINI_AVAILABLE:
+        return {
+            "success": False,
+            "error": "google-genai package not installed. Run: pip install google-genai"
+        }
+
+    if not gemini_api_key:
+        return {
+            "success": False,
+            "error": "GOOGLE_API_KEY or GEMINI_API_KEY not configured"
+        }
+
+    # Get image bytes
+    image_bytes = None
+    if screenshot_base64:
+        image_bytes = base64.b64decode(screenshot_base64)
+    elif screenshot_path:
+        try:
+            with open(screenshot_path, "rb") as f:
+                image_bytes = f.read()
+        except Exception as e:
+            return {"success": False, "error": f"Failed to read screenshot file: {e}"}
+
+    if not image_bytes:
+        return {"success": False, "error": "No screenshot provided (base64 or path required)"}
+
+    try:
+        # Initialize Gemini client
+        client = genai.Client(api_key=gemini_api_key)
+
+        # Create image part
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+        # Build the analysis prompt
+        prompt = f"""Analyze this website screenshot and extract brand elements.
+{f"Website URL: {url}" if url else ""}
+
+Please provide a detailed brand analysis in the following JSON format:
+{{
+    "logo_description": "Detailed description of the logo (shape, text, imagery)",
+    "logo_location": "Where the logo appears (e.g., 'top-left header', 'center hero')",
+    "logo_colors": ["#hex1", "#hex2"],
+    "primary_color": "#hex - The main brand color used prominently",
+    "secondary_color": "#hex - The secondary supporting color",
+    "accent_color": "#hex - Color used for CTAs, highlights",
+    "background_color": "#hex - Main background color",
+    "text_color": "#hex - Primary text color",
+    "color_palette": ["#hex1", "#hex2", "#hex3", "#hex4", "#hex5"],
+    "typography_style": "Description of font styles (modern sans-serif, classic serif, etc.)",
+    "heading_style": "How headings appear (bold, light, uppercase, etc.)",
+    "design_style": "Overall aesthetic (minimalist, corporate, playful, luxury, etc.)",
+    "brand_personality": ["trait1", "trait2", "trait3"],
+    "industry_guess": "What industry/business type this appears to be",
+    "key_visual_elements": ["element1", "element2", "element3"],
+    "layout_style": "Description of the layout (hero-centric, grid-based, etc.)",
+    "call_to_action_style": "How CTAs are styled (button colors, shapes)"
+}}
+
+IMPORTANT:
+- Return ONLY valid JSON, no markdown or explanation
+- All colors must be in hex format (#RRGGBB)
+- Be specific about colors - extract actual colors from the screenshot
+- If you cannot determine something, use null"""
+
+        # Call Gemini API
+        print(f"[BrandAnalysis] Analyzing screenshot with Gemini...")
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[image_part, prompt]
+        )
+
+        # Parse the response
+        response_text = response.text.strip()
+
+        # Clean up response (remove markdown code blocks if present)
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+
+        # Parse JSON
+        try:
+            brand_data = json.loads(response_text)
+            print(f"[BrandAnalysis] Successfully extracted brand data")
+            return {
+                "success": True,
+                "brand_analysis": brand_data,
+                "url": url
+            }
+        except json.JSONDecodeError as e:
+            print(f"[BrandAnalysis] Failed to parse JSON response: {e}")
+            print(f"[BrandAnalysis] Raw response: {response_text[:500]}")
+            return {
+                "success": False,
+                "error": f"Failed to parse Gemini response as JSON: {e}",
+                "raw_response": response_text
+            }
+
+    except Exception as e:
+        print(f"[BrandAnalysis] Error analyzing screenshot: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+def analyze_brand_from_screenshot_sync(
+    screenshot_base64: str = None,
+    screenshot_path: str = None,
+    url: str = None
+) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for analyze_brand_from_screenshot.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    analyze_brand_from_screenshot(screenshot_base64, screenshot_path, url)
+                )
+                return future.result(timeout=120)
+        else:
+            return loop.run_until_complete(
+                analyze_brand_from_screenshot(screenshot_base64, screenshot_path, url)
+            )
+    except RuntimeError:
+        return asyncio.run(
+            analyze_brand_from_screenshot(screenshot_base64, screenshot_path, url)
+        )
+
+
+def extract_store_info_from_website(url: str, capture_screenshot: bool = True, analyze_brand: bool = True) -> Dict[str, Any]:
     """
     Scrape a website using Tavily and extract store information using an AI agent.
     Also extracts and analyzes images (logos, product images) using OpenAI Vision.
@@ -48,9 +634,43 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
 
         domain = base_url.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
 
-        # Build list of URLs to extract (main page + common pages)
+        # Capture screenshots of multiple pages
+        screenshots_data = None
+        brand_analysis_data = None
+        if capture_screenshot:
+            print(f"[Screenshot] Capturing website screenshots for {base_url}")
+            screenshots_data = capture_website_screenshots_sync(base_url, full_page=False)
+            if screenshots_data.get("success"):
+                print(f"[Screenshot] Successfully captured {screenshots_data.get('total_captured')} pages")
+
+                # Run brand analysis on the homepage screenshot using Gemini
+                if analyze_brand and screenshots_data.get("screenshots"):
+                    # Find homepage screenshot for brand analysis
+                    homepage_screenshot = next(
+                        (s for s in screenshots_data["screenshots"] if s.get("page_name") == "homepage"),
+                        screenshots_data["screenshots"][0] if screenshots_data["screenshots"] else None
+                    )
+                    if homepage_screenshot:
+                        print(f"[BrandAnalysis] Running Gemini brand analysis on homepage screenshot...")
+                        brand_analysis_data = analyze_brand_from_screenshot_sync(
+                            screenshot_base64=homepage_screenshot.get("screenshot_base64"),
+                            url=base_url
+                        )
+                        if brand_analysis_data.get("success"):
+                            print(f"[BrandAnalysis] Successfully extracted brand data")
+                        else:
+                            print(f"[BrandAnalysis] Failed: {brand_analysis_data.get('error')}")
+            else:
+                print(f"[Screenshot] Failed: {screenshots_data.get('error')}")
+
+        # Build list of URLs to extract (main page + common pages + product/pricing pages)
         urls_to_extract = [base_url]
-        common_pages = ['/contact', '/contact-us', '/about', '/about-us']
+        common_pages = [
+            '/contact', '/contact-us',
+            '/about', '/about-us',
+            '/services', '/products', '/pricing', '/plans',  # Product/pricing pages
+            '/packages', '/solutions', '/offerings',  # Alternative product pages
+        ]
         for page in common_pages:
             urls_to_extract.append(base_url + page)
 
@@ -144,11 +764,19 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         if images_data.get("images"):
             store_data["extracted_images"] = images_data["images"][:10]  # Limit to 10 images
 
-        # Add brand colors from CSS
-        if colors_data.get("primary_color"):
+        # Add brand colors - PRIORITIZE Vision-extracted colors from logo over CSS
+        # Vision colors are more accurate as they come directly from the logo image
+        if image_analysis and image_analysis.get("brand_colors"):
+            # Use first color from Vision analysis (extracted from logo)
+            vision_color = image_analysis["brand_colors"][0]
+            store_data["brand_color"] = vision_color
+            store_data["brand_color_source"] = "logo (vision)"
+            print(f"[Colors] Using Vision-extracted brand color from logo: {vision_color}")
+        elif colors_data.get("primary_color"):
+            # Fallback to CSS-extracted color
             store_data["brand_color"] = colors_data["primary_color"]
             store_data["brand_color_source"] = colors_data.get("source", "unknown")
-            print(f"[Colors] Added brand color to store_data: {colors_data['primary_color']} (from {colors_data.get('source')})")
+            print(f"[Colors] Using CSS-extracted brand color: {colors_data['primary_color']} (from {colors_data.get('source')})")
         if colors_data.get("all_colors"):
             store_data["all_brand_colors"] = colors_data["all_colors"]
 
@@ -191,6 +819,69 @@ def extract_store_info_from_website(url: str) -> Dict[str, Any]:
         print(f"[FAQ] Extracting FAQs from scraped content...")
         faqs = _extract_faqs_with_ai(combined_content, url)
         store_data["faqs"] = faqs
+
+        # Extract products/services with prices (dedicated extraction)
+        print(f"[Products] Extracting products/services with prices...")
+        products_data = _extract_products_services_with_prices(combined_content, url)
+        store_data["products"] = products_data.get("products", [])
+        store_data["services"] = products_data.get("services", [])
+        store_data["pricing_tiers"] = products_data.get("pricing_tiers", [])
+        store_data["detected_industry"] = products_data.get("industry", "general")
+        store_data["target_market"] = products_data.get("target_market", "")
+
+        # Add screenshot data for brand analysis by AI agent
+        if screenshots_data and screenshots_data.get("success"):
+            # Add all screenshots
+            store_data["screenshots"] = [
+                {
+                    "page_name": s.get("page_name"),
+                    "page_url": s.get("page_url"),
+                    "path": s.get("screenshot_path"),
+                    "filename": s.get("screenshot_filename"),
+                    "base64": s.get("screenshot_base64"),
+                    "width": s.get("width"),
+                    "height": s.get("height"),
+                }
+                for s in screenshots_data.get("screenshots", [])
+            ]
+            # Also keep homepage_screenshot for backwards compatibility
+            homepage = next(
+                (s for s in screenshots_data.get("screenshots", []) if s.get("page_name") == "homepage"),
+                screenshots_data.get("screenshots", [None])[0]
+            )
+            if homepage:
+                store_data["homepage_screenshot"] = {
+                    "path": homepage.get("screenshot_path"),
+                    "filename": homepage.get("screenshot_filename"),
+                    "base64": homepage.get("screenshot_base64"),
+                    "width": homepage.get("width"),
+                    "height": homepage.get("height"),
+                    "url": homepage.get("page_url")
+                }
+            print(f"[Screenshot] Added {len(store_data['screenshots'])} screenshots to store_data")
+
+        # Add Gemini brand analysis results
+        if brand_analysis_data and brand_analysis_data.get("success"):
+            brand = brand_analysis_data.get("brand_analysis", {})
+            store_data["brand_analysis"] = brand
+
+            # Use Gemini-extracted colors if available (override CSS-extracted colors)
+            if brand.get("primary_color"):
+                store_data["brand_color"] = brand["primary_color"]
+                store_data["brand_color_source"] = "gemini_screenshot_analysis"
+                print(f"[BrandAnalysis] Using Gemini-extracted primary color: {brand['primary_color']}")
+
+            if brand.get("color_palette"):
+                store_data["all_brand_colors"] = [
+                    {"color": c, "source": "gemini_screenshot_analysis"}
+                    for c in brand["color_palette"]
+                ]
+
+            # Use Gemini-detected business type if available
+            if brand.get("industry_guess"):
+                store_data["detected_industry"] = brand["industry_guess"]
+
+            print(f"[BrandAnalysis] Brand analysis added to store_data")
 
         return store_data
 
@@ -401,7 +1092,7 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
                             print(f"[Colors] Found CSS variable '{name}': {color}")
 
             # Generic colors to skip when setting primary (check early)
-            # Includes black, white, grays, and Bootstrap framework colors
+            # Includes black, white, grays, Bootstrap, and WordPress preset colors
             early_skip_colors = {
                 '#000', '#000000', '#fff', '#ffffff', '#333', '#333333',
                 '#666', '#666666', '#999', '#999999', '#ccc', '#cccccc',
@@ -416,6 +1107,17 @@ def _extract_brand_colors_from_css(url: str) -> Dict[str, Any]:
                 '#17a2b8', '#138496', '#117a8b',  # Bootstrap cyan
                 '#343a40', '#23272b', '#1d2124',  # Bootstrap dark
                 '#f8f9fa', '#e2e6ea', '#dae0e5', '#212529',  # Bootstrap light/dark
+                # WordPress default preset colors (appear on every WP site)
+                '#abb8c3',  # cyan-bluish-gray
+                '#f78da7',  # pale-pink
+                '#cf2e2e',  # vivid-red
+                '#ff6900',  # luminous-vivid-orange
+                '#fcb900',  # luminous-vivid-amber
+                '#7bdcb5',  # light-green-cyan
+                '#00d084',  # vivid-green-cyan
+                '#8ed1fc',  # pale-cyan-blue
+                '#0693e3',  # vivid-cyan-blue
+                '#9b51e0',  # vivid-purple
             }
 
             # Process simple patterns (no name capture)
@@ -786,90 +1488,212 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
 
 def _analyze_images_with_vision(images_data: Dict[str, Any], domain: str) -> Dict[str, Any]:
     """
-    Analyze images using OpenAI Vision to extract brand information.
+    Analyze multiple images using OpenAI Vision to extract comprehensive brand information.
+    Identifies which images contain uniforms, vehicles, equipment for use as Gemini reference images.
     """
     client = OpenAI(api_key=openai_api_key)
 
     analysis_result = {
         "brand_colors": [],
         "logo_description": None,
+        "logo_url": images_data.get("logo_url"),
         "brand_style": None,
-        "detected_text": None
+        "detected_text": None,
+        "uniform_description": None,
+        "vehicle_description": None,
+        "equipment_description": None,
+        "visual_profile": None,
+        "reference_images": [],  # Images to pass to Gemini with their types
+        "uniform_images": [],    # Specific images showing uniforms
+        "vehicle_images": [],    # Specific images showing vehicles
+        "equipment_images": []   # Specific images showing equipment
     }
 
-    # Prioritize which image to analyze
-    image_url = images_data.get("logo_url") or images_data.get("og_image")
+    # Step 1: Analyze the logo for brand colors
+    logo_url = images_data.get("logo_url")
+    if logo_url:
+        try:
+            print(f"[Vision] Analyzing logo: {logo_url}")
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"""Analyze this company LOGO from {domain}. Extract:
 
-    if not image_url:
-        # Try the first non-logo image
-        for img in images_data.get("images", []):
-            if img.get("url"):
-                image_url = img["url"]
-                break
+1. **Brand Colors**: List PRIMARY colors as hex codes (e.g., #FF5733). Focus on main logo colors.
+2. **Logo Description**: Describe the logo (icon, text, symbols, style).
+3. **Brand Style**: What feeling does it convey? (Professional, Modern, Bold, etc.)
+4. **Text Detected**: Company name visible in logo.
 
-    if not image_url:
-        print("[Vision] No suitable image found for analysis")
-        return analysis_result
-
-    try:
-        print(f"[Vision] Analyzing image: {image_url}")
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"""Analyze this image from the website {domain}. Extract the following information:
-
-1. **Brand Colors**: List the PRIMARY colors you see (as hex codes). Focus on:
-   - Main brand/logo colors
-   - Dominant accent colors
-   - Return 1-3 hex codes like #FF5733
-
-2. **Logo Description**: If this is a logo, describe it briefly:
-   - What does it look like? (icon, text, combination)
-   - Any symbols or icons used?
-   - The overall style (modern, classic, playful, professional)
-
-3. **Brand Style**: What feeling/style does the branding convey?
-   - Examples: "Modern & Minimalist", "Warm & Friendly", "Professional & Corporate", "Bold & Energetic"
-
-4. **Text Detected**: Any text/company name visible in the image?
-
-Return ONLY valid JSON in this format:
-{{"brand_colors": ["#hex1", "#hex2"], "logo_description": "...", "brand_style": "...", "detected_text": "..."}}"""
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_url,
-                                "detail": "low"  # Use low detail to save tokens
+Return ONLY valid JSON:
+{{"brand_colors": ["#hex1"], "logo_description": "...", "brand_style": "...", "detected_text": "..."}}"""
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": logo_url, "detail": "low"}
                             }
-                        }
-                    ]
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            result_text = response.choices[0].message.content.strip()
+            if result_text.startswith("```"):
+                result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+                result_text = re.sub(r'\n?```$', '', result_text)
+            logo_analysis = json.loads(result_text)
+            analysis_result["brand_colors"] = logo_analysis.get("brand_colors", [])
+            analysis_result["logo_description"] = logo_analysis.get("logo_description")
+            analysis_result["brand_style"] = logo_analysis.get("brand_style")
+            analysis_result["detected_text"] = logo_analysis.get("detected_text")
+            analysis_result["reference_images"].append({"url": logo_url, "type": "logo"})
+            print(f"[Vision] Logo colors: {analysis_result['brand_colors']}")
+        except Exception as e:
+            print(f"[Vision] Error analyzing logo: {e}")
+
+    # Step 2: Analyze other images to find uniforms, vehicles, equipment
+    # Filter out tracking pixels and invalid images
+    invalid_patterns = [
+        'facebook.com/tr', 'google-analytics.com', 'doubleclick.net',
+        'pixel', 'tracking', 'beacon', '1x1', 'spacer', '.gif',
+        'analytics', 'stat', 'counter', 'noscript'
+    ]
+
+    def is_valid_image(url: str) -> bool:
+        url_lower = url.lower()
+        return not any(pattern in url_lower for pattern in invalid_patterns)
+
+    other_images = [
+        img for img in images_data.get("images", [])
+        if img.get("url") and img["url"] != logo_url and is_valid_image(img["url"])
+    ]
+
+    # Also check OG image (if valid)
+    og_image = images_data.get("og_image")
+    if og_image and og_image != logo_url and is_valid_image(og_image):
+        other_images.insert(0, {"url": og_image, "alt": "og_image"})
+
+    # Analyze up to 8 images to find uniforms/vehicles/equipment
+    images_to_analyze = other_images[:8]
+    print(f"[Vision] Filtered to {len(images_to_analyze)} valid images (excluded tracking pixels)")
+
+    if images_to_analyze:
+        try:
+            print(f"[Vision] Analyzing {len(images_to_analyze)} images for uniforms/vehicles/equipment...")
+
+            # Build content with multiple images - numbered for identification
+            image_list_text = "\n".join([f"Image {i+1}: {img['url']}" for i, img in enumerate(images_to_analyze)])
+
+            content_parts = [
+                {
+                    "type": "text",
+                    "text": f"""Analyze these {len(images_to_analyze)} images from {domain} company website.
+
+IMAGE LIST:
+{image_list_text}
+
+For EACH category below, identify:
+1. A detailed description of what you see
+2. Which IMAGE NUMBER(s) show this (e.g., "1, 3" or "none")
+
+Categories:
+
+1. **UNIFORMS**: If you see employees/staff in uniforms:
+   - Describe: Colors, style (polo, button-down, jacket), logos/badges
+   - Which images show uniforms?
+
+2. **VEHICLES**: If you see company vehicles:
+   - Describe: Type (truck, van, sedan), colors, branding
+   - Which images show vehicles?
+
+3. **EQUIPMENT**: If you see security/business equipment:
+   - Describe: Type (cameras, monitors, alarms), style
+   - Which images show equipment?
+
+4. **STAFF/PEOPLE**: If you see staff or employees:
+   - Which images show staff/people?
+
+Return ONLY valid JSON:
+{{
+    "uniform_description": "detailed description or null",
+    "uniform_image_numbers": [1, 3] or [],
+    "vehicle_description": "detailed description or null",
+    "vehicle_image_numbers": [2] or [],
+    "equipment_description": "detailed description or null",
+    "equipment_image_numbers": [4, 5] or [],
+    "staff_image_numbers": [1, 3] or [],
+    "visual_profile": "overall visual style"
+}}"""
                 }
-            ],
-            max_tokens=300
-        )
+            ]
 
-        result_text = response.choices[0].message.content.strip()
+            for img in images_to_analyze:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": img["url"], "detail": "low"}
+                })
 
-        # Clean up markdown if present
-        if result_text.startswith("```"):
-            result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
-            result_text = re.sub(r'\n?```$', '', result_text)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": content_parts}],
+                max_tokens=600
+            )
 
-        print(f"[Vision] Analysis result: {result_text[:200]}")
+            result_text = response.choices[0].message.content.strip()
+            if result_text.startswith("```"):
+                result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+                result_text = re.sub(r'\n?```$', '', result_text)
 
-        analysis_result = json.loads(result_text)
+            visual_analysis = json.loads(result_text)
 
-    except Exception as e:
-        print(f"[Vision] Error analyzing image: {e}")
+            # Extract descriptions
+            analysis_result["uniform_description"] = visual_analysis.get("uniform_description")
+            analysis_result["vehicle_description"] = visual_analysis.get("vehicle_description")
+            analysis_result["equipment_description"] = visual_analysis.get("equipment_description")
+            analysis_result["visual_profile"] = visual_analysis.get("visual_profile")
+
+            # Map image numbers to URLs and categorize
+            uniform_nums = visual_analysis.get("uniform_image_numbers", [])
+            vehicle_nums = visual_analysis.get("vehicle_image_numbers", [])
+            equipment_nums = visual_analysis.get("equipment_image_numbers", [])
+            staff_nums = visual_analysis.get("staff_image_numbers", [])
+
+            for i, img in enumerate(images_to_analyze):
+                img_num = i + 1  # 1-indexed
+                img_url = img["url"]
+
+                if img_num in uniform_nums or img_num in staff_nums:
+                    analysis_result["uniform_images"].append(img_url)
+                    analysis_result["reference_images"].append({"url": img_url, "type": "uniform"})
+                    print(f"[Vision] Found UNIFORM image: {img_url[:60]}...")
+                elif img_num in vehicle_nums:
+                    analysis_result["vehicle_images"].append(img_url)
+                    analysis_result["reference_images"].append({"url": img_url, "type": "vehicle"})
+                    print(f"[Vision] Found VEHICLE image: {img_url[:60]}...")
+                elif img_num in equipment_nums:
+                    analysis_result["equipment_images"].append(img_url)
+                    analysis_result["reference_images"].append({"url": img_url, "type": "equipment"})
+                    print(f"[Vision] Found EQUIPMENT image: {img_url[:60]}...")
+                else:
+                    analysis_result["reference_images"].append({"url": img_url, "type": "scene"})
+
+            print(f"[Vision] Uniform: {analysis_result['uniform_description']}")
+            print(f"[Vision] Vehicle: {analysis_result['vehicle_description']}")
+            print(f"[Vision] Equipment: {analysis_result['equipment_description']}")
+            print(f"[Vision] Uniform images found: {len(analysis_result['uniform_images'])}")
+            print(f"[Vision] Vehicle images found: {len(analysis_result['vehicle_images'])}")
+
+        except Exception as e:
+            print(f"[Vision] Error analyzing scene images: {e}")
+            import traceback
+            traceback.print_exc()
 
     return analysis_result
+
 
 
 def _extract_with_ai_agent(content: str, url: str, image_analysis: Optional[Dict] = None) -> Dict[str, Any]:
@@ -1400,6 +2224,171 @@ If no information can be extracted, return an empty array: []
     except Exception as e:
         print(f"[FAQ Agent] Error extracting FAQs: {e}")
         return []
+
+
+def _extract_products_services_with_prices(content: str, url: str) -> Dict[str, Any]:
+    """
+    Extract ACTUAL products/services with prices from website content.
+    This is a dedicated function for accurate product/service extraction.
+
+    Returns:
+        Dict with:
+        - products: List of product dicts with name, description, price, category
+        - services: List of service dicts with name, description, price, category
+        - pricing_tiers: List of pricing tier dicts (for SaaS/subscription businesses)
+        - industry: Detected industry type
+        - target_market: Who the business sells to
+    """
+    client = OpenAI(api_key=openai_api_key)
+
+    # Use more content for product extraction
+    if len(content) > 30000:
+        content = content[:30000] + "..."
+
+    domain = url.replace('https://', '').replace('http://', '').replace('www.', '').split('/')[0]
+
+    prompt = f"""You are an expert at extracting product and service information from websites.
+
+TASK: Extract ALL products, services, and pricing from this website content.
+
+Website URL: {url}
+Domain: {domain}
+
+EXTRACT THE FOLLOWING:
+
+1. **PRODUCTS** (physical or digital items for sale):
+   - name: Exact product name
+   - description: What it is (1-2 sentences)
+   - price: Actual price if shown (e.g., "$25/year", "$3.50/month", "From $99")
+   - category: Product category
+
+2. **SERVICES** (services offered):
+   - name: Exact service name
+   - description: What the service includes
+   - price: Price if shown
+   - category: Service category
+
+3. **PRICING TIERS** (for subscription/SaaS businesses):
+   - tier_name: Name of the plan (e.g., "Bronze", "Premium", "Enterprise")
+   - price: Price with billing period (e.g., "$10/month", "$99/year")
+   - features: Key features included (list)
+
+4. **BUSINESS INFO**:
+   - industry: Specific industry (e.g., "web_hosting", "security_services", "restaurant", "retail_fashion")
+   - target_market: Who they sell to
+
+WEBSITE CONTENT:
+{content}
+
+IMPORTANT RULES:
+- Extract ONLY products/services that ACTUALLY appear in the content
+- Include ACTUAL prices if shown - don't make up prices
+- Be SPECIFIC - don't use generic terms like "various services"
+- For hosting companies: look for Domain Registration, Web Hosting, Email Hosting, SSL Certificates
+- For security companies: look for Armed Response, CCTV, Access Control, Monitoring
+- For restaurants: look for menu items with prices
+- If no price is shown, use "Contact for quote" or "Price on request"
+
+Return ONLY valid JSON in this format:
+{{
+  "products": [
+    {{"name": "Product Name", "description": "What it is", "price": "$XX", "category": "category"}}
+  ],
+  "services": [
+    {{"name": "Service Name", "description": "What it includes", "price": "$XX/month", "category": "category"}}
+  ],
+  "pricing_tiers": [
+    {{"tier_name": "Basic", "price": "$10/month", "features": ["feature 1", "feature 2"]}}
+  ],
+  "industry": "specific_industry",
+  "target_market": "who they sell to"
+}}
+
+If no products/services found, return empty arrays."""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",  # Use stronger model for accurate extraction
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert at extracting product and pricing information from websites. Always return valid JSON only. Be specific and accurate."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Clean up the response
+        if result_text.startswith("```"):
+            result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+            result_text = re.sub(r'\n?```$', '', result_text)
+
+        print(f"[Products] Extracted products/services: {result_text[:200]}...")
+
+        data = json.loads(result_text)
+
+        # Validate and clean the response
+        products = data.get("products", [])
+        services = data.get("services", [])
+        pricing_tiers = data.get("pricing_tiers", [])
+
+        # Validate products
+        valid_products = []
+        for p in products:
+            if isinstance(p, dict) and p.get("name"):
+                valid_products.append({
+                    "name": p.get("name", ""),
+                    "description": p.get("description", ""),
+                    "price": p.get("price", "Contact for quote"),
+                    "category": p.get("category", "general")
+                })
+
+        # Validate services
+        valid_services = []
+        for s in services:
+            if isinstance(s, dict) and s.get("name"):
+                valid_services.append({
+                    "name": s.get("name", ""),
+                    "description": s.get("description", ""),
+                    "price": s.get("price", "Contact for quote"),
+                    "category": s.get("category", "general")
+                })
+
+        # Validate pricing tiers
+        valid_tiers = []
+        for t in pricing_tiers:
+            if isinstance(t, dict) and t.get("tier_name"):
+                valid_tiers.append({
+                    "tier_name": t.get("tier_name", ""),
+                    "price": t.get("price", "Contact for quote"),
+                    "features": t.get("features", [])
+                })
+
+        result = {
+            "products": valid_products,
+            "services": valid_services,
+            "pricing_tiers": valid_tiers,
+            "industry": data.get("industry", "general"),
+            "target_market": data.get("target_market", ""),
+            "total_items": len(valid_products) + len(valid_services)
+        }
+
+        print(f"[Products] Found {len(valid_products)} products, {len(valid_services)} services, {len(valid_tiers)} pricing tiers")
+        return result
+
+    except json.JSONDecodeError as e:
+        print(f"[Products] JSON parse error: {e}")
+        return {"products": [], "services": [], "pricing_tiers": [], "industry": "general", "target_market": "", "total_items": 0}
+    except Exception as e:
+        print(f"[Products] Error extracting products/services: {e}")
+        return {"products": [], "services": [], "pricing_tiers": [], "industry": "general", "target_market": "", "total_items": 0}
 
 
 def _generate_fallback_data(url: str) -> Dict[str, Any]:

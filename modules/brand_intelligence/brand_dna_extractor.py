@@ -13,8 +13,9 @@ Brand DNA includes:
 import os
 import logging
 import asyncio
+import json
 from typing import Dict, Any, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -23,6 +24,14 @@ from .visual_style_analyzer import VisualStyleAnalyzer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Pages to fetch for comprehensive content extraction
+CONTENT_PAGES = [
+    '',  # Main page
+    '/services', '/products', '/pricing', '/plans',
+    '/packages', '/solutions', '/offerings',
+    '/about', '/about-us',
+]
 
 try:
     from openai import OpenAI
@@ -85,7 +94,7 @@ class BrandDNAExtractor:
 
         asset_text = "\n".join(asset_summary) if asset_summary else "Limited images available"
 
-        prompt = f"""Analyze this business from their website content and determine their identity.
+        prompt = f"""Analyze this business from their website content and extract their ACTUAL products/services.
 
 DOMAIN: {domain}
 
@@ -95,18 +104,26 @@ WEBSITE CONTENT (excerpt):
 AVAILABLE VISUAL ASSETS:
 {asset_text}
 
+IMPORTANT: Extract the ACTUAL products/services they sell, NOT generic descriptions.
+- Look for specific product names (e.g., "Web Hosting", "Domain Registration", "Email Hosting")
+- Look for pricing information (e.g., "$25/year", "$3.50/month")
+- Look for service tiers or packages (e.g., "Bronze Plan", "Premium Package")
+- If it's a hosting company, list: Domain Registration, Web Hosting, Email Hosting, SSL Certificates, etc.
+- If it's a security company, list: Armed Response, CCTV Installation, Access Control, etc.
+- Be SPECIFIC - don't use generic terms like "web services" or "digital solutions"
+
 Analyze and provide:
 
 1. COMPANY_NAME: The official company name
-2. INDUSTRY: Primary industry (e.g., security_services, retail, technology, food_service, healthcare)
+2. INDUSTRY: Specific industry (e.g., web_hosting_provider, security_services, retail_fashion, food_delivery)
 3. BUSINESS_MODEL: B2B, B2C, or B2B2C
-4. BUSINESS_TYPE: More specific type (e.g., armed_security, fashion_retail, saas_platform)
-5. TARGET_MARKET: Who they sell to (e.g., commercial_properties, consumers, enterprises)
-6. KEY_SERVICES: List of main products/services offered (max 5)
+4. BUSINESS_TYPE: More specific type (e.g., domain_registrar, armed_security, fashion_retail)
+5. TARGET_MARKET: Who they sell to (be specific)
+6. KEY_SERVICES: List of ACTUAL products/services with prices if found (max 5). Format: "Product Name - $XX/month" or just "Product Name" if no price found
 7. VALUE_PROPOSITIONS: What makes them unique (max 3)
-8. BRAND_PERSONALITY: Their brand voice/personality (e.g., professional, friendly, authoritative, innovative)
+8. BRAND_PERSONALITY: Their brand voice/personality
 9. VISUAL_REQUIREMENTS: What should be shown in their ads:
-   - must_show: Elements that MUST appear (e.g., uniformed staff, branded vehicles)
+   - must_show: Elements that MUST appear
    - should_show: Elements that would be good to include
    - avoid: Things to avoid showing
 
@@ -117,7 +134,7 @@ Respond in this exact JSON format:
   "business_model": "...",
   "business_type": "...",
   "target_market": "...",
-  "key_services": ["...", "..."],
+  "key_services": ["Product 1 - $XX/month", "Product 2", "..."],
   "value_propositions": ["...", "..."],
   "brand_personality": "...",
   "visual_requirements": {{
@@ -287,6 +304,25 @@ Respond in this exact JSON format:
         """
         domain = self._extract_domain(url)
         logger.info(f"[BrandDNA] Extracting brand DNA for {domain}")
+
+        # If no scraped content provided, fetch it ourselves
+        if not scraped_content or len(scraped_content) < 500:
+            logger.info(f"[BrandDNA] Fetching website content for {url}...")
+            try:
+                import requests
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    # Extract text content from HTML
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    # Remove script and style elements
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    scraped_content = soup.get_text(separator=' ', strip=True)
+                    logger.info(f"[BrandDNA] Fetched {len(scraped_content)} chars of content")
+            except Exception as e:
+                logger.warning(f"[BrandDNA] Failed to fetch content: {e}")
 
         # Step 1: Extract and categorize all images
         logger.info(f"[BrandDNA] Step 1: Extracting and categorizing images...")

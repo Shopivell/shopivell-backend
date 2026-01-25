@@ -20,6 +20,30 @@ from modules.ad_generator.service import AdGeneratorService
 from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
 from modules.agents.ad_creative_agent import AdCreativeAgent
 from modules.agents.media_generator_agent import MediaGeneratorAgent
+from modules.agents.gemini_image_generator import GeminiImageGenerator
+from modules.agents.ad_image_composer import AdImageComposer
+
+# Import Vision AI analysis for extracting uniforms, vehicles, brand colors from images
+try:
+    from modules.stores.scraping_service import _extract_images_from_website, _analyze_images_with_vision
+    VISION_AI_AVAILABLE = True
+except ImportError:
+    VISION_AI_AVAILABLE = False
+
+# Import screenshot capture for campaign creation
+try:
+    from modules.stores.scraping_service import capture_homepage_screenshot_sync, CLOUDINARY_CONFIGURED
+    SCREENSHOT_AVAILABLE = True
+except ImportError:
+    SCREENSHOT_AVAILABLE = False
+    CLOUDINARY_CONFIGURED = False
+
+# Import Brand Intelligence for complete brand DNA extraction
+try:
+    from modules.brand_intelligence import BrandDNAExtractor
+    BRAND_DNA_AVAILABLE = True
+except ImportError:
+    BRAND_DNA_AVAILABLE = False
 
 # Import OpenRouter for AI generation
 try:
@@ -61,7 +85,10 @@ class CampaignService:
         self._init_ai_clients()
         self.ad_generator = AdGeneratorService()
         self.ad_creative_agent = AdCreativeAgent()
-        self.media_generator = MediaGeneratorAgent()  # Primary image generator
+        self.media_generator = MediaGeneratorAgent()  # Fallback image generator
+        self.gemini_generator = GeminiImageGenerator()  # Primary image generator with reference images
+        self.ad_image_composer = AdImageComposer()  # Adds text overlays to generated images
+        self.brand_dna_extractor = BrandDNAExtractor() if BRAND_DNA_AVAILABLE else None
 
     def _init_ai_clients(self):
         """Initialize AI clients (OpenRouter preferred, OpenAI fallback)"""
@@ -245,19 +272,146 @@ class CampaignService:
             if logo_url:
                 print(f"[Tavily] Extracted logo URL: {logo_url}")
 
-            # Extract brand color from the website CSS
+            # Extract brand color from the website CSS (fallback)
             brand_color = self._extract_brand_color(base_url)
             if brand_color:
-                print(f"[Tavily] Extracted brand color: {brand_color}")
+                print(f"[Tavily] Extracted brand color from CSS: {brand_color}")
+
+            # Initialize brand intelligence results
+            brand_dna = None
+            uniform_images = []
+            vehicle_images = []
+            equipment_images = []
+            product_images = []
+            team_images = []
+            vision_brand_colors = []
+            uniform_description = None
+            vehicle_description = None
+            style_prompt = ""
+            visual_style = {}
+            business_identity = {}
+
+            # Use Brand DNA Extractor for complete brand analysis (preferred)
+            if BRAND_DNA_AVAILABLE and self.brand_dna_extractor:
+                try:
+                    print(f"[BrandDNA] Extracting complete brand DNA from {domain}...")
+
+                    # Run async extraction
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        brand_dna = loop.run_until_complete(
+                            self.brand_dna_extractor.extract_brand_dna(base_url, combined_content)
+                        )
+                    finally:
+                        loop.close()
+
+                    if brand_dna:
+                        # Extract logo
+                        if brand_dna.get("logo_url"):
+                            logo_url = brand_dna["logo_url"]
+                            print(f"[BrandDNA] Logo URL: {logo_url}")
+
+                        # Extract brand colors
+                        vision_brand_colors = brand_dna.get("brand_colors", [])
+                        if vision_brand_colors:
+                            brand_color = vision_brand_colors[0]
+                            print(f"[BrandDNA] Primary color: {brand_color}")
+
+                        # Extract categorized images
+                        categorized = brand_dna.get("categorized_images", {})
+                        team_images = categorized.get("team", [])
+                        vehicle_images = categorized.get("vehicle", [])
+                        product_images = categorized.get("product", [])
+                        equipment_images = categorized.get("equipment", [])
+
+                        # Use team images as uniform images (they show staff in uniforms)
+                        uniform_images = team_images
+
+                        print(f"[BrandDNA] Team/Uniform images: {len(team_images)}")
+                        print(f"[BrandDNA] Vehicle images: {len(vehicle_images)}")
+                        print(f"[BrandDNA] Product images: {len(product_images)}")
+
+                        # Extract style information
+                        visual_style = brand_dna.get("visual_style", {})
+                        style_prompt = brand_dna.get("style_prompt", "")
+                        uniform_description = visual_style.get("uniform_details", {})
+                        vehicle_description = visual_style.get("vehicle_details", {})
+                        business_identity = brand_dna.get("business_identity", {})
+
+                        print(f"[BrandDNA] Visual style: {visual_style.get('photography_style', 'unknown')}")
+                        print(f"[BrandDNA] Business type: {business_identity.get('business_type', 'unknown')}")
+
+                except Exception as brand_err:
+                    print(f"[BrandDNA] Error (falling back to Vision AI): {brand_err}")
+                    brand_dna = None
+
+            # Fallback to basic Vision AI if Brand DNA extraction failed
+            if not brand_dna and VISION_AI_AVAILABLE:
+                try:
+                    print(f"[VisionAI] Falling back to basic Vision AI analysis...")
+                    images_data = _extract_images_from_website(base_url)
+
+                    if not logo_url and images_data.get("logo_url"):
+                        logo_url = images_data["logo_url"]
+
+                    vision_analysis = _analyze_images_with_vision(images_data, domain)
+                    if vision_analysis:
+                        vision_brand_colors = vision_analysis.get("brand_colors", [])
+                        if vision_brand_colors:
+                            brand_color = vision_brand_colors[0]
+                        uniform_images = vision_analysis.get("uniform_images", [])
+                        vehicle_images = vision_analysis.get("vehicle_images", [])
+                        equipment_images = vision_analysis.get("equipment_images", [])
+                        uniform_description = vision_analysis.get("uniform_description")
+                        vehicle_description = vision_analysis.get("vehicle_description")
+
+                except Exception as vision_err:
+                    print(f"[VisionAI] Error: {vision_err}")
+
+            # Capture homepage screenshot for campaign creative reference
+            screenshot_url = None
+            screenshot_thumbnail_url = None
+            if SCREENSHOT_AVAILABLE:
+                try:
+                    print(f"[Screenshot] Capturing homepage screenshot for campaign...")
+                    screenshot_result = capture_homepage_screenshot_sync(base_url, full_page=True)
+                    if screenshot_result.get("success"):
+                        screenshot_url = screenshot_result.get("screenshot_url")  # Cloudinary URL
+                        screenshot_thumbnail_url = screenshot_result.get("thumbnail_url")
+                        print(f"[Screenshot] Captured: {screenshot_url}")
+                    else:
+                        print(f"[Screenshot] Failed: {screenshot_result.get('error')}")
+                except Exception as screenshot_err:
+                    print(f"[Screenshot] Error: {screenshot_err}")
 
             return {
                 "url": url,
                 "domain": domain,
-                "content": combined_content[:25000],  # Increased limit for more context
+                "content": combined_content[:25000],
                 "pages_extracted": len(all_content),
                 "extracted_at": datetime.utcnow().isoformat(),
-                "logo_url": logo_url,  # Store extracted logo URL
-                "brand_color": brand_color  # Store extracted brand color
+                # Basic branding
+                "logo_url": logo_url,
+                "brand_color": brand_color,
+                "brand_colors": vision_brand_colors,
+                # Homepage screenshot for ad creative reference
+                "screenshot_url": screenshot_url,
+                "screenshot_thumbnail_url": screenshot_thumbnail_url,
+                # Categorized images
+                "uniform_images": uniform_images,
+                "vehicle_images": vehicle_images,
+                "equipment_images": equipment_images,
+                "product_images": product_images,
+                "team_images": team_images,
+                # Descriptions
+                "uniform_description": uniform_description,
+                "vehicle_description": vehicle_description,
+                # Brand DNA (complete analysis)
+                "brand_dna": brand_dna,
+                "visual_style": visual_style,
+                "style_prompt": style_prompt,
+                "business_identity": business_identity,
             }
 
         except Exception as e:
@@ -495,10 +649,19 @@ Return ONLY valid JSON, no markdown.
         logo_url_to_use = scraped_data.get("logo_url")
         color_theme_to_use = scraped_data.get("color_theme") or scraped_data.get("brand_color")
 
+        # Get reference images from Vision AI analysis (uniforms, vehicles, equipment)
+        uniform_images = scraped_data.get("uniform_images", [])
+        vehicle_images = scraped_data.get("vehicle_images", [])
+        equipment_images = scraped_data.get("equipment_images", [])
+
         if logo_url_to_use:
             logger.info(f"[CampaignService] Using SCRAPED logo URL: {logo_url_to_use[:80]}...")
         if color_theme_to_use:
             logger.info(f"[CampaignService] Using SCRAPED color theme: {color_theme_to_use}")
+        if uniform_images:
+            logger.info(f"[CampaignService] Found {len(uniform_images)} uniform reference images")
+        if vehicle_images:
+            logger.info(f"[CampaignService] Found {len(vehicle_images)} vehicle reference images")
 
         # Map business type to industry template
         industry_mapping = {
@@ -639,86 +802,193 @@ Return ONLY valid JSON, no markdown.
                     print(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
                     print(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
-                    # Step 2: Generate image using MediaGeneratorAgent (only if no user asset)
-                    if not user_asset_url:
-                        # Build comprehensive image prompt with store branding
-                        brand_name = store_name or business_name
+                    # =====================================================================
+                    # IMAGE GENERATION TEMPORARILY DISABLED
+                    # TODO: Re-enable when ready to generate AI images
+                    # =====================================================================
+                    # Step 2: Generate image using Gemini with reference images (only if no user asset)
+                    # if not user_asset_url:
+                    #     brand_name = store_name or business_name
+                    #
+                    #     # Build reference images for Gemini (uniforms, vehicles from Vision AI)
+                    #     reference_images = []
+                    #     for url in uniform_images[:2]:  # Max 2 uniform images
+                    #         reference_images.append({"url": url, "type": "uniform"})
+                    #     for url in vehicle_images[:1]:  # Max 1 vehicle image
+                    #         reference_images.append({"url": url, "type": "vehicle"})
+                    #     for url in equipment_images[:1]:  # Max 1 equipment image
+                    #         reference_images.append({"url": url, "type": "equipment"})
+                    #
+                    #     print(f"[GeminiGenerator] Generating image for ad set: {ad_set.name}")
+                    #     print(f"[GeminiGenerator] Brand: {brand_name}, Colors: {color_theme_to_use}")
+                    #     print(f"[GeminiGenerator] Reference images: logo={bool(logo_url_to_use)}, uniforms={len(uniform_images)}, vehicles={len(vehicle_images)}")
+                    #
+                    #     # Build the image prompt with Brand DNA style guidance
+                    #     style_prompt_section = scraped_data.get("style_prompt", "")
+                    #
+                    #     if agent_image_prompt:
+                    #         image_prompt = agent_image_prompt
+                    #     else:
+                    #         scraped_desc = scraped_data.get("store_description", "") or scraped_data.get("description", "")
+                    #         image_prompt = f"""Professional advertisement for {brand_name}.
+                    # {primary_text or description or scraped_desc or ''}
+                    # Style: Clean composition, commercial photography, high-quality marketing visual.
+                    # The image should reflect the brand identity and be suitable for social media advertising."""
+                    #
+                    #     # Add brand color to prompt if available
+                    #     if color_theme_to_use:
+                    #         image_prompt += f"\nBrand color: {color_theme_to_use} - use as accent color throughout the image."
+                    #
+                    #     # Add Brand DNA style prompt for style-matched generation
+                    #     if style_prompt_section:
+                    #         image_prompt += f"\n\n=== VISUAL STYLE REQUIREMENTS (MUST FOLLOW) ===\n{style_prompt_section}"
+                    #         print(f"[GeminiGenerator] Added Brand DNA style prompt for style-matched generation")
+                    #
+                    #     # Try Gemini first (with reference images)
+                    #     result = None
+                    #     gemini_success = False
+                    #
+                    #     if self.gemini_generator and self.gemini_generator.client:
+                    #         try:
+                    #             gemini_result = loop.run_until_complete(
+                    #                 self.gemini_generator.generate_ad_image(
+                    #                     prompt=image_prompt,
+                    #                     logo_url=logo_url_to_use,
+                    #                     reference_images=reference_images,
+                    #                     output_path=None  # Don't save locally, we'll upload to Cloudinary
+                    #                 )
+                    #             )
+                    #
+                    #             if gemini_result.get("success") and gemini_result.get("image_base64"):
+                    #                 generated_image_base64 = gemini_result["image_base64"]
+                    #                 gemini_success = True
+                    #                 print(f"[GeminiGenerator] SUCCESS - Generated image with {gemini_result.get('reference_images_used', 0)} reference images")
+                    #
+                    #                 # Step 3: Add text overlays using AdImageComposer
+                    #                 try:
+                    #                     import base64 as b64
+                    #                     base_image_bytes = b64.b64decode(generated_image_base64)
+                    #
+                    #                     # Extract bullet points from features or ad_set_data
+                    #                     bullet_points = features[:4] if features else []
+                    #                     if not bullet_points and ad_set_data.get("value_proposition"):
+                    #                         bullet_points = [ad_set_data.get("value_proposition")]
+                    #
+                    #                     # Compose the ad with text overlays
+                    #                     compose_result = self.ad_image_composer.compose_ad_image(
+                    #                         base_image=base_image_bytes,
+                    #                         headline=agent_headline or headline or business_name,
+                    #                         bullet_points=bullet_points,
+                    #                         cta_text=campaign.conversion_button or "Learn More",
+                    #                         logo_url=logo_url_to_use,
+                    #                         brand_color=color_theme_to_use or "#FFD700"
+                    #                     )
+                    #
+                    #                     if compose_result.get("success") and compose_result.get("image_base64"):
+                    #                         generated_image_base64 = compose_result["image_base64"]
+                    #                         print(f"[AdImageComposer] SUCCESS - Added text overlays (headline, {len(bullet_points)} bullets, CTA)")
+                    #                     else:
+                    #                         print(f"[AdImageComposer] Warning - Using base image without overlays: {compose_result.get('error')}")
+                    #                 except Exception as compose_err:
+                    #                     print(f"[AdImageComposer] Warning - Composition failed, using base image: {compose_err}")
+                    #
+                    #                 # Upload to Cloudinary
+                    #                 try:
+                    #                     import cloudinary.uploader
+                    #                     import base64
+                    #                     image_bytes = base64.b64decode(generated_image_base64)
+                    #                     upload_result = cloudinary.uploader.upload(
+                    #                         image_bytes,
+                    #                         folder="shopivell/generated/ads",
+                    #                         resource_type="image"
+                    #                     )
+                    #                     generated_cloudinary_url = upload_result.get("secure_url")
+                    #                     print(f"[GeminiGenerator] Uploaded to Cloudinary: {generated_cloudinary_url}")
+                    #                 except Exception as cloud_err:
+                    #                     print(f"[GeminiGenerator] Cloudinary upload failed: {cloud_err}")
+                    #             else:
+                    #                 print(f"[GeminiGenerator] Failed: {gemini_result.get('error', 'Unknown error')}")
+                    #         except Exception as gemini_err:
+                    #             print(f"[GeminiGenerator] Error: {gemini_err}")
+                    #
+                    #     # Fallback to MediaGenerator if Gemini failed
+                    #     if not gemini_success:
+                    #         print(f"[MediaGenerator] Falling back to MediaGenerator for ad set: {ad_set.name}")
+                    #
+                    #         # Map ad style to media generator style
+                    #         style_map = {
+                    #             AdStyle.MODERN: "professional",
+                    #             AdStyle.VIBRANT: "vibrant",
+                    #             AdStyle.PROFESSIONAL: "professional",
+                    #             AdStyle.ELEGANT: "luxury",
+                    #             AdStyle.BOLD: "bold"
+                    #         }
+                    #         image_style = style_map.get(styles[i % len(styles)], "professional")
+                    #
+                    #         result = loop.run_until_complete(
+                    #             self.media_generator.generate_image(
+                    #                 prompt=image_prompt,
+                    #                 style=image_style,
+                    #                 aspect_ratio="1:1",
+                    #                 upload_to_cloud=False,  # Don't upload yet, compose first
+                    #                 cloudinary_folder="shopivell/generated/ads"
+                    #             )
+                    #         )
+                    #
+                    #         if result.get("image_base64"):
+                    #             generated_image_base64 = result["image_base64"]
+                    #             print(f"[MediaGenerator] Generated base image for ad set: {ad_set.name}, provider: {result.get('provider_used')}")
+                    #
+                    #             # Add text overlays using AdImageComposer
+                    #             try:
+                    #                 import base64 as b64
+                    #                 base_image_bytes = b64.b64decode(generated_image_base64)
+                    #
+                    #                 bullet_points = features[:4] if features else []
+                    #                 if not bullet_points and ad_set_data.get("value_proposition"):
+                    #                     bullet_points = [ad_set_data.get("value_proposition")]
+                    #
+                    #                 compose_result = self.ad_image_composer.compose_ad_image(
+                    #                     base_image=base_image_bytes,
+                    #                     headline=agent_headline or headline or business_name,
+                    #                     bullet_points=bullet_points,
+                    #                     cta_text=campaign.conversion_button or "Learn More",
+                    #                     logo_url=logo_url_to_use,
+                    #                     brand_color=color_theme_to_use or "#FFD700"
+                    #                 )
+                    #
+                    #                 if compose_result.get("success") and compose_result.get("image_base64"):
+                    #                     generated_image_base64 = compose_result["image_base64"]
+                    #                     print(f"[AdImageComposer] SUCCESS - Added text overlays (headline, {len(bullet_points)} bullets, CTA)")
+                    #                 else:
+                    #                     print(f"[AdImageComposer] Warning - Using base image: {compose_result.get('error')}")
+                    #             except Exception as compose_err:
+                    #                 print(f"[AdImageComposer] Warning - Composition failed: {compose_err}")
+                    #
+                    #             # Upload composed image to Cloudinary
+                    #             try:
+                    #                 import cloudinary.uploader
+                    #                 import base64
+                    #                 image_bytes = base64.b64decode(generated_image_base64)
+                    #                 upload_result = cloudinary.uploader.upload(
+                    #                     image_bytes,
+                    #                     folder="shopivell/generated/ads",
+                    #                     resource_type="image"
+                    #                 )
+                    #                 generated_cloudinary_url = upload_result.get("secure_url")
+                    #                 print(f"[MediaGenerator] Uploaded to Cloudinary: {generated_cloudinary_url}")
+                    #             except Exception as cloud_err:
+                    #                 print(f"[MediaGenerator] Cloudinary upload failed: {cloud_err}")
+                    #         else:
+                    #             print(f"[MediaGenerator] Warning: No image generated for ad set: {ad_set.name}")
+                    # else:
+                    #     print(f"[GeminiGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
+                    # =====================================================================
+                    # END OF DISABLED IMAGE GENERATION
+                    # =====================================================================
 
-                        # Map ad style to media generator style
-                        style_map = {
-                            AdStyle.MODERN: "professional",
-                            AdStyle.VIBRANT: "vibrant",
-                            AdStyle.PROFESSIONAL: "professional",
-                            AdStyle.ELEGANT: "luxury",
-                            AdStyle.BOLD: "bold"
-                        }
-                        image_style = style_map.get(styles[i % len(styles)], "professional")
-
-                        print(f"[MediaGenerator] Generating image for ad set: {ad_set.name}")
-                        print(f"[MediaGenerator] Brand: {brand_name}, Colors: {color_theme_to_use}, Industry: {detected_industry}")
-
-                        # Use industry-specific generation if industry is detected
-                        if detected_industry:
-                            # Generate industry-compliant ad image (Meta-safe templates)
-                            print(f"[MediaGenerator] Using industry template: {detected_industry}")
-                            print(f"[MediaGenerator] Brand colors: {color_theme_to_use}, Has logo: {bool(logo_url_to_use)}")
-                            # Use scraped description from current URL, not stale store data
-                            scraped_description = scraped_data.get("store_description", "") or scraped_data.get("description", "")
-                            result = loop.run_until_complete(
-                                self.media_generator.generate_industry_ad_image(
-                                    industry=detected_industry,
-                                    product_name=brand_name,
-                                    product_description=primary_text or description or scraped_description or f"{brand_name} services",
-                                    headline_text=agent_headline or headline,
-                                    aspect_ratio="1:1",
-                                    brand_colors=color_theme_to_use,
-                                    logo_url=logo_url_to_use,
-                                    target_audience=ad_set_data.get("name", "")
-                                )
-                            )
-                        else:
-                            # Build custom prompt with branding
-                            branding_instructions = [f"Brand: {brand_name}"]
-
-                            if color_theme_to_use:
-                                branding_instructions.append(f"Brand colors: Use {color_theme_to_use} as the primary color scheme")
-
-                            if logo_url_to_use:
-                                branding_instructions.append(f"Include the brand logo prominently in the design")
-
-                            branding_context = ". ".join(branding_instructions)
-
-                            if agent_image_prompt:
-                                image_prompt = f"{agent_image_prompt}. {branding_context}"
-                            else:
-                                # Use scraped description, not stale store data
-                                scraped_desc = scraped_data.get("store_description", "") or scraped_data.get("description", "")
-                                image_prompt = f"""Professional advertisement for {brand_name}.
-{primary_text or description or scraped_desc or ''}
-{branding_context}
-Style: Clean composition, commercial photography, high-quality marketing visual.
-The image should reflect the brand identity and be suitable for social media advertising."""
-
-                            result = loop.run_until_complete(
-                                self.media_generator.generate_image(
-                                    prompt=image_prompt,
-                                    style=image_style,
-                                    aspect_ratio="1:1",
-                                    upload_to_cloud=True,
-                                    cloudinary_folder="shopivell/generated/ads"
-                                )
-                            )
-
-                        if result.get("image_base64"):
-                            generated_image_base64 = result["image_base64"]
-                            generated_cloudinary_url = result.get("cloudinary_url")
-                            print(f"[MediaGenerator] Generated image for ad set: {ad_set.name}, provider: {result.get('provider_used')}")
-                            if generated_cloudinary_url:
-                                print(f"[MediaGenerator] Cloudinary URL: {generated_cloudinary_url}")
-                        else:
-                            print(f"[MediaGenerator] Warning: No image generated for ad set: {ad_set.name}")
-                    else:
-                        print(f"[MediaGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
+                    # Log that image generation is disabled
+                    print(f"[CampaignService] Image generation disabled - creating ad set without AI-generated image: {ad_set.name}")
 
                 finally:
                     loop.close()

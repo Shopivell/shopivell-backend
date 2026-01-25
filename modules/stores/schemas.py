@@ -14,6 +14,7 @@ class StoreBase(BaseModel):
     store_link: Optional[str] = None
     color_theme: Optional[str] = None
     logo_url: Optional[str] = None  # ADDED
+    screenshot_url: Optional[str] = None  # Homepage screenshot for campaigns
     business_type: Optional[str] = None
     store_voice: Optional[str] = None  # ADDED
     products_or_services: Optional[List[str]] = None  # ADDED
@@ -42,6 +43,7 @@ class StoreUpdate(BaseModel):
     store_link: Optional[str] = None
     color_theme: Optional[str] = None
     logo_url: Optional[str] = None  # ADDED
+    screenshot_url: Optional[str] = None  # Homepage screenshot for campaigns
     business_type: Optional[str] = None
     store_voice: Optional[str] = None  # ADDED
     store_tone: Optional[str] = None  # ADDED

@@ -258,6 +258,7 @@ async def complete_store_setup(
             'store_link': session_data.get('store_link'),
             'color_theme': session_data.get('color_theme'),
             'logo_url': session_data.get('logo_url'),  # ADDED
+            'screenshot_url': session_data.get('screenshot_url'),  # Homepage screenshot for campaigns
             'business_type': session_data.get('business_type'),
             'store_voice': session_data.get('store_voice'),  # ADDED
             'store_tone': session_data.get('store_tone'),  # ADDED
@@ -626,8 +627,13 @@ async def scrape_website(request: ScrapeRequest, db: Session = Depends(get_db)):
                     current_data["color_theme"] = store_data.get("color_theme") or current_data.get("color_theme")
                     current_data["business_type"] = store_data.get("business_type") or current_data.get("business_type")
                     current_data["logo_url"] = store_data.get("logo_url") or current_data.get("logo_url")
+                    current_data["screenshot_url"] = store_data.get("screenshot_url") or current_data.get("screenshot_url")
                     current_data["brand_style"] = store_data.get("brand_style") or current_data.get("brand_style")
                     current_data["store_link"] = store_data.get("store_link") or current_data.get("store_link")
+
+                    # Save brand analysis and screenshot for campaign creation
+                    current_data["brand_analysis"] = store_data.get("brand_analysis") or current_data.get("brand_analysis")
+                    current_data["homepage_screenshot"] = store_data.get("homepage_screenshot") or current_data.get("homepage_screenshot")
 
                     # Save FAQs to session for later insertion
                     current_data["scraped_faqs"] = store_data.get("faqs", [])
@@ -772,6 +778,7 @@ async def create_store(
             store_link=store_data.store_link,
             color_theme=store_data.color_theme,
             logo_url=store_data.logo_url,
+            screenshot_url=store_data.screenshot_url,
             business_type=store_data.business_type,
             store_voice=store_data.store_voice,
             products_or_services=store_data.products_or_services or [],

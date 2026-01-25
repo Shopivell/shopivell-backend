@@ -39,6 +39,7 @@ class Store(Base):
     store_link: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     color_theme: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    screenshot_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Homepage screenshot for campaigns
 
     # Store Details for AI Bot Context
     store_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Detailed description
