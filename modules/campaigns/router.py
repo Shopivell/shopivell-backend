@@ -70,6 +70,10 @@ def scrape_url_and_create_campaign(
     if error and not campaign:
         raise HTTPException(status_code=500, detail=error)
 
+    # Debug: Log screenshot URL
+    screenshot_url = campaign.scraped_data.get("screenshot_url") if campaign.scraped_data else None
+    print(f"[Router] Returning campaign with screenshot_url: {screenshot_url}")
+
     return ScrapeUrlResponse(
         campaign_id=campaign.id,
         status=campaign.status.value,
