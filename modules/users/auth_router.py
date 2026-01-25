@@ -261,34 +261,39 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         from sqlalchemy import text
         import uuid as uuid_module
 
-        agency_result = db.execute(
-            text("SELECT id, name FROM agencies WHERE owner_id = :owner_id"),
-            {"owner_id": str(verified_user.id)}
-        ).fetchone()
+        agency_id = None
+        try:
+            agency_result = db.execute(
+                text("SELECT id, name FROM agencies WHERE owner_id = :owner_id"),
+                {"owner_id": str(verified_user.id)}
+            ).fetchone()
 
-        if not agency_result:
-            agency_name = f"{verified_user.name}'s Agency" if verified_user.name else "My Agency"
-            agency_slug = generate_unique_slug(db, agency_name)
-            agency_id = str(uuid_module.uuid4())
+            if not agency_result:
+                agency_name = f"{verified_user.name}'s Agency" if verified_user.name else "My Agency"
+                agency_slug = generate_unique_slug(db, agency_name)
+                agency_id = str(uuid_module.uuid4())
 
-            db.execute(
-                text("""
-                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """),
-                {
-                    "id": agency_id,
-                    "owner_id": str(verified_user.id),
-                    "name": agency_name,
-                    "slug": agency_slug,
-                    "email": verified_user.email
-                }
-            )
-            db.commit()
-            print(f"[OK] Agency created: {agency_name}")
-            agency_result = (agency_id, agency_name)
-
-        agency_id = agency_result[0] if agency_result else None
+                db.execute(
+                    text("""
+                        INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                        VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """),
+                    {
+                        "id": agency_id,
+                        "owner_id": str(verified_user.id),
+                        "name": agency_name,
+                        "slug": agency_slug,
+                        "email": verified_user.email
+                    }
+                )
+                db.commit()
+                print(f"[OK] Agency created: {agency_name}")
+            else:
+                agency_id = agency_result[0]
+        except Exception as agency_error:
+            print(f"[WARN] Agency creation/lookup failed (table may not exist): {agency_error}")
+            db.rollback()
+            agency_id = None
 
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user.id,
@@ -461,33 +466,39 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         from sqlalchemy import text
         import uuid as uuid_module
 
-        agency_result = db.execute(
-            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
-            {"owner_id": str(user.id)}
-        ).fetchone()
+        agency_id = None
+        try:
+            agency_result = db.execute(
+                text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+                {"owner_id": str(user.id)}
+            ).fetchone()
 
-        if not agency_result:
-            agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
-            agency_slug = generate_unique_slug(db, agency_name)
-            agency_id = str(uuid_module.uuid4())
+            if not agency_result:
+                agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
+                agency_slug = generate_unique_slug(db, agency_name)
+                agency_id = str(uuid_module.uuid4())
 
-            db.execute(
-                text("""
-                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """),
-                {
-                    "id": agency_id,
-                    "owner_id": str(user.id),
-                    "name": agency_name,
-                    "slug": agency_slug,
-                    "email": user.email
-                }
-            )
-            db.commit()
-            print(f"[OK] Agency created: {agency_name}")
-        else:
-            agency_id = agency_result[0]
+                db.execute(
+                    text("""
+                        INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                        VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """),
+                    {
+                        "id": agency_id,
+                        "owner_id": str(user.id),
+                        "name": agency_name,
+                        "slug": agency_slug,
+                        "email": user.email
+                    }
+                )
+                db.commit()
+                print(f"[OK] Agency created: {agency_name}")
+            else:
+                agency_id = agency_result[0]
+        except Exception as agency_error:
+            print(f"[WARN] Agency creation/lookup failed: {agency_error}")
+            db.rollback()
+            agency_id = None
 
         # Check if user has an active setup session
         setup_session = db.query(StoreSetupSession).filter(
@@ -587,33 +598,39 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
         from sqlalchemy import text
         import uuid as uuid_module
 
-        agency_result = db.execute(
-            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
-            {"owner_id": str(user.id)}
-        ).fetchone()
+        agency_id = None
+        try:
+            agency_result = db.execute(
+                text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+                {"owner_id": str(user.id)}
+            ).fetchone()
 
-        if not agency_result:
-            agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
-            agency_slug = generate_unique_slug(db, agency_name)
-            agency_id = str(uuid_module.uuid4())
+            if not agency_result:
+                agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
+                agency_slug = generate_unique_slug(db, agency_name)
+                agency_id = str(uuid_module.uuid4())
 
-            db.execute(
-                text("""
-                    INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                    VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """),
-                {
-                    "id": agency_id,
-                    "owner_id": str(user.id),
-                    "name": agency_name,
-                    "slug": agency_slug,
-                    "email": user.email
-                }
-            )
-            db.commit()
-            print(f"[OK] Agency created: {agency_name}")
-        else:
-            agency_id = agency_result[0]
+                db.execute(
+                    text("""
+                        INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                        VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """),
+                    {
+                        "id": agency_id,
+                        "owner_id": str(user.id),
+                        "name": agency_name,
+                        "slug": agency_slug,
+                        "email": user.email
+                    }
+                )
+                db.commit()
+                print(f"[OK] Agency created: {agency_name}")
+            else:
+                agency_id = agency_result[0]
+        except Exception as agency_error:
+            print(f"[WARN] Agency creation/lookup failed: {agency_error}")
+            db.rollback()
+            agency_id = None
 
         setup_session = db.query(StoreSetupSession).filter(
             StoreSetupSession.user_id == user.id,
@@ -685,14 +702,18 @@ async def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
         
         # Get store and agency
         store = db.query(Store).filter(Store.owner_id == user.id).first()
-        
+
         from sqlalchemy import text
-        agency_result = db.execute(
-            text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
-            {"owner_id": str(user.id)}
-        ).fetchone()
-        agency_id = agency_result[0] if agency_result else None
-        
+        agency_id = None
+        try:
+            agency_result = db.execute(
+                text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+                {"owner_id": str(user.id)}
+            ).fetchone()
+            agency_id = agency_result[0] if agency_result else None
+        except Exception:
+            agency_id = None
+
         # Create new tokens
         tokens = jwt_auth.create_tokens(
             user_id=str(user.id),
