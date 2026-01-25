@@ -358,12 +358,16 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         
         return LoginResponse(**response_data)
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[ERROR] Google authentication error: {str(e)}")
+        error_msg = str(e)
+        print(f"[ERROR] Google authentication error: {error_msg}")
         print(f"Full traceback: {traceback.format_exc()}")
+        # Include error type in response for easier debugging
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication failed"
+            detail=f"Authentication failed: {type(e).__name__}"
         )
     
 # Send login code (also handles signup for new users)
