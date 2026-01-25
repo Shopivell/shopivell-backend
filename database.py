@@ -83,6 +83,70 @@ def init_db():
     from modules.website_builder import models as website_builder_models
 
     Base.metadata.create_all(bind=engine)
+
+    # Run column migrations for existing tables
+    run_column_migrations()
+
+
+def run_column_migrations():
+    """Add missing columns to existing tables"""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # Add screenshot_url to stores if missing
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'stores' AND column_name = 'screenshot_url'
+                    ) THEN
+                        ALTER TABLE stores ADD COLUMN screenshot_url VARCHAR(500);
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified screenshot_url column exists in stores table")
+        except Exception as e:
+            print(f"[WARN] Could not add screenshot_url column: {e}")
+
+        # Add agencies table if missing
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'agencystatus') THEN
+                        CREATE TYPE agencystatus AS ENUM ('active', 'suspended', 'pending');
+                    END IF;
+                END$$;
+            """))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS agencies (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    owner_id UUID NOT NULL REFERENCES users(id),
+                    name VARCHAR(255) NOT NULL,
+                    slug VARCHAR(255) UNIQUE NOT NULL,
+                    description TEXT,
+                    logo_url VARCHAR(500),
+                    email VARCHAR(255) NOT NULL,
+                    phone VARCHAR(50),
+                    website VARCHAR(500),
+                    address TEXT,
+                    city VARCHAR(100),
+                    country VARCHAR(100),
+                    status agencystatus DEFAULT 'active',
+                    settings JSONB DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+                );
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agencies_owner_id ON agencies(owner_id);"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_agencies_slug ON agencies(slug);"))
+            conn.commit()
+            print("[OK] Verified agencies table exists")
+        except Exception as e:
+            print(f"[WARN] Could not create agencies table: {e}")
     
 
 # from pathlib import Path
