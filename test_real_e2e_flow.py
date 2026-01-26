@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from tavily import TavilyClient
-from modules.stores.scraping_service import _extract_brand_colors_from_css, _extract_images_from_website
+from modules.stores.scraping_service import _extract_brand_colors_from_css, _extract_images_from_website, _analyze_images_with_vision
 from modules.agents.ad_creative_agent import AdCreativeAgent
 
 # Initialize clients
@@ -76,15 +76,45 @@ def scrape_url(url: str) -> dict:
     print(f"[SCRAPE] Got {len(combined)} chars from {len(all_content)} pages")
 
     # Extract branding using REAL scraping functions
-    print(f"\n[BRANDING] Extracting brand colors and logo...")
-    colors = _extract_brand_colors_from_css(url)
+    print(f"\n[BRANDING] Extracting logo and images...")
     images = _extract_images_from_website(url)
-
-    brand_color = colors.get("primary_color") or ""
     logo_url = images.get("logo_url") or ""
-
-    print(f"[BRANDING] Brand Color: {brand_color}")
     print(f"[BRANDING] Logo URL: {logo_url[:60]}..." if logo_url else "[BRANDING] Logo URL: None")
+    print(f"[BRANDING] Total images found: {len(images.get('images', []))}")
+
+    # Use Vision AI to analyze ALL images (logo, uniforms, vehicles, equipment)
+    brand_color = ""
+    visual_profile = {}
+
+    print(f"\n[VISION] Analyzing images for brand colors, uniforms, vehicles, equipment...")
+    vision_analysis = _analyze_images_with_vision(images, domain)
+
+    if vision_analysis:
+        # Extract brand color from logo
+        if vision_analysis.get("brand_colors"):
+            brand_color = vision_analysis["brand_colors"][0]
+            print(f"[VISION] Brand color from logo: {brand_color}")
+
+        # Extract visual profile (uniforms, vehicles, equipment)
+        visual_profile = {
+            "logo_description": vision_analysis.get("logo_description"),
+            "uniform_description": vision_analysis.get("uniform_description"),
+            "vehicle_description": vision_analysis.get("vehicle_description"),
+            "equipment_description": vision_analysis.get("equipment_description"),
+            "visual_style": vision_analysis.get("visual_profile"),
+            "reference_images": vision_analysis.get("reference_images", [])
+        }
+
+        print(f"[VISION] Uniform: {visual_profile.get('uniform_description', 'Not detected')}")
+        print(f"[VISION] Vehicle: {visual_profile.get('vehicle_description', 'Not detected')}")
+        print(f"[VISION] Equipment: {visual_profile.get('equipment_description', 'Not detected')}")
+
+    if not brand_color:
+        print(f"[VISION] No color from logo, falling back to CSS...")
+        colors = _extract_brand_colors_from_css(url)
+        brand_color = colors.get("primary_color") or ""
+
+    print(f"[BRANDING] Final Brand Color: {brand_color}")
 
     return {
         "url": url,
@@ -92,7 +122,8 @@ def scrape_url(url: str) -> dict:
         "content": combined[:25000],
         "pages_extracted": len(all_content),
         "logo_url": logo_url,
-        "brand_color": brand_color
+        "brand_color": brand_color,
+        "visual_profile": visual_profile
     }
 
 
@@ -263,6 +294,7 @@ async def test_real_e2e_flow(url: str):
 
     brand_color = scraped_data.get("brand_color", "")
     logo_url = scraped_data.get("logo_url", "")
+    visual_profile = scraped_data.get("visual_profile", {})
 
     # Step 2: REAL AI generation of ad sets
     print("\n" + "=" * 40)
@@ -307,7 +339,8 @@ async def test_real_e2e_flow(url: str):
             angle_emotion=ad_set.get("emotion", "Trust"),
             visual_direction=ad_set.get("visual_direction", ""),
             logo_url=logo_url,
-            brand_color=brand_color
+            brand_color=brand_color,
+            visual_profile=visual_profile
         )
 
         results.append({
