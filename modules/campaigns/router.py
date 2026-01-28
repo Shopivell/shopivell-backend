@@ -111,7 +111,7 @@ async def scrape_url_stream(
             await asyncio.sleep(0.1)
 
             # Scrape the URL
-            scraped_data = service._scrape_url(url)
+            scraped_data = service._scrape_website(url)
 
             if not scraped_data or scraped_data.get("error"):
                 yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
