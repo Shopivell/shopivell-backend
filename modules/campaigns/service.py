@@ -481,77 +481,78 @@ CRITICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set.
 
 STEP 3 - GENERATE AD CONTENT:
 
-1. HEADLINES (1-2, max 40 chars each, include 2-3 relevant emojis)
-   - Include specific metrics from scraped content
-   - Example format: "99% Accurate ANPR System 🚗🔒" or "Smart Parking Solutions 🅿️✨"
+IMPORTANT: Do NOT include any emojis in any of the generated content. Keep all text clean and professional.
 
-2. DESCRIPTIONS (1-2, max 150 chars each, include emojis)
+1. HEADLINES (1-2, max 40 chars each)
+   - Include specific metrics from scraped content
+   - Keep it professional and clear
+   - Example: "99% Accurate ANPR System" or "Smart Parking Solutions"
+
+2. DESCRIPTIONS (1-2, max 150 chars each)
    - Address specific buyer pain points
    - Include metrics and benefits
    - End with CTA
+   - No emojis
 
 3. AD_SETS (1 buyer persona):
 
 For each ad set, provide:
 - name: The BUYER PERSONA (industry or role-based, 2-4 words)
-  Examples of good names: "Property Management Companies", "Corporate Security Directors", "Smart City Planners", "Retail Store Owners", "Healthcare Facility Managers"
+  Examples: "Property Management Companies", "Corporate Security Directors", "Smart City Planners"
 
-- title: Headline with emojis addressing this buyer's specific pain point (max 50 chars)
-  Example: "Smart ANPR for Multi-Site Properties 🚗🔐📊"
+- title: Clear headline addressing this buyer's specific pain point (max 50 chars, NO emojis)
+  Example: "Smart ANPR for Multi-Site Properties"
 
-- audience_description: 2-3 sentences describing WHO this buyer is:
-  * Their job titles (list 2-3 specific titles)
-  * Their responsibilities
-  * What problem they're trying to solve
-  Example: "Commercial and residential property managers responsible for multiple locations who need efficient access control and parking management solutions."
+- audience_description: 2-3 sentences describing WHO this buyer is
 
-- audience_tags: 15 Facebook targeting interests specific to THIS buyer persona
+- audience_tags: 15-20 Facebook/Meta targeting interests - these are INTERESTS and BEHAVIORS that Facebook uses for ad targeting, NOT hashtags
+  Examples of good audience tags: "Small business owners", "Property management", "Commercial real estate", "Security systems", "Business technology", "Fleet management", "Facility management", "Operations management"
+  These should be broad interest categories that exist in Facebook Ads Manager
 
 - primary_text: DETAILED ad copy (100-180 words) that:
   * Opens by addressing the buyer by their job titles
-  * Lists specific metrics/benefits with numbers (e.g., "99% accuracy", "85% faster", "40% cost reduction")
-  * Describes 4-5 key features relevant to THIS buyer
-  * Explains the impact on their business
-  * Ends with clear CTA (e.g., "Request a quote today")
-  * Include relevant emojis throughout
+  * Lists specific metrics/benefits with numbers
+  * Describes 4-5 key features
+  * Ends with clear CTA
+  * NO emojis - keep it professional
 
 - features: 5 specific features with metrics where available
-  Example: ["99% recognition accuracy", "85% faster processing", "40% cost reduction in year one", "Real-time alerts", "Seamless integration"]
 
-- hashtags: 8 industry-specific hashtags
+- hashtags: 8-10 social media hashtags for discoverability (single words, no spaces, lowercase)
+  These are different from audience_tags - hashtags are for social media posts
+  Examples: "security", "business", "technology", "innovation", "smartcity", "proptech"
 
 - value_proposition: One sentence with specific metric
-  Example: "Achieve 99% vehicle recognition accuracy with 85% faster gate operations"
 
 - emotion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
 
-- visual_direction: Specific scene showing THIS buyer persona using the product
+- visual_direction: Specific scene description
 
 Return as JSON:
 {{
-    "business_name": "...",
-    "business_type": "...",
-    "products_services": ["...", "...", "..."],
-    "key_metrics": ["99% accuracy", "85% faster", "etc from scraped content"],
-    "headlines": ["Headline with emojis 🚗🔒", "...", "...", "...", "..."],
-    "descriptions": ["Description with metrics and emojis ✨", "...", "...", "...", "..."],
+    "business_name": "The actual business name from the website",
+    "business_type": "Industry/sector",
+    "products_services": ["product1", "product2", "product3"],
+    "key_metrics": ["99% accuracy", "85% faster"],
+    "headlines": ["Clean headline without emojis", "Another headline"],
+    "descriptions": ["Professional description without emojis", "Another description"],
     "ad_sets": [
         {{
-            "name": "Industry or Role-Based Buyer Persona",
-            "title": "Headline with Emojis for This Buyer 🎯",
-            "audience_description": "Detailed 2-3 sentence description of WHO this buyer is, their job titles, and what they need...",
-            "audience_tags": ["15", "specific", "targeting", "tags"],
-            "primary_text": "100-180 word detailed ad copy addressing this specific buyer by job title, with metrics, features, benefits, and CTA with emojis...",
-            "features": ["feature with metric", "feature with metric", "feature", "feature", "feature"],
-            "hashtags": ["8", "industry", "hashtags"],
-            "value_proposition": "Specific benefit with metric",
+            "name": "Buyer Persona Name",
+            "title": "Clear Headline Without Emojis",
+            "audience_description": "Description of the target buyer...",
+            "audience_tags": ["Small business owners", "Property management", "Commercial real estate", "Security systems", "15-20 Facebook interests"],
+            "primary_text": "Professional ad copy without emojis...",
+            "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
+            "hashtags": ["business", "technology", "innovation", "security", "professional", "enterprise", "solutions", "industry"],
+            "value_proposition": "Clear value statement",
             "emotion": "Primary emotion",
             "visual_direction": "Scene description"
         }}
     ]
 }}
 
-Return ONLY valid JSON, no markdown.
+Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
 """
 
         # Try OpenRouter first
