@@ -113,7 +113,11 @@ async def scrape_url_stream(
             # Scrape the URL
             scraped_data = service._scrape_website(url)
 
-            if not scraped_data or scraped_data.get("error"):
+            if not scraped_data:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to scrape URL - no data returned'})}\n\n"
+                return
+
+            if scraped_data.get("error"):
                 yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
                 return
 
@@ -122,7 +126,7 @@ async def scrape_url_stream(
             await asyncio.sleep(0.1)
 
             # Extract and send business info progressively
-            brand_dna = scraped_data.get("brand_dna", {})
+            brand_dna = scraped_data.get("brand_dna") or {}
             business_info = {
                 'event': 'scraped_data',
                 'business_name': brand_dna.get("business_name") or scraped_data.get("domain", "").replace("_", " ").title(),
