@@ -107,7 +107,7 @@ async def scrape_url_stream(
 
         try:
             # Stage 1: Start scraping
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'scraping', 'message': 'Reading website content...', 'percentage': 10})}\n\n"
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'scraping', 'message': 'Connecting to website...', 'percentage': 5})}\n\n"
             await asyncio.sleep(0.1)
 
             # Scrape the URL
@@ -121,27 +121,70 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
                 return
 
-            # Stage 2: Send scraped business info
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Analyzing business information...', 'percentage': 25})}\n\n"
+            # Stage 2: Stream the scraped content word by word
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'reading', 'message': 'Reading website content...', 'percentage': 10})}\n\n"
             await asyncio.sleep(0.1)
 
-            # Extract and send business info progressively
+            # Get the scraped content text
+            content = scraped_data.get("content", "")
+            if content:
+                # Split into chunks (groups of words) for streaming
+                words = content.split()
+                total_words = len(words)
+                chunk_size = 15  # Send 15 words at a time
+
+                for i in range(0, min(total_words, 300), chunk_size):  # Limit to first 300 words
+                    chunk = " ".join(words[i:i + chunk_size])
+                    progress = 10 + int((i / min(total_words, 300)) * 20)  # Progress from 10% to 30%
+                    yield f"data: {json.dumps({'event': 'content_chunk', 'text': chunk, 'percentage': progress})}\n\n"
+                    await asyncio.sleep(0.05)  # Small delay for typewriter effect
+
+            # Stage 3: Extract and stream business info
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Analyzing business information...', 'percentage': 35})}\n\n"
+            await asyncio.sleep(0.2)
+
             brand_dna = scraped_data.get("brand_dna") or {}
-            business_info = {
-                'event': 'scraped_data',
-                'business_name': brand_dna.get("business_name") or scraped_data.get("domain", "").replace("_", " ").title(),
-                'business_type': brand_dna.get("industry") or scraped_data.get("detected_industry"),
-                'brand_color': scraped_data.get("brand_color"),
-                'logo_url': scraped_data.get("logo_url"),
-                'products': brand_dna.get("products_services", [])[:6],
-                'description': brand_dna.get("brand_story", "")[:300] if brand_dna.get("brand_story") else None,
-                'screenshot_url': scraped_data.get("screenshot_url"),
-            }
-            yield f"data: {json.dumps(business_info)}\n\n"
-            await asyncio.sleep(0.1)
 
-            # Stage 3: Generate ad content
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'generating', 'message': 'Generating ad content...', 'percentage': 50})}\n\n"
+            # Stream business name
+            business_name = brand_dna.get("business_name") or scraped_data.get("domain", "").replace("_", " ").title()
+            if business_name:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'business_name', 'label': 'Business Name', 'value': business_name})}\n\n"
+                await asyncio.sleep(0.3)
+
+            # Stream industry
+            industry = brand_dna.get("industry") or scraped_data.get("detected_industry")
+            if industry:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'industry', 'label': 'Industry', 'value': industry})}\n\n"
+                await asyncio.sleep(0.3)
+
+            # Stream brand color
+            brand_color = scraped_data.get("brand_color")
+            if brand_color:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'brand_color', 'label': 'Brand Color', 'value': brand_color})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream logo URL
+            logo_url = scraped_data.get("logo_url")
+            if logo_url:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'logo', 'label': 'Logo Found', 'value': logo_url})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream products/services one by one
+            products = brand_dna.get("products_services", [])[:6]
+            if products:
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'products', 'message': 'Identifying products & services...', 'percentage': 45})}\n\n"
+                for product in products:
+                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'product', 'label': 'Product/Service', 'value': product})}\n\n"
+                    await asyncio.sleep(0.15)
+
+            # Stream screenshot URL
+            screenshot_url = scraped_data.get("screenshot_url")
+            if screenshot_url:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'screenshot', 'label': 'Screenshot Captured', 'value': screenshot_url})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stage 4: Generate ad content
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'generating', 'message': 'Generating ad content with AI...', 'percentage': 55})}\n\n"
             await asyncio.sleep(0.1)
 
             ad_content = service._generate_ad_content(scraped_data, url)
@@ -150,31 +193,44 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to generate ad content'})}\n\n"
                 return
 
-            # Stage 4: Send ad set info
+            # Stage 5: Stream ad set creation
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'ad_sets', 'message': 'Creating ad sets...', 'percentage': 70})}\n\n"
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
 
-            # Send each ad set as it's "created"
-            ad_sets_data = ad_content.get("ad_sets", [])[:1]  # Only 1 ad set
+            ad_sets_data = ad_content.get("ad_sets", [])[:1]
+            headlines = ad_content.get("headlines", [])
+
             for i, ad_set_data in enumerate(ad_sets_data):
-                ad_set_info = {
-                    'event': 'ad_set',
-                    'index': i,
-                    'name': ad_set_data.get("name", f"Ad Set {i+1}"),
-                    'title': ad_set_data.get("title", ""),
-                    'audience_tags': ad_set_data.get("audience_tags", [])[:8],
-                    'hashtags': ad_set_data.get("hashtags", [])[:5],
-                    'headline': ad_content.get("headlines", [""])[0] if ad_content.get("headlines") else "",
-                    'primary_text': ad_set_data.get("primary_text", "")[:200] if ad_set_data.get("primary_text") else "",
-                }
-                yield f"data: {json.dumps(ad_set_info)}\n\n"
-                await asyncio.sleep(0.1)
+                # Stream ad set name
+                ad_set_name = ad_set_data.get("name", f"Ad Set {i+1}")
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'ad_set_name', 'label': 'Ad Set', 'value': ad_set_name})}\n\n"
+                await asyncio.sleep(0.2)
 
-            # Stage 5: Create campaign in database
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 85})}\n\n"
+                # Stream headline
+                headline = headlines[0] if headlines else ad_set_data.get("title", "")
+                if headline:
+                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'headline', 'label': 'Headline', 'value': headline})}\n\n"
+                    await asyncio.sleep(0.2)
+
+                # Stream audience tags one by one
+                audience_tags = ad_set_data.get("audience_tags", [])[:8]
+                if audience_tags:
+                    yield f"data: {json.dumps({'event': 'progress', 'stage': 'targeting', 'message': 'Setting up audience targeting...', 'percentage': 80})}\n\n"
+                    for tag in audience_tags:
+                        yield f"data: {json.dumps({'event': 'info_found', 'type': 'audience_tag', 'label': 'Target', 'value': tag})}\n\n"
+                        await asyncio.sleep(0.1)
+
+                # Stream hashtags
+                hashtags = ad_set_data.get("hashtags", [])[:5]
+                if hashtags:
+                    for hashtag in hashtags:
+                        yield f"data: {json.dumps({'event': 'info_found', 'type': 'hashtag', 'label': 'Hashtag', 'value': f'#{hashtag}'})}\n\n"
+                        await asyncio.sleep(0.1)
+
+            # Stage 6: Save campaign
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 90})}\n\n"
             await asyncio.sleep(0.1)
 
-            # Actually create the campaign
             campaign, error = service.scrape_url_for_campaign(
                 url=url,
                 store_id=store_id,
@@ -185,16 +241,11 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
                 return
 
-            # Stage 6: Complete
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'complete', 'message': 'Campaign created!', 'percentage': 100})}\n\n"
+            # Complete
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'complete', 'message': 'Campaign created successfully!', 'percentage': 100})}\n\n"
             await asyncio.sleep(0.1)
 
-            complete_data = {
-                'event': 'complete',
-                'campaign_id': str(campaign.id),
-                'status': campaign.status.value,
-            }
-            yield f"data: {json.dumps(complete_data)}\n\n"
+            yield f"data: {json.dumps({'event': 'complete', 'campaign_id': str(campaign.id), 'status': campaign.status.value})}\n\n"
 
         except Exception as e:
             logger.error(f"SSE stream error: {e}")
