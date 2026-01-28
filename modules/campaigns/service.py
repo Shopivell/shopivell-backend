@@ -455,40 +455,36 @@ Analyze the scraped content to identify:
    - What PROBLEMS does each buyer type have that this product solves?
 3. Extract any METRICS or STATISTICS mentioned (accuracy %, speed improvements, cost savings)
 
-STEP 2 - GENERATE EXACTLY 5 BUYER PERSONAS (THIS IS REQUIRED):
+STEP 2 - GENERATE 1 BUYER PERSONA:
 
-You MUST generate exactly 5 different ad sets. Each must target a completely different buyer.
+You MUST generate exactly 1 ad set targeting the PRIMARY buyer persona for this business.
 
 FOR B2B BUSINESSES (technology, services, enterprise solutions):
-Generate 5 ad sets targeting different:
-- INDUSTRY #1: One specific industry vertical
-- INDUSTRY #2: Another different industry vertical
-- JOB ROLE #3: A specific decision-maker role
-- COMPANY TYPE #4: SME or enterprise or government
-- USE CASE #5: A specific application of the product
+Generate 1 ad set targeting the MOST LIKELY BUYER - choose the most relevant:
+- The primary industry vertical that uses this product
+- OR the key decision-maker role
+- OR the main company type
 
 FOR B2C BUSINESSES (retail, fashion, consumer products):
-Generate 5 ad sets targeting different shopping occasions and customer types:
-- SEASONAL OCCASION #1: A specific holiday or season (e.g., back-to-school season, Valentine's Day, Christmas, summer vacation, winter fashion)
-- LIFE EVENT #2: A life milestone that triggers purchases (e.g., first job interview, graduation, wedding preparation, new baby)
-- DEMOGRAPHIC #3: A specific customer type (e.g., young professionals, parents with kids, fashion-forward teens)
-- PRODUCT CATEGORY #4: A specific product line if the business sells multiple types
-- USE CASE #5: A specific occasion or need (e.g., office wear, weekend casual, party outfits, travel essentials)
+Generate 1 ad set targeting the PRIMARY CUSTOMER - choose the most relevant:
+- The main demographic (e.g., young professionals, parents, fashion-forward consumers)
+- OR a specific shopping occasion
+- OR the core product category
 
-CRITICAL: You MUST output exactly 5 ad sets in the ad_sets array. Not 1, not 2, not 3 - exactly 5.
+CRITICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set.
 
 STEP 3 - GENERATE AD CONTENT:
 
-1. HEADLINES (5 different, max 40 chars each, include 2-3 relevant emojis)
+1. HEADLINES (1-2, max 40 chars each, include 2-3 relevant emojis)
    - Include specific metrics from scraped content
    - Example format: "99% Accurate ANPR System 🚗🔒" or "Smart Parking Solutions 🅿️✨"
 
-2. DESCRIPTIONS (5 different, max 150 chars each, include emojis)
+2. DESCRIPTIONS (1-2, max 150 chars each, include emojis)
    - Address specific buyer pain points
    - Include metrics and benefits
    - End with CTA
 
-3. AD_SETS (5 different buyer personas):
+3. AD_SETS (1 buyer persona):
 
 For each ad set, provide:
 - name: The BUYER PERSONA (industry or role-based, 2-4 words)
@@ -726,7 +722,7 @@ Return ONLY valid JSON, no markdown.
             if user_assets:
                 logger.info(f"[CampaignService] Using {len(user_assets)} user-provided assets for ad sets")
 
-        for i, ad_set_data in enumerate(ad_sets_data[:5]):
+        for i, ad_set_data in enumerate(ad_sets_data[:1]):  # Only create 1 ad set to save tokens
             ad_set = AdSet(
                 campaign_id=campaign.id,
                 name=ad_set_data.get("name", f"Ad Set {i+1}"),

@@ -151,5 +151,5 @@ class ScrapeUrlResponse(BaseModel):
 # Ad Generation Request
 class GenerateAdsRequest(BaseModel):
     campaign_id: uuid.UUID
-    num_ad_sets: int = 5
+    num_ad_sets: int = 1  # Default to 1 ad set to save tokens
     regenerate: bool = False
