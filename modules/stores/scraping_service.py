@@ -157,29 +157,45 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
 
     try:
         async with async_playwright() as p:
-            # Try to find system Chrome installation
-            chrome_paths = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-            ]
+            # Determine if running on Linux (Render) or Windows
+            import platform
+            is_linux = platform.system() == "Linux"
 
-            executable_path = None
-            for path in chrome_paths:
-                if os.path.exists(path):
-                    executable_path = path
-                    print(f"[Screenshot] Using system Chrome: {path}")
-                    break
+            print(f"[Screenshot] Platform: {platform.system()}, Using Playwright bundled Chromium")
 
-            # Launch headless browser (use system Chrome if available)
-            launch_options = {"headless": True}
-            if executable_path:
-                launch_options["executable_path"] = executable_path
-                launch_options["channel"] = None  # Don't use channel when specifying executable
-                browser = await p.chromium.launch(**launch_options)
-            else:
-                # Fall back to Playwright's bundled Chromium
-                browser = await p.chromium.launch(headless=True)
+            # On Render/Linux, always use Playwright's bundled Chromium
+            # On Windows, try system Chrome first for faster startup
+            browser = None
+
+            if not is_linux:
+                # Windows: Try to find system Chrome installation
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                ]
+
+                for path in chrome_paths:
+                    if os.path.exists(path):
+                        print(f"[Screenshot] Using system Chrome: {path}")
+                        browser = await p.chromium.launch(
+                            headless=True,
+                            executable_path=path
+                        )
+                        break
+
+            # Fall back to Playwright's bundled Chromium (default for Render/Linux)
+            if browser is None:
+                print("[Screenshot] Launching Playwright bundled Chromium...")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu'
+                    ]
+                )
 
             # Create context with desktop viewport
             context = await browser.new_context(
