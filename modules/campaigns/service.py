@@ -163,6 +163,12 @@ class CampaignService:
                 campaign.generated_headlines = ad_content.get("headlines", [])
                 campaign.generated_descriptions = ad_content.get("descriptions", [])
 
+                # Update campaign name with AI-generated business name if available
+                ai_business_name = ad_content.get("business_name")
+                if ai_business_name and not campaign_name:
+                    campaign.name = ai_business_name
+                    logger.info(f"[CampaignService] Updated campaign name to AI-generated: {ai_business_name}")
+
                 # Create ad sets (will use user assets if available)
                 self._create_ad_sets(campaign, ad_content, asset_ids)
 

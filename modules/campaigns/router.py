@@ -145,37 +145,21 @@ async def scrape_url_stream(
 
             brand_dna = scraped_data.get("brand_dna") or {}
 
-            # Stream business name
-            business_name = brand_dna.get("business_name") or scraped_data.get("domain", "").replace("_", " ").title()
-            if business_name:
-                yield f"data: {json.dumps({'event': 'info_found', 'type': 'business_name', 'label': 'Business Name', 'value': business_name})}\n\n"
-                await asyncio.sleep(0.3)
+            # Note: We'll get the actual business name from AI later, for now just show "Analyzing..."
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Identifying business information...', 'percentage': 35})}\n\n"
+            await asyncio.sleep(0.2)
 
-            # Stream industry
-            industry = brand_dna.get("industry") or scraped_data.get("detected_industry")
-            if industry:
-                yield f"data: {json.dumps({'event': 'info_found', 'type': 'industry', 'label': 'Industry', 'value': industry})}\n\n"
-                await asyncio.sleep(0.3)
-
-            # Stream brand color
+            # Stream brand color if found
             brand_color = scraped_data.get("brand_color")
             if brand_color:
                 yield f"data: {json.dumps({'event': 'info_found', 'type': 'brand_color', 'label': 'Brand Color', 'value': brand_color})}\n\n"
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
 
-            # Stream logo URL
+            # Stream logo URL if found
             logo_url = scraped_data.get("logo_url")
             if logo_url:
                 yield f"data: {json.dumps({'event': 'info_found', 'type': 'logo', 'label': 'Logo Found', 'value': logo_url})}\n\n"
-                await asyncio.sleep(0.2)
-
-            # Stream products/services one by one
-            products = brand_dna.get("products_services", [])[:6]
-            if products:
-                yield f"data: {json.dumps({'event': 'progress', 'stage': 'products', 'message': 'Identifying products & services...', 'percentage': 45})}\n\n"
-                for product in products:
-                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'product', 'label': 'Product/Service', 'value': product})}\n\n"
-                    await asyncio.sleep(0.15)
+                await asyncio.sleep(0.1)
 
             # Stream screenshot URL
             screenshot_url = scraped_data.get("screenshot_url")
@@ -192,6 +176,25 @@ async def scrape_url_stream(
             if not ad_content:
                 yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to generate ad content'})}\n\n"
                 return
+
+            # Stream AI-generated business name (this is the accurate one)
+            ai_business_name = ad_content.get("business_name")
+            if ai_business_name:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'business_name', 'label': 'Business Name', 'value': ai_business_name})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream AI-generated business type
+            ai_business_type = ad_content.get("business_type")
+            if ai_business_type:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'industry', 'label': 'Business Type', 'value': ai_business_type})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream AI-generated products/services
+            ai_products = ad_content.get("products_services", [])[:6]
+            if ai_products:
+                for product in ai_products:
+                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'product', 'label': 'Product/Service', 'value': product})}\n\n"
+                    await asyncio.sleep(0.1)
 
             # Stage 5: Stream ad set creation
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'ad_sets', 'message': 'Creating ad sets...', 'percentage': 70})}\n\n"
@@ -226,6 +229,19 @@ async def scrape_url_stream(
                     for hashtag in hashtags:
                         yield f"data: {json.dumps({'event': 'info_found', 'type': 'hashtag', 'label': 'Hashtag', 'value': f'#{hashtag}'})}\n\n"
                         await asyncio.sleep(0.1)
+
+                # Send complete ad_set event for the preview card
+                ad_set_complete = {
+                    'event': 'ad_set',
+                    'name': ad_set_name,
+                    'title': ad_set_data.get("title", ""),
+                    'audience_tags': audience_tags,
+                    'hashtags': hashtags,
+                    'headline': headline,
+                    'primary_text': ad_set_data.get("primary_text", "")[:200] if ad_set_data.get("primary_text") else "",
+                }
+                yield f"data: {json.dumps(ad_set_complete)}\n\n"
+                await asyncio.sleep(0.1)
 
             # Stage 6: Save campaign
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 90})}\n\n"
