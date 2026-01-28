@@ -1,9 +1,12 @@
 # modules/campaigns/router.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, AsyncGenerator
 import uuid
 import logging
+import json
+import asyncio
 
 from database import get_db
 from .models import UrlCampaign, CampaignStatus, UrlAdSet, UrlAdContent
@@ -79,6 +82,128 @@ def scrape_url_and_create_campaign(
         status=campaign.status.value,
         message="Campaign created successfully" if not error else error,
         scraped_data=campaign.scraped_data
+    )
+
+
+@campaign_router.get("/scrape-stream")
+async def scrape_url_stream(
+    url: str,
+    store_id: uuid.UUID,
+    campaign_name: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Stream scraping progress via Server-Sent Events (SSE).
+
+    Events sent:
+    - progress: {stage, message, percentage}
+    - scraped_data: {business_name, business_type, products, brand_color, etc.}
+    - ad_set: {name, title, audience_tags, hashtags, headline, primary_text}
+    - complete: {campaign_id, status}
+    - error: {message}
+    """
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        service = CampaignService(db)
+
+        try:
+            # Stage 1: Start scraping
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'scraping', 'message': 'Reading website content...', 'percentage': 10})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Scrape the URL
+            scraped_data = service._scrape_url(url)
+
+            if not scraped_data or scraped_data.get("error"):
+                yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
+                return
+
+            # Stage 2: Send scraped business info
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Analyzing business information...', 'percentage': 25})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Extract and send business info progressively
+            brand_dna = scraped_data.get("brand_dna", {})
+            business_info = {
+                'event': 'scraped_data',
+                'business_name': brand_dna.get("business_name") or scraped_data.get("domain", "").replace("_", " ").title(),
+                'business_type': brand_dna.get("industry") or scraped_data.get("detected_industry"),
+                'brand_color': scraped_data.get("brand_color"),
+                'logo_url': scraped_data.get("logo_url"),
+                'products': brand_dna.get("products_services", [])[:6],
+                'description': brand_dna.get("brand_story", "")[:300] if brand_dna.get("brand_story") else None,
+                'screenshot_url': scraped_data.get("screenshot_url"),
+            }
+            yield f"data: {json.dumps(business_info)}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Stage 3: Generate ad content
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'generating', 'message': 'Generating ad content...', 'percentage': 50})}\n\n"
+            await asyncio.sleep(0.1)
+
+            ad_content = service._generate_ad_content(scraped_data, url)
+
+            if not ad_content:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to generate ad content'})}\n\n"
+                return
+
+            # Stage 4: Send ad set info
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'ad_sets', 'message': 'Creating ad sets...', 'percentage': 70})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Send each ad set as it's "created"
+            ad_sets_data = ad_content.get("ad_sets", [])[:1]  # Only 1 ad set
+            for i, ad_set_data in enumerate(ad_sets_data):
+                ad_set_info = {
+                    'event': 'ad_set',
+                    'index': i,
+                    'name': ad_set_data.get("name", f"Ad Set {i+1}"),
+                    'title': ad_set_data.get("title", ""),
+                    'audience_tags': ad_set_data.get("audience_tags", [])[:8],
+                    'hashtags': ad_set_data.get("hashtags", [])[:5],
+                    'headline': ad_content.get("headlines", [""])[0] if ad_content.get("headlines") else "",
+                    'primary_text': ad_set_data.get("primary_text", "")[:200] if ad_set_data.get("primary_text") else "",
+                }
+                yield f"data: {json.dumps(ad_set_info)}\n\n"
+                await asyncio.sleep(0.1)
+
+            # Stage 5: Create campaign in database
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 85})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Actually create the campaign
+            campaign, error = service.scrape_url_for_campaign(
+                url=url,
+                store_id=store_id,
+                campaign_name=campaign_name
+            )
+
+            if error and not campaign:
+                yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
+                return
+
+            # Stage 6: Complete
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'complete', 'message': 'Campaign created!', 'percentage': 100})}\n\n"
+            await asyncio.sleep(0.1)
+
+            complete_data = {
+                'event': 'complete',
+                'campaign_id': str(campaign.id),
+                'status': campaign.status.value,
+            }
+            yield f"data: {json.dumps(complete_data)}\n\n"
+
+        except Exception as e:
+            logger.error(f"SSE stream error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
     )
 
 
