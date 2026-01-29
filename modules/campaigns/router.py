@@ -21,7 +21,6 @@ from .schemas import (
     GenerateAdsRequest, CreateCampaignFromStoreRequest, CreateCampaignFromStoreResponse
 )
 from .service import CampaignService
-from modules.stores.models import Store
 
 # Import Facebook posting functionality
 try:
@@ -103,6 +102,9 @@ def create_campaign_from_store(
     - Web scraping is rate-limited or failing
     - You want to create campaigns based on curated store information
     """
+    # Import Store model here to avoid circular imports
+    from modules.stores.models import Store
+
     # Get the store
     store = db.query(Store).filter(Store.id == request.store_id).first()
     if not store:
