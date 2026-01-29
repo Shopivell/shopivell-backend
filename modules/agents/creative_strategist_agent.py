@@ -1,5 +1,17 @@
 # creative_strategist_agent.py - AI Agent for Creative Strategy & Hook Generation
-"""Uses OpenRouter API via ChatOpenRouter adapter for AI generation."""
+"""
+Enhanced Creative Strategist Agent with Meta Audience Targeting.
+
+Features:
+1. Analyzes target audience demographics, psychographics, and behavior
+2. Generates Meta/Facebook audience segments (e.g., "Corporate Finance Departments")
+3. Generates Meta interest targeting tags (e.g., "Payment system", "Mobile payment")
+4. Creates creative hooks based on psychological triggers
+5. Supports direct URL analysis without requiring a campaign
+6. Integrates with Market Research Agent for real website data
+
+Uses OpenRouter API via ChatOpenRouter adapter for AI generation.
+"""
 
 import os
 import json
@@ -22,6 +34,43 @@ except ImportError:
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# Industry-specific interest tag categories for Meta targeting
+INDUSTRY_INTEREST_CATEGORIES = {
+    "fintech": {
+        "core": ["Payment system", "Payment service provider", "E-commerce payment system", "Mobile payment",
+                 "Financial technology", "Mobile banking", "Digital wallet", "Contactless payment"],
+        "business": ["Business-to-business", "Business networking", "Procurement", "Consulting",
+                     "Enterprise software", "SaaS", "Cloud computing"],
+        "professional": ["LinkedIn", "Web conferencing", "Videotelephony", "Google Apps for Work",
+                        "Sales", "LiveChat", "Adobe Acrobat", "Microsoft Office"],
+        "mindset": ["Leadership", "Ambition", "Entrepreneurship", "Innovation", "Digital transformation"]
+    },
+    "security": {
+        "core": ["Anti-theft system", "Fire safety", "CCTV", "Access control", "Security system",
+                 "Surveillance", "Alarm system", "Smart security"],
+        "technology": ["Smart Technologies", "Internet of Things", "Artificial intelligence",
+                      "Machine learning", "Computer vision", "Biometrics"],
+        "property": ["Commercial property", "Property management", "Real estate", "Facility management",
+                    "Building automation", "Smart building"],
+        "automotive": ["Contactless payment", "Payment system", "Charging station", "Electric vehicle",
+                      "Electric car", "Fleet management", "Parking management"],
+        "business": ["Small and medium enterprises", "Small business software", "Business development",
+                    "Professional services", "Business model", "Sales management"]
+    },
+    "ecommerce": {
+        "core": ["Online shopping", "E-commerce", "Retail", "Shopping", "Consumer goods"],
+        "technology": ["Shopify", "WooCommerce", "Magento", "Payment gateway", "Shopping cart"],
+        "marketing": ["Digital marketing", "Social media marketing", "Email marketing", "SEO"],
+        "business": ["Dropshipping", "Wholesale", "Inventory management", "Supply chain"]
+    },
+    "saas": {
+        "core": ["Software as a service", "Cloud computing", "Enterprise software", "Business software"],
+        "productivity": ["Project management", "CRM", "ERP", "Collaboration tools", "Automation"],
+        "technology": ["API", "Integration", "Analytics", "Data visualization", "Business intelligence"]
+    }
+}
 
 
 # Hook Types for Meta Ads
@@ -97,6 +146,86 @@ class CreativeStrategistAgent:
         )
         self.embeddings = OpenAIEmbeddings()
         logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+
+        # NEW: Meta Audience Targeting Prompt
+        self.meta_audience_prompt = ChatPromptTemplate.from_template("""
+You are an expert Meta (Facebook/Instagram) Ads targeting specialist.
+
+Based on the business information and website data below, generate comprehensive Meta audience targeting recommendations.
+
+BUSINESS INFORMATION:
+Company Name: {company_name}
+Industry: {industry}
+Services/Products: {services}
+Value Propositions: {value_props}
+Target Audiences from Website: {website_audiences}
+Geographic Coverage: {location}
+
+WEBSITE CONTENT SUMMARY:
+{website_content}
+
+Generate detailed Meta Ads audience targeting in this exact JSON format:
+{{
+    "audience_segments": [
+        {{
+            "name": "Segment name (e.g., Corporate Finance Departments)",
+            "description": "Brief description of this audience segment",
+            "size_estimate": "Small/Medium/Large",
+            "priority": "Primary/Secondary/Tertiary"
+        }}
+    ],
+    "demographics": {{
+        "age_range": {{
+            "min": 18,
+            "max": 65
+        }},
+        "gender": "All/Male/Female",
+        "locations": ["List of target locations/countries"],
+        "languages": ["List of languages"]
+    }},
+    "interest_tags": {{
+        "core_interests": ["Primary interests directly related to the business - 8-12 tags"],
+        "technology_interests": ["Technology and software related interests - 5-8 tags"],
+        "business_interests": ["Business and professional interests - 5-8 tags"],
+        "behavioral_interests": ["Behavioral and mindset interests - 4-6 tags"],
+        "complementary_interests": ["Related but broader interests - 4-6 tags"]
+    }},
+    "job_titles": ["Relevant job titles to target - 5-10 titles"],
+    "industries": ["Industries to target - 3-5 industries"],
+    "behaviors": {{
+        "purchase_behavior": ["Purchase-related behaviors"],
+        "device_usage": ["Device and platform behaviors"],
+        "business_behaviors": ["B2B behaviors if applicable"]
+    }},
+    "custom_audience_suggestions": {{
+        "website_visitors": "Suggestion for website visitor audience",
+        "lookalike_seeds": ["Suggestions for lookalike audience seeds"],
+        "email_lists": "Suggestion for email list targeting"
+    }},
+    "exclusions": {{
+        "interests_to_exclude": ["Interests to exclude"],
+        "audiences_to_exclude": ["Audience types to exclude"]
+    }},
+    "ad_set_recommendations": [
+        {{
+            "name": "Ad Set name",
+            "target_segment": "Which segment this targets",
+            "interests_combination": ["Specific interests for this ad set"],
+            "estimated_reach": "Estimated reach description"
+        }}
+    ]
+}}
+
+IMPORTANT GUIDELINES:
+1. Interest tags MUST be actual Facebook/Meta interests that exist in their targeting system
+2. Generate 25-40 total interest tags across all categories
+3. Be specific to the business industry and offerings
+4. Include both B2B and B2C targeting if applicable
+5. Suggest realistic job titles that exist on Facebook
+6. Consider the geographic market (Zimbabwe/Africa focus if applicable)
+
+Return ONLY valid JSON, no markdown or additional text.
+""")
 
         self.audience_analysis_prompt = ChatPromptTemplate.from_template("""
 You are an expert marketing strategist specializing in Meta (Facebook/Instagram) advertising.
@@ -190,6 +319,120 @@ Return ONLY valid JSON, no markdown.
         if response.endswith('```'):
             response = response[:-3]
         return response.strip()
+
+    def _detect_industry(self, services: List[str], content: str) -> str:
+        """Detect the industry based on services and content"""
+        content_lower = content.lower()
+        services_str = " ".join(services).lower() if services else ""
+
+        if any(kw in content_lower or kw in services_str for kw in
+               ["payment", "banking", "fintech", "transfer", "wallet", "pos", "atm"]):
+            return "fintech"
+        elif any(kw in content_lower or kw in services_str for kw in
+                 ["security", "cctv", "surveillance", "alarm", "anpr", "access control"]):
+            return "security"
+        elif any(kw in content_lower or kw in services_str for kw in
+                 ["ecommerce", "shop", "store", "retail", "cart"]):
+            return "ecommerce"
+        elif any(kw in content_lower or kw in services_str for kw in
+                 ["saas", "software", "platform", "cloud", "subscription"]):
+            return "saas"
+        else:
+            return "general"
+
+    async def generate_meta_audience(
+        self,
+        website_data: Dict[str, Any],
+        company_name: str = None
+    ) -> Dict[str, Any]:
+        """
+        Generate Meta/Facebook audience targeting from website research data.
+
+        Args:
+            website_data: Data from market research agent (extracted_data, research_summary)
+            company_name: Optional company name override
+
+        Returns:
+            Dict containing audience segments and interest tags
+        """
+        extracted = website_data.get("extracted_data", {})
+        summary = website_data.get("research_summary", {})
+
+        # Extract key information
+        company = company_name or extracted.get("company_info", {}).get("name") or summary.get("company_name", "Unknown")
+        industry = extracted.get("company_info", {}).get("industry") or summary.get("industry", "General")
+        location = extracted.get("company_info", {}).get("geographic_coverage") or summary.get("geographic_coverage", "Global")
+
+        # Get services
+        services = []
+        for svc in extracted.get("services_products", []):
+            if isinstance(svc, dict):
+                services.append(f"{svc.get('name', '')}: {svc.get('description', '')}")
+            else:
+                services.append(str(svc))
+
+        # Get value propositions
+        value_props = extracted.get("value_propositions", [])
+
+        # Get target audiences from website
+        website_audiences = extracted.get("target_audiences", [])
+
+        # Build content summary
+        raw_content = website_data.get("raw_content", {})
+        content_summary = raw_content.get("main_page", "")[:3000] if isinstance(raw_content, dict) else ""
+
+        prompt_data = {
+            "company_name": company,
+            "industry": industry,
+            "services": "\n".join(services[:15]) if services else "Not specified",
+            "value_props": ", ".join(value_props[:10]) if value_props else "Not specified",
+            "website_audiences": ", ".join(website_audiences) if website_audiences else "Not specified",
+            "location": location,
+            "website_content": content_summary
+        }
+
+        logger.info(f"[CreativeStrategistAgent] Generating Meta audience for: {company}")
+
+        chain = self.meta_audience_prompt | self.llm | StrOutputParser()
+        response = await chain.ainvoke(prompt_data)
+
+        cleaned = self._clean_json_response(response)
+        try:
+            audience_data = json.loads(cleaned)
+
+            # Detect industry and add industry-specific tags
+            detected_industry = self._detect_industry(services, content_summary)
+            if detected_industry in INDUSTRY_INTEREST_CATEGORIES:
+                industry_tags = INDUSTRY_INTEREST_CATEGORIES[detected_industry]
+                # Merge with generated tags
+                for category, tags in industry_tags.items():
+                    existing_key = f"{category}_interests"
+                    if existing_key not in audience_data.get("interest_tags", {}):
+                        if "interest_tags" not in audience_data:
+                            audience_data["interest_tags"] = {}
+                        # Add unique tags
+                        existing_tags = []
+                        for key, val in audience_data["interest_tags"].items():
+                            if isinstance(val, list):
+                                existing_tags.extend(val)
+                        new_tags = [t for t in tags if t not in existing_tags]
+                        if new_tags:
+                            audience_data["interest_tags"][f"industry_{category}"] = new_tags[:6]
+
+            return {
+                "success": True,
+                "company_name": company,
+                "detected_industry": detected_industry,
+                "audience_targeting": audience_data
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[CreativeStrategistAgent] Failed to parse audience JSON: {e}")
+            return {
+                "success": False,
+                "error": "Failed to parse audience analysis",
+                "raw_response": cleaned[:1000]
+            }
 
     async def analyze_audience(
         self,
@@ -386,3 +629,157 @@ async def generate_creative_strategy(campaign_id: str, num_hooks: int = 8) -> Di
         return await agent.full_strategy(campaign, num_hooks)
     finally:
         db.close()
+
+
+async def generate_audience_from_url(url: str, include_hooks: bool = False, num_hooks: int = 5) -> Dict[str, Any]:
+    """
+    Generate Meta audience targeting directly from a website URL.
+
+    This function:
+    1. Uses Market Research Agent to scrape and analyze the website
+    2. Generates detailed audience segments for Meta Ads
+    3. Generates Facebook interest targeting tags
+    4. Optionally generates creative hooks
+
+    Args:
+        url: Website URL to analyze
+        include_hooks: Whether to also generate creative hooks
+        num_hooks: Number of hooks to generate (if include_hooks=True)
+
+    Returns:
+        Dict containing:
+        - audience_segments: List of target audience segments
+        - demographics: Age, gender, location targeting
+        - interest_tags: Categorized Facebook interest tags
+        - job_titles: Relevant job titles to target
+        - ad_set_recommendations: Ready-to-use ad set configurations
+        - hooks: Creative hooks (if include_hooks=True)
+
+    Example Usage:
+        result = await generate_audience_from_url("https://zimswitch.co.zw")
+        print(result["audience_targeting"]["audience_segments"])
+        print(result["audience_targeting"]["interest_tags"])
+    """
+    from .market_research_agent import research_website_directly
+
+    logger.info(f"[CreativeStrategistAgent] Generating audience from URL: {url}")
+
+    # Step 1: Research the website
+    website_data = await research_website_directly(
+        url=url,
+        deep_scrape=True,
+        extract_structure=True
+    )
+
+    # Step 2: Generate Meta audience targeting
+    agent = CreativeStrategistAgent()
+    audience_result = await agent.generate_meta_audience(website_data)
+
+    # Step 3: Optionally generate hooks
+    hooks = []
+    if include_hooks and audience_result.get("success"):
+        # Create a mock campaign-like object for hook generation
+        audience_data = audience_result.get("audience_targeting", {})
+        extracted = website_data.get("extracted_data", {})
+
+        # Build hook generation context
+        hook_prompt_data = {
+            "campaign_name": audience_result.get("company_name", "Campaign"),
+            "objective": "CONVERSIONS",
+            "product_description": "\n".join([
+                f"- {svc.get('name', '')}: {svc.get('description', '')}"
+                for svc in extracted.get("services_products", [])[:5]
+            ]),
+            "audience_analysis": json.dumps(audience_data, indent=2),
+            "hook_types": "\n".join([
+                f"- {h['name']}: {h['description']}" for h in HOOK_TYPES
+            ]),
+            "num_hooks": num_hooks
+        }
+
+        chain = agent.hook_generation_prompt | agent.llm | StrOutputParser()
+        hook_response = await chain.ainvoke(hook_prompt_data)
+
+        cleaned = agent._clean_json_response(hook_response)
+        try:
+            hooks_data = json.loads(cleaned)
+            hooks = hooks_data.get('hooks', [])
+        except json.JSONDecodeError:
+            hooks = []
+
+    # Compile final result
+    result = {
+        "url": url,
+        "company_name": audience_result.get("company_name"),
+        "detected_industry": audience_result.get("detected_industry"),
+        "website_research": {
+            "pages_scraped": website_data.get("research_summary", {}).get("pages_scraped", 0),
+            "services_found": len(website_data.get("extracted_data", {}).get("services_products", [])),
+            "competitors_found": website_data.get("research_summary", {}).get("competitors_found", 0)
+        },
+        "audience_targeting": audience_result.get("audience_targeting", {}),
+        "success": audience_result.get("success", False)
+    }
+
+    if include_hooks:
+        result["creative_hooks"] = hooks
+        result["total_hooks"] = len(hooks)
+
+    return result
+
+
+async def generate_audience_comparison(urls: List[str]) -> Dict[str, Any]:
+    """
+    Generate and compare audience targeting for multiple websites.
+
+    Useful for analyzing competitors or related businesses.
+
+    Args:
+        urls: List of website URLs to analyze (max 5)
+
+    Returns:
+        Dict containing audience analysis for each URL and comparison insights
+    """
+    results = {}
+    all_interests = []
+    all_segments = []
+
+    for url in urls[:5]:  # Limit to 5 URLs
+        try:
+            result = await generate_audience_from_url(url, include_hooks=False)
+            results[url] = result
+
+            # Collect interests for comparison
+            if result.get("success"):
+                targeting = result.get("audience_targeting", {})
+                interests = targeting.get("interest_tags", {})
+                for category, tags in interests.items():
+                    if isinstance(tags, list):
+                        all_interests.extend(tags)
+
+                segments = targeting.get("audience_segments", [])
+                all_segments.extend([s.get("name", "") for s in segments if isinstance(s, dict)])
+
+        except Exception as e:
+            logger.error(f"[CreativeStrategistAgent] Failed to analyze {url}: {e}")
+            results[url] = {"success": False, "error": str(e)}
+
+    # Find common and unique interests
+    from collections import Counter
+    interest_counts = Counter(all_interests)
+    common_interests = [i for i, c in interest_counts.items() if c > 1]
+    unique_interests = {
+        url: [i for i in result.get("audience_targeting", {}).get("interest_tags", {}).get("core_interests", [])
+              if i not in common_interests]
+        for url, result in results.items() if result.get("success")
+    }
+
+    return {
+        "individual_results": results,
+        "comparison": {
+            "common_interests": common_interests,
+            "unique_interests_by_url": unique_interests,
+            "all_segments": list(set(all_segments)),
+            "total_urls_analyzed": len([r for r in results.values() if r.get("success")])
+        }
+    }

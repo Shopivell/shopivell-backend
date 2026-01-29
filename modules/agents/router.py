@@ -312,6 +312,120 @@ async def research_website(
         )
 
 
+# ============ Audience Targeting Endpoints ============
+
+@agents_router.post("/audience/generate")
+async def generate_audience_targeting(
+    url: str = Query(..., description="Website URL to analyze"),
+    include_hooks: bool = Query(False, description="Also generate creative hooks"),
+    num_hooks: int = Query(5, ge=1, le=10, description="Number of hooks if include_hooks=True")
+):
+    """
+    Generate Meta/Facebook audience targeting from a website URL.
+
+    This enhanced endpoint performs:
+    1. Website scraping and analysis via Market Research Agent
+    2. AI-powered audience segment generation
+    3. Facebook interest targeting tag generation
+    4. Job title and industry targeting suggestions
+    5. Ad set recommendations ready for Meta Ads Manager
+
+    Returns structured targeting data including:
+    - **audience_segments**: Target segments like "Corporate Finance Departments", "E-commerce Businesses"
+    - **demographics**: Age range, gender, locations
+    - **interest_tags**: Categorized Facebook interests (25-40 tags)
+        - core_interests: Primary business-related interests
+        - technology_interests: Tech and software interests
+        - business_interests: B2B and professional interests
+        - behavioral_interests: Mindset and behavior interests
+    - **job_titles**: Relevant job titles to target
+    - **ad_set_recommendations**: Ready-to-use ad set configurations
+    - **creative_hooks**: (optional) Creative hooks for ads
+
+    Example interests for Fintech:
+    - Payment system, Mobile payment, Financial technology, Mobile banking
+    - Business-to-business, LinkedIn, Web conferencing, Leadership
+
+    Example interests for Security:
+    - Anti-theft system, CCTV, Smart Technologies, Property management
+    - Commercial property, Fire safety, Small and medium enterprises
+    """
+    try:
+        from .creative_strategist_agent import generate_audience_from_url
+
+        logger.info(f"Generating Meta audience targeting for: {url}")
+
+        result = await generate_audience_from_url(
+            url=url,
+            include_hooks=include_hooks,
+            num_hooks=num_hooks
+        )
+
+        return {
+            "success": result.get("success", False),
+            "message": "Audience targeting generated successfully" if result.get("success") else "Failed to generate audience",
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate audience targeting: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate audience targeting: {str(e)}"
+        )
+
+
+@agents_router.post("/audience/compare")
+async def compare_audience_targeting(
+    urls: List[str] = Query(..., description="List of website URLs to compare (max 5)")
+):
+    """
+    Compare audience targeting across multiple websites.
+
+    Useful for:
+    - Analyzing competitor audiences
+    - Finding common targeting opportunities
+    - Identifying unique audience segments
+
+    Returns:
+    - Individual audience analysis for each URL
+    - Common interests shared across websites
+    - Unique interests per website
+    - Combined segment list
+    """
+    try:
+        from .creative_strategist_agent import generate_audience_comparison
+
+        if len(urls) > 5:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Maximum 5 URLs allowed for comparison"
+            )
+
+        logger.info(f"Comparing audience targeting for {len(urls)} URLs")
+
+        result = await generate_audience_comparison(urls)
+
+        return {
+            "success": True,
+            "message": f"Compared {result['comparison']['total_urls_analyzed']} websites",
+            "data": result
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to compare audiences: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to compare audiences: {str(e)}"
+        )
+
+
 # ============ Creative Angle Endpoints ============
 
 @agents_router.post("/campaigns/{campaign_id}/angles")
