@@ -1865,3 +1865,201 @@ async def trigger_immediate_run():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to run immediate cycle: {str(e)}"
         )
+
+
+# ============ Ad Copy Generation Endpoints ============
+
+@agents_router.post("/ad-copy/generate")
+async def generate_ad_copy_from_research(
+    url: str = Query(..., description="Website URL to generate ad copy for"),
+    platforms: List[str] = Query(["facebook", "instagram"], description="Target platforms"),
+    include_b2b: bool = Query(True, description="Generate B2B-specific copy"),
+    include_b2c: bool = Query(True, description="Generate B2C-specific copy")
+):
+    """
+    Generate comprehensive ad copy from a website URL.
+
+    This enhanced endpoint:
+    1. Scrapes the website using market research agent
+    2. Generates B2B and/or B2C specific ad copy
+    3. Creates platform-optimized variations (Facebook, Instagram, LinkedIn)
+    4. Includes hooks, headlines, primary text variations, and descriptions
+
+    Returns ad copy organized by:
+    - Audience segment (auto-detected from website)
+    - Audience type (B2B vs B2C)
+    - Platform (Facebook, Instagram, etc.)
+    """
+    try:
+        from .market_research_agent import research_website_directly
+        from .ad_copy_agent import generate_ad_copy_from_website
+
+        logger.info(f"Generating ad copy for URL: {url}")
+
+        # Step 1: Research the website
+        research_data = await research_website_directly(
+            url=url,
+            deep_scrape=True,
+            extract_structure=True
+        )
+
+        # Step 2: Generate ad copy from research
+        ad_copy_result = await generate_ad_copy_from_website(
+            research_data=research_data,
+            platforms=platforms,
+            include_b2b=include_b2b,
+            include_b2c=include_b2c
+        )
+
+        return {
+            "success": True,
+            "message": f"Generated ad copy for {ad_copy_result.get('company_name', 'website')}",
+            "data": {
+                "company_name": ad_copy_result.get('company_name'),
+                "industry": ad_copy_result.get('industry'),
+                "ad_copy_count": len(ad_copy_result.get('ad_copy_sets', [])),
+                "ad_copy_sets": ad_copy_result.get('ad_copy_sets', [])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate ad copy: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate ad copy: {str(e)}"
+        )
+
+
+@agents_router.post("/ad-copy/from-research")
+async def generate_ad_copy_from_existing_research(
+    research_data: Dict[str, Any],
+    platforms: List[str] = Query(["facebook", "instagram"], description="Target platforms"),
+    audience_type: str = Query(None, description="Filter by audience type: B2B, B2C, or both (default)")
+):
+    """
+    Generate ad copy from existing market research data.
+
+    Use this endpoint when you already have research data from the market research agent
+    and want to generate ad copy without re-scraping.
+
+    Body should contain the research_data object from market_research_agent.
+    """
+    try:
+        from .ad_copy_agent import generate_ad_copy_from_website
+
+        include_b2b = audience_type is None or audience_type.upper() == "B2B"
+        include_b2c = audience_type is None or audience_type.upper() == "B2C"
+
+        ad_copy_result = await generate_ad_copy_from_website(
+            research_data=research_data,
+            platforms=platforms,
+            include_b2b=include_b2b,
+            include_b2c=include_b2c
+        )
+
+        return {
+            "success": True,
+            "message": f"Generated ad copy for {ad_copy_result.get('company_name', 'company')}",
+            "data": ad_copy_result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate ad copy from research: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate ad copy: {str(e)}"
+        )
+
+
+@agents_router.post("/ad-copy/b2b")
+async def generate_b2b_ad_copy(
+    url: str = Query(..., description="Website URL"),
+    audience_segment: str = Query("Business Decision Makers", description="Target B2B segment"),
+    platform: str = Query("linkedin", description="Target platform: linkedin or facebook")
+):
+    """
+    Generate B2B-specific ad copy optimized for business audiences.
+
+    Features:
+    - Professional tone
+    - Industry credibility focus
+    - ROI/results messaging
+    - LinkedIn and Facebook B2B optimized
+    """
+    try:
+        from .market_research_agent import research_website_directly
+        from .ad_copy_agent import AdCopyAgent
+
+        research_data = await research_website_directly(url=url, deep_scrape=True)
+
+        agent = AdCopyAgent()
+        audience = {
+            "name": audience_segment,
+            "type": "B2B",
+            "job_titles": "Decision makers, managers, executives",
+            "company_types": "SMEs, enterprises",
+            "pain_points": "Efficiency, cost, quality, reliability"
+        }
+
+        ad_copy = await agent.generate_b2b_ad_copy(research_data, audience, platform)
+
+        return {
+            "success": True,
+            "message": f"Generated B2B ad copy for {platform}",
+            "data": ad_copy
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate B2B ad copy: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate B2B ad copy: {str(e)}"
+        )
+
+
+@agents_router.post("/ad-copy/b2c")
+async def generate_b2c_ad_copy(
+    url: str = Query(..., description="Website URL"),
+    audience_segment: str = Query("Consumers", description="Target B2C segment"),
+    platform: str = Query("facebook", description="Target platform: facebook or instagram")
+):
+    """
+    Generate B2C-specific ad copy optimized for consumer audiences.
+
+    Features:
+    - Conversational tone
+    - Emotional appeal
+    - Benefit-focused messaging
+    - Story-driven variations
+    """
+    try:
+        from .market_research_agent import research_website_directly
+        from .ad_copy_agent import AdCopyAgent
+
+        research_data = await research_website_directly(url=url, deep_scrape=True)
+
+        agent = AdCopyAgent()
+        audience = {
+            "name": audience_segment,
+            "type": "B2C",
+            "demographics": "Adults 25-54",
+            "interests": "Quality, value, convenience",
+            "desires": "Better lifestyle, savings, reliability"
+        }
+
+        ad_copy = await agent.generate_b2c_ad_copy(research_data, audience, platform)
+
+        return {
+            "success": True,
+            "message": f"Generated B2C ad copy for {platform}",
+            "data": ad_copy
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate B2C ad copy: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate B2C ad copy: {str(e)}"
+        )

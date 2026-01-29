@@ -1,0 +1,122 @@
+{
+  "url": "https://edgars.co.zw",
+  "research_summary": {
+    "company_name": "Edgars Stores Limited",
+    "tagline": "Leading Fashion Powerhouse Since 1946",
+    "industry": "Retail / Fashion / Clothing",
+    "geographic_coverage": "Zimbabwe (National)",
+    "pages_scraped": 5,
+    "competitors_found": 0,
+    "trends_found": 0,
+    "audience_insights_found": 0
+  },
+  "extracted_data": {
+    "company_info": {
+      "name": "Edgars Stores Limited (ESL)",
+      "tagline": "Quality Fashion and Convenient Shopping",
+      "industry": "Retail Fashion & Clothing",
+      "geographic_coverage": "Zimbabwe - 27 Edgars Stores and 36 Jet Stores nationwide",
+      "founded": "1946 by Sydney Press, registered November 1948"
+    },
+    "navigation_structure": [
+      {"section": "About Us", "items": ["Company Overview", "Strategic Business Units", "Directors", "Management", "Careers", "Committees", "Our Strategy", "Awards", "Community Involvement"]},
+      {"section": "Business Units", "items": ["Edgars Stores", "Jet Stores", "Carousel Manufacturing", "Club Plus Microfinance", "Express Stores"]},
+      {"section": "Investor Relations", "items": ["Investor Centre", "Calendar", "Presentations", "Analysts", "FAQs", "Email Alerts"]},
+      {"section": "Resources", "items": ["Financial Publications", "Supplier Registration Forms", "Annual Reports"]},
+      {"section": "Media", "items": ["Press Release", "Corporate Announcements", "CSR News"]},
+      {"section": "Contact", "items": ["Contact Us"]}
+    ],
+    "services_products": [
+      {"name": "Edgars Stores", "description": "Quality fashion and convenient shopping at competitive prices for middle to upper-income families. Fashion merchandise with no compromise on quality, competitive credit offerings."},
+      {"name": "Jet Stores", "description": "Clothing, white goods, kitchenware, hardware and variety goods. Quality value and commercial fashion at competitive prices for lower to middle income families."},
+      {"name": "Carousel Manufacturing", "description": "Manufacturing division producing denim, ladies, mens, kids, corporate and workwear. Products for in-house retail chains, independent retailers and corporates."},
+      {"name": "Club Plus Microfinance", "description": "Micro finance loans to lower to middle income customers at competitive interest rates."},
+      {"name": "Financial Services", "description": "Retail debtors book management, insurance products including Hospital Cash Plan."},
+      {"name": "Edgars Club Zimbabwe", "description": "Loyalty program designed to benefit Edgars stores customers."}
+    ],
+    "value_propositions": [
+      "Leading Zimbabwean retailer offering high-quality and competitively priced clothing",
+      "One-stop shop for the whole family - men, women, and children",
+      "Exclusive, quality clothing, footwear, accessories, and genuine high-end beauty products",
+      "Vertical integration - manufacturing (Carousel) to retail (Edgars/Jet)",
+      "Financial services and credit offerings for customers",
+      "Loyalty program rewards"
+    ],
+    "target_audiences": [
+      "Middle to upper-income families (Edgars)",
+      "Lower to middle-income families (Jet)",
+      "Fashion-conscious consumers",
+      "Corporate clients (workwear)",
+      "Families looking for value clothing",
+      "Customers needing microfinance/credit"
+    ],
+    "partners_members": [
+      "Sub Sahara Capital Group (shareholder since 2019)",
+      "Bellfield Limited (shareholder since 2019)",
+      "Former EDCON partnership"
+    ],
+    "leadership": [
+      {"name": "Sevious Mushosho", "title": "Management"},
+      {"name": "Chesternoel Mutevhe", "title": "Management"},
+      {"name": "Peter Mnyama", "title": "Management"},
+      {"name": "Mbengeni Mabidi", "title": "Management"},
+      {"name": "Sibusisiwe Rugwevera", "title": "Management"},
+      {"name": "Menfree Tanyanyiwa", "title": "Management"},
+      {"name": "Pathiso Ncube", "title": "Management"},
+      {"name": "Alexander Timburwa", "title": "Management"},
+      {"name": "Justina Machinya", "title": "Management"},
+      {"name": "Mbuso Ndlovu", "title": "Management"},
+      {"name": "Carrington Busili", "title": "Management"}
+    ],
+    "key_features": [
+      "Established 1946 - 78+ years of operation",
+      "27 Edgars Stores nationwide",
+      "36 Jet Stores nationwide",
+      "In-house manufacturing (Carousel in Bulawayo)",
+      "Microfinance division (Club Plus)",
+      "Listed company with investor relations",
+      "Acquired Jeans Company in 1993",
+      "Acquired Carousel Clothing factory in 1974"
+    ],
+    "certifications_awards": [
+      "Listed on Zimbabwe Stock Exchange",
+      "Awards page available on website"
+    ],
+    "call_to_actions": [
+      "Download Financial Report",
+      "View Investor Centre",
+      "Apply for Careers",
+      "Contact Us"
+    ],
+    "pricing_info": null,
+    "contact_info": {
+      "emails": [],
+      "phones": [],
+      "address": "ZB Life Towers 15th Floor, 77 Jason Moyo Avenue and Sam Mujoma, Harare",
+      "social_media": {
+        "facebook": ["facebook.com/JetZimbabwe"]
+      }
+    },
+    "statistics": [
+      {"value": "27", "metric": "Edgars Stores"},
+      {"value": "36", "metric": "Jet Stores"},
+      {"value": "1946", "metric": "Year Founded"},
+      {"value": "78+", "metric": "Years in Operation"},
+      {"value": "5", "metric": "Business Units"}
+    ]
+  },
+  "market_data": {
+    "competitors": [],
+    "industry_trends": [],
+    "audience_insights": []
+  },
+  "raw_content": {
+    "main_page": "Edgars Stores Limited is a leading Zimbabwean retailer offering high-quality and competitively priced clothing and merchandise. The Group is organized into three strategic business units: manufacturing, finance and retailing.",
+    "scraped_pages": [
+      {"url": "https://edgars.co.zw/", "excerpt": "Welcome to Edgars Stores Limited - Leading fashion retailer in Zimbabwe"},
+      {"url": "https://edgars.co.zw/company-profile-and-structure/", "excerpt": "ESL established 1946, founded by Sydney Press"},
+      {"url": "https://edgars.co.zw/strategic-business-units/", "excerpt": "Retailing, Manufacturing (Carousel), Club Plus Financial Services"},
+      {"url": "https://edgars.co.zw/contact-us/", "excerpt": "Head Office at ZB Life Towers, Harare"}
+    ]
+  }
+}
