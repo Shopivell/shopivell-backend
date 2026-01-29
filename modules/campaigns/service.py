@@ -186,6 +186,250 @@ class CampaignService:
                 self.db.commit()
             return None, str(e)
 
+    def create_campaign_from_store(self, store, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None) -> Tuple[Campaign, Optional[str]]:
+        """
+        Create a campaign directly from existing store data WITHOUT scraping.
+
+        This method uses the store's saved information:
+        - store_name, business_type, store_voice
+        - products_or_services
+        - logo_url, color_theme
+        - store_link (for destination URL)
+
+        Args:
+            store: The Store object with complete data
+            campaign_name: Optional custom campaign name (defaults to store name)
+            asset_ids: Optional list of user-provided asset IDs
+
+        Returns:
+            (Campaign, error_message) tuple
+        """
+        try:
+            logger.info(f"[CampaignService] Creating campaign from store data: {store.store_name}")
+
+            # Build store data as if it was scraped
+            store_data = {
+                "url": store.store_link or "",
+                "domain": store.store_name.lower().replace(" ", ""),
+                "content": self._build_content_from_store(store),
+                "extracted_at": datetime.utcnow().isoformat(),
+                "source": "store_data",
+                "logo_url": store.logo_url,
+                "brand_color": store.color_theme,
+                "brand_colors": [store.color_theme] if store.color_theme else [],
+                "screenshot_url": store.screenshot_url,
+            }
+
+            # Create campaign
+            campaign = Campaign(
+                store_id=store.id,
+                name=campaign_name or f"{store.store_name} Campaign",
+                source_url=store.store_link or "",
+                source_type="store",  # Mark as created from store, not URL scrape
+                status=CampaignStatus.ANALYZING
+            )
+            self.db.add(campaign)
+            self.db.commit()
+            self.db.refresh(campaign)
+
+            # Store the store data
+            campaign.scraped_data = store_data
+            campaign.scraped_at = datetime.utcnow()
+
+            # Store user-provided asset IDs
+            if asset_ids:
+                store_data["user_asset_ids"] = [str(aid) for aid in asset_ids]
+                campaign.scraped_data = store_data
+
+            # Build store context for AI generation
+            store_context = {
+                "store_name": store.store_name,
+                "business_type": store.business_type,
+                "store_description": store.store_voice,
+                "services_products": store.products_or_services or [],
+                "logo_url": store.logo_url,
+                "color_theme": store.color_theme,
+            }
+
+            # Generate ad content using store context
+            ad_content = self._generate_ad_content_from_store(store_context)
+
+            if ad_content:
+                campaign.generated_headlines = ad_content.get("headlines", [])
+                campaign.generated_descriptions = ad_content.get("descriptions", [])
+
+                # Create ad sets
+                self._create_ad_sets(campaign, ad_content, asset_ids)
+
+            campaign.status = CampaignStatus.READY
+            self.db.commit()
+            self.db.refresh(campaign)
+
+            logger.info(f"[CampaignService] Campaign created from store: {campaign.id}")
+            return campaign, None
+
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"[CampaignService] Error creating campaign from store: {e}")
+            if 'campaign' in locals():
+                campaign.status = CampaignStatus.FAILED
+                campaign.error_message = str(e)
+                self.db.commit()
+            return None, str(e)
+
+    def _build_content_from_store(self, store) -> str:
+        """Build content string from store data for AI processing."""
+        content_parts = []
+
+        content_parts.append(f"# {store.store_name}")
+
+        if store.business_type:
+            content_parts.append(f"Business Type: {store.business_type}")
+
+        if store.store_voice:
+            content_parts.append(f"About: {store.store_voice}")
+
+        if store.products_or_services:
+            content_parts.append(f"Products/Services: {', '.join(store.products_or_services)}")
+
+        if store.store_email:
+            content_parts.append(f"Email: {store.store_email}")
+
+        if store.store_phone:
+            content_parts.append(f"Phone: {store.store_phone}")
+
+        if store.store_address:
+            content_parts.append(f"Address: {store.store_address}")
+
+        return "\n\n".join(content_parts)
+
+    def _generate_ad_content_from_store(self, store_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Generate ad content using store data (no scraping needed)."""
+        store_name = store_context.get("store_name", "Business")
+        business_type = store_context.get("business_type", "")
+        description = store_context.get("store_description", "")
+        products = store_context.get("services_products", [])
+
+        products_str = ", ".join(products[:10]) if products else "various products and services"
+
+        prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
+
+STORE INFORMATION (USE THIS DATA - DO NOT MAKE UP INFORMATION):
+Store Name: {store_name}
+Business Type: {business_type}
+Description: {description}
+Products/Services: {products_str}
+
+STEP 1 - ANALYZE THE BUSINESS:
+Based on the store information above, identify:
+1. WHAT does this business sell?
+2. WHO are the target buyers? (industries, job titles, company types)
+3. What PROBLEMS does this business solve?
+
+STEP 2 - GENERATE 1 BUYER PERSONA:
+Generate exactly 1 ad set targeting the PRIMARY buyer persona.
+
+STEP 3 - GENERATE AD CONTENT:
+
+IMPORTANT: Do NOT include any emojis. Keep all text clean and professional.
+
+1. HEADLINES (2, max 40 chars each) - Based on the actual business
+2. DESCRIPTIONS (2, max 150 chars each) - Based on actual products/services
+3. AD_SETS (1 buyer persona):
+
+For the ad set, provide:
+- name: The BUYER PERSONA (2-4 words)
+- title: Clear headline for this buyer (max 50 chars, NO emojis)
+- audience_description: 2-3 sentences describing WHO this buyer is
+- audience_tags: 15-20 Facebook targeting interests
+- primary_text: Detailed ad copy (100-180 words) - NO emojis
+- features: 5 specific features from the products/services listed
+- hashtags: 8-10 social media hashtags (lowercase, no spaces)
+- value_proposition: One sentence value statement
+- emotion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
+- visual_direction: Specific scene description for ad image
+
+Return as JSON:
+{{
+    "business_name": "{store_name}",
+    "business_type": "{business_type}",
+    "products_services": {json.dumps(products[:6])},
+    "headlines": ["Headline 1", "Headline 2"],
+    "descriptions": ["Description 1", "Description 2"],
+    "ad_sets": [
+        {{
+            "name": "Buyer Persona Name",
+            "title": "Clear Headline",
+            "audience_description": "Description...",
+            "audience_tags": ["tag1", "tag2", "...15-20 tags"],
+            "primary_text": "Professional ad copy...",
+            "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
+            "hashtags": ["hashtag1", "hashtag2", "...8-10 tags"],
+            "value_proposition": "Value statement",
+            "emotion": "Primary emotion",
+            "visual_direction": "Scene description"
+        }}
+    ]
+}}
+
+Return ONLY valid JSON, no markdown, NO EMOJIS.
+"""
+
+        # Try OpenRouter first
+        if self.openrouter:
+            result = self._generate_with_openrouter(prompt)
+            if result:
+                return result
+            logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
+
+        # Fall back to OpenAI
+        if self.openai:
+            result = self._generate_with_openai(prompt)
+            if result:
+                return result
+
+        # Final fallback to mock data using store context
+        logger.warning("[CampaignService] No AI client available, using store-based mock data")
+        return self._mock_ad_content_from_store(store_context)
+
+    def _mock_ad_content_from_store(self, store_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate mock ad content from store data when AI is unavailable."""
+        store_name = store_context.get("store_name", "Business")
+        business_type = store_context.get("business_type", "Services")
+        products = store_context.get("services_products", [])
+
+        return {
+            "business_name": store_name,
+            "business_type": business_type,
+            "products_services": products[:6],
+            "headlines": [
+                f"Discover {store_name}",
+                f"Professional {business_type}"
+            ],
+            "descriptions": [
+                f"Experience quality {business_type.lower()} from {store_name}. Contact us today.",
+                f"Trusted {business_type.lower()} solutions. Get started now."
+            ],
+            "ad_sets": [
+                {
+                    "name": f"{business_type} Buyers",
+                    "title": f"Quality {business_type}",
+                    "audience_description": f"Professionals and businesses looking for {business_type.lower()} solutions.",
+                    "audience_tags": [
+                        "Business owners", "Professionals", business_type,
+                        "Small business", "Enterprise", "B2B services",
+                        "Quality services", "Professional services"
+                    ],
+                    "primary_text": f"Looking for reliable {business_type.lower()}? {store_name} delivers professional solutions tailored to your needs. With our expertise and commitment to quality, we ensure your satisfaction. Contact us today to learn more.",
+                    "features": products[:5] if products else [f"{business_type} Service 1", f"{business_type} Service 2"],
+                    "hashtags": [business_type.lower().replace(" ", ""), "business", "professional", "quality", "services"],
+                    "value_proposition": f"Professional {business_type.lower()} you can trust.",
+                    "emotion": "Trust",
+                    "visual_direction": f"Professional {business_type.lower()} scene showing quality service."
+                }
+            ]
+        }
+
     def _scrape_website(self, url: str) -> Optional[Dict[str, Any]]:
         """Scrape website content using Tavily - extracts from multiple pages for complete picture."""
         if not self.tavily:

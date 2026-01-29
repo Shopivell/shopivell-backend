@@ -18,9 +18,10 @@ AdContent = UrlAdContent
 from .schemas import (
     CampaignCreate, CampaignUpdate, CampaignResponse, CampaignListResponse,
     ScrapeUrlRequest, ScrapeUrlResponse, AdSetResponse, AdContentResponse,
-    GenerateAdsRequest
+    GenerateAdsRequest, CreateCampaignFromStoreRequest, CreateCampaignFromStoreResponse
 )
 from .service import CampaignService
+from modules.stores.models import Store
 
 # Import Facebook posting functionality
 try:
@@ -82,6 +83,60 @@ def scrape_url_and_create_campaign(
         status=campaign.status.value,
         message="Campaign created successfully" if not error else error,
         scraped_data=campaign.scraped_data
+    )
+
+
+@campaign_router.post("/from-store", response_model=CreateCampaignFromStoreResponse)
+def create_campaign_from_store(
+    request: CreateCampaignFromStoreRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a campaign directly from existing store data.
+
+    This endpoint uses the store's saved information (name, business_type,
+    store_voice, products_or_services, logo_url, color_theme) to generate
+    ad content WITHOUT scraping the website again.
+
+    This is more reliable and faster than scraping, especially when:
+    - The store already has complete data
+    - Web scraping is rate-limited or failing
+    - You want to create campaigns based on curated store information
+    """
+    # Get the store
+    store = db.query(Store).filter(Store.id == request.store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    if not store.is_setup_completed:
+        raise HTTPException(status_code=400, detail="Store setup is not completed")
+
+    service = CampaignService(db)
+    campaign, error = service.create_campaign_from_store(
+        store=store,
+        campaign_name=request.campaign_name,
+        asset_ids=request.asset_ids
+    )
+
+    if error and not campaign:
+        raise HTTPException(status_code=500, detail=error)
+
+    # Prepare store data summary for response
+    store_data_used = {
+        "store_name": store.store_name,
+        "business_type": store.business_type,
+        "store_voice": store.store_voice[:200] + "..." if store.store_voice and len(store.store_voice) > 200 else store.store_voice,
+        "products_or_services": store.products_or_services[:10] if store.products_or_services else [],
+        "logo_url": store.logo_url,
+        "color_theme": store.color_theme,
+        "store_link": store.store_link
+    }
+
+    return CreateCampaignFromStoreResponse(
+        campaign_id=campaign.id,
+        status=campaign.status.value,
+        message="Campaign created successfully from store data",
+        store_data_used=store_data_used
     )
 
 

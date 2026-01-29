@@ -153,3 +153,19 @@ class GenerateAdsRequest(BaseModel):
     campaign_id: uuid.UUID
     num_ad_sets: int = 1  # Default to 1 ad set to save tokens
     regenerate: bool = False
+
+
+# Create Campaign from Store (no scraping - uses store data directly)
+class CreateCampaignFromStoreRequest(BaseModel):
+    store_id: uuid.UUID
+    campaign_name: Optional[str] = None  # Optional custom name, defaults to store name
+    asset_ids: Optional[List[uuid.UUID]] = None  # Optional user-provided assets
+
+
+class CreateCampaignFromStoreResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    campaign_id: uuid.UUID
+    status: str
+    message: str
+    store_data_used: Dict[str, Any]  # Shows what store data was used
