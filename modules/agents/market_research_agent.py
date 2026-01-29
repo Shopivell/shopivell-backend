@@ -147,36 +147,83 @@ class MarketResearchAgent:
 
     def _scrape_website(self, url: str) -> Dict[str, Any]:
         """Scrape the target website to understand the business"""
-        if not self.tavily:
-            logger.warning("[MarketResearchAgent] Tavily not available, skipping website scrape")
-            return {"content": "", "error": "Tavily not configured"}
+        content = ""
 
-        try:
-            logger.info(f"[MarketResearchAgent] Scraping website: {url}")
+        # Try Tavily first
+        if self.tavily:
+            try:
+                logger.info(f"[MarketResearchAgent] Scraping website with Tavily: {url}")
+                extract_result = self.tavily.extract(urls=[url])
 
-            # Extract content from the website
-            extract_result = self.tavily.extract(urls=[url])
+                if extract_result and extract_result.get("results"):
+                    content = extract_result["results"][0].get("raw_content", "")
+                    logger.info(f"[MarketResearchAgent] Tavily extracted {len(content)} chars")
 
-            if extract_result and extract_result.get("results"):
-                content = extract_result["results"][0].get("raw_content", "")
+            except Exception as e:
+                logger.error(f"[MarketResearchAgent] Tavily scrape error: {e}")
 
-                # Extract structured data from content
-                contact_info = self._extract_contact_info(content)
-                statistics = self._extract_statistics(content)
+        # Fallback to store scraping service if Tavily failed or returned empty
+        if not content and STORE_SCRAPING_AVAILABLE and extract_store_info_from_website:
+            try:
+                logger.info(f"[MarketResearchAgent] Falling back to store scraping service: {url}")
+                store_data = extract_store_info_from_website(url, capture_screenshot=True, analyze_brand=False)
 
-                return {
-                    "content": content[:15000],  # Increased limit for more context
-                    "url": url,
-                    "success": True,
-                    "contact_info": contact_info,
-                    "statistics": statistics
-                }
+                if store_data and store_data.get("success"):
+                    # Build content from store data
+                    content_parts = []
+                    if store_data.get("name"):
+                        content_parts.append(f"Company: {store_data['name']}")
+                    if store_data.get("description"):
+                        content_parts.append(f"Description: {store_data['description']}")
+                    if store_data.get("services"):
+                        content_parts.append(f"Services: {', '.join(store_data['services'])}")
+                    if store_data.get("products"):
+                        for prod in store_data.get("products", [])[:10]:
+                            if isinstance(prod, dict):
+                                content_parts.append(f"Product: {prod.get('name', '')} - {prod.get('description', '')}")
+                    if store_data.get("faqs"):
+                        for faq in store_data.get("faqs", [])[:5]:
+                            if isinstance(faq, dict):
+                                content_parts.append(f"FAQ: {faq.get('question', '')} - {faq.get('answer', '')}")
 
-            return {"content": "", "error": "No content extracted"}
+                    content = "\n".join(content_parts)
+                    logger.info(f"[MarketResearchAgent] Store scraping extracted {len(content)} chars")
 
-        except Exception as e:
-            logger.error(f"[MarketResearchAgent] Website scrape error: {e}")
-            return {"content": "", "error": str(e)}
+                    # Return with store data contact info
+                    return {
+                        "content": content[:15000],
+                        "url": url,
+                        "success": True,
+                        "contact_info": {
+                            "emails": store_data.get("email", []) if isinstance(store_data.get("email"), list) else [store_data.get("email")] if store_data.get("email") else [],
+                            "phones": store_data.get("phone", []) if isinstance(store_data.get("phone"), list) else [store_data.get("phone")] if store_data.get("phone") else [],
+                            "social_media": store_data.get("social_media", {})
+                        },
+                        "statistics": [],
+                        "screenshot_url": store_data.get("screenshot_url"),
+                        "source": "store_scraping_service"
+                    }
+
+            except Exception as e:
+                logger.error(f"[MarketResearchAgent] Store scraping fallback error: {e}")
+
+        # If we got content from Tavily, process it
+        if content:
+            contact_info = self._extract_contact_info(content)
+            statistics = self._extract_statistics(content)
+
+            return {
+                "content": content[:15000],
+                "url": url,
+                "success": True,
+                "contact_info": contact_info,
+                "statistics": statistics,
+                "source": "tavily"
+            }
+
+        # No content from any source
+        logger.warning(f"[MarketResearchAgent] No content extracted from any source for: {url}")
+        return {"content": "", "error": "No content extracted from any source", "success": False}
 
     def _scrape_multiple_pages(self, base_url: str, subpages: List[str] = None) -> Dict[str, Any]:
         """
