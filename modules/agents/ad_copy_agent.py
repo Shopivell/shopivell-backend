@@ -51,24 +51,25 @@ Generate high-converting ad copy using the market research data provided.
 
 COMPANY INFORMATION:
 Company Name: {company_name}
-Industry: {industry}
+WHAT THEY SELL (USE THESE SPECIFIC TERMS - NOT GENERIC INDUSTRY TERMS): {primary_products}
 Tagline: {tagline}
 Years in Business: {years_in_business}
 Geographic Coverage: {geographic_coverage}
 
-PRODUCTS/SERVICES:
+PRODUCTS/SERVICES DETAILS:
 {services_products}
 
 VALUE PROPOSITIONS:
 {value_propositions}
 
-KEY STATISTICS (Use as social proof):
+KEY STATISTICS (USE THESE EXACT NUMBERS AS SOCIAL PROOF):
 {statistics}
 
 TARGET AUDIENCE FOR THIS AD:
 Audience Segment: {audience_segment}
+What they're looking for: {shopping_need}
+Their frustration: {pain_point}
 Audience Type: {audience_type}
-Audience Description: {audience_description}
 
 PLATFORM: {platform}
 
@@ -76,33 +77,40 @@ BRAND VOICE: {brand_voice}
 
 ---
 
+CRITICAL INSTRUCTIONS:
+- Use the SPECIFIC product terms provided above (e.g., "fashion", "clothing", "workwear")
+- NEVER use generic terms like "retail", "products", "services", or "solutions"
+- Reference the ACTUAL statistics and years in business as proof points
+- Make hooks specific to what {company_name} sells and who {audience_segment} are
+- Address the actual frustration ({pain_point}) the audience faces
+
 Generate ad copy optimized for {platform} with the following:
 
 1. HOOKS (3 attention-grabbing opening lines - first 125 characters are crucial)
-   - Pattern interrupt hook
-   - Question hook
-   - Statistics/social proof hook
+   - Pattern interrupt: Something unexpected about {primary_products}
+   - Question: A question {audience_segment} ask themselves about {primary_products}
+   - Social proof: Use the actual statistics ({statistics}) or years in business
 
-2. HEADLINES (3 variations, max 40 characters each)
-   - Benefit-focused
-   - Curiosity-driven
-   - Social proof based
+2. HEADLINES (3 variations, max 40 characters each) - MUST mention specific products
+   - Benefit-focused (specific benefit of {primary_products})
+   - Curiosity-driven (about {company_name}'s {primary_products})
+   - Social proof based (use actual numbers)
 
 3. PRIMARY TEXT (3 variations)
    For {platform}:
-   - Short version (50-80 words) - for quick scrollers
-   - Medium version (100-150 words) - balanced
-   - Long version (200-250 words) - for high-intent audiences
+   - Short version (50-80 words) - mention {primary_products} specifically
+   - Medium version (100-150 words) - address {pain_point}
+   - Long version (200-250 words) - include statistics as proof
 
    Each should include:
-   - Hook in first line
-   - Problem agitation
-   - Solution presentation
-   - Social proof/credibility
+   - Hook in first line (specific to {primary_products})
+   - Problem agitation (about {pain_point})
+   - Solution presentation (how {company_name}'s {primary_products} helps)
+   - Social proof using actual statistics
    - Clear call to action
-   - NO EMOJIS unless specifically requested
+   - NO EMOJIS
 
-4. DESCRIPTIONS (2 variations, max 30 words each)
+4. DESCRIPTIONS (2 variations, max 30 words each) - mention specific products
 
 5. CALL TO ACTION: Choose the most appropriate from:
    [Learn More, Shop Now, Sign Up, Get Quote, Contact Us, Book Now, See More]
@@ -110,28 +118,28 @@ Generate ad copy optimized for {platform} with the following:
 Return as valid JSON:
 {{
   "hooks": {{
-    "pattern_interrupt": "Hook text here",
-    "question": "Hook text here",
-    "social_proof": "Hook text here"
+    "pattern_interrupt": "Hook about {primary_products}",
+    "question": "Question {audience_segment} ask about {primary_products}",
+    "social_proof": "Hook using {statistics}"
   }},
   "headlines": [
-    {{"type": "benefit", "text": "Headline 1"}},
+    {{"type": "benefit", "text": "Headline about {primary_products}"}},
     {{"type": "curiosity", "text": "Headline 2"}},
-    {{"type": "social_proof", "text": "Headline 3"}}
+    {{"type": "social_proof", "text": "Headline with statistics"}}
   ],
   "primary_text": {{
-    "short": "Short version...",
-    "medium": "Medium version...",
-    "long": "Long version..."
+    "short": "Short version mentioning {primary_products}...",
+    "medium": "Medium version addressing {pain_point}...",
+    "long": "Long version with statistics..."
   }},
-  "descriptions": ["Description 1", "Description 2"],
-  "call_to_action": "Learn More",
+  "descriptions": ["Description with {primary_products}", "Description 2"],
+  "call_to_action": "Shop Now",
   "audience_segment": "{audience_segment}",
   "platform": "{platform}"
 }}
 
 IMPORTANT:
-- Use ACTUAL company data provided above
+- Use ACTUAL company data and product terms provided above
 - Include real statistics as social proof
 - Match the brand voice
 - NO emojis in any text
@@ -144,7 +152,7 @@ You are a B2B copywriter specializing in professional services advertising.
 Generate LinkedIn/Facebook B2B ad copy that speaks to business decision-makers.
 
 COMPANY: {company_name}
-INDUSTRY: {industry}
+WHAT THEY PROVIDE (USE THESE SPECIFIC TERMS): {primary_products}
 CREDENTIALS: {credentials}
 YEARS IN BUSINESS: {years_in_business}
 
@@ -153,56 +161,59 @@ PRODUCTS/SERVICES FOR BUSINESSES:
 
 TARGET B2B AUDIENCE:
 Segment: {audience_segment}
+What they need: {business_need}
+Their challenge: {business_challenge}
 Job Titles: {job_titles}
 Company Types: {company_types}
-Pain Points: {pain_points}
 
 KEY DIFFERENTIATORS:
 {differentiators}
 
-STATISTICS/SOCIAL PROOF:
+STATISTICS/SOCIAL PROOF (USE THESE SPECIFIC NUMBERS):
 {statistics}
+
+IMPORTANT INSTRUCTIONS:
+- Use the SPECIFIC product/service terms provided above - NEVER use generic terms like "solutions" or "services"
+- Reference actual statistics and years in business as proof points
+- Address the specific business challenge of the audience segment
+- Make hooks specific to what {company_name} actually provides
 
 Generate professional B2B ad copy:
 
-1. HOOKS (3 - professional tone, no hype)
-   - Industry insight hook
-   - Problem-aware hook
-   - ROI/results hook
+1. HOOKS (3 - must be specific to {primary_products} for {audience_segment})
+   - Industry insight hook: A trend or insight about {primary_products} in the industry
+   - Problem-aware hook: A specific challenge {audience_segment} face with {primary_products}
+   - ROI/results hook: A measurable outcome from using {company_name}'s {primary_products}
 
-2. HEADLINES (3, max 40 chars)
-   - Authority-based
-   - Solution-focused
-   - Results-driven
+2. HEADLINES (3, max 40 chars) - mention specific products/services, not generic terms
+   - Authority-based (use years in business or credentials)
+   - Solution-focused (specific to the product)
+   - Results-driven (mention outcomes)
 
 3. PRIMARY TEXT (2 versions)
    - LinkedIn style (professional, detailed, 150-200 words)
    - Facebook B2B style (slightly casual, 100-150 words)
 
-   Include:
-   - Industry credibility
-   - Specific solutions
-   - Business outcomes
-   - Professional CTA
+   Include specific references to {primary_products} and {statistics}.
 
-4. DESCRIPTIONS (2 versions)
+4. DESCRIPTIONS (2 versions) - mention specific products/services
 
 5. CALL TO ACTION: [Get Quote, Learn More, Contact Us, Schedule Demo, Download Guide]
 
 Return as valid JSON:
 {{
   "hooks": {{
-    "industry_insight": "Hook text",
-    "problem_aware": "Hook text",
-    "roi_results": "Hook text"
+    "industry_insight": "Hook about {primary_products} in the industry",
+    "problem_aware": "Hook about challenge with {primary_products}",
+    "roi_results": "Hook about results from {primary_products}"
   }},
   "headlines": [
-    {{"type": "authority", "text": "Headline"}},
-    {{"type": "solution", "text": "Headline"}},
-    {{"type": "results", "text": "Headline"}}
+    {{"type": "authority", "text": "Headline with credentials"}},
+    {{"type": "solution", "text": "Headline with specific product"}},
+    {{"type": "results", "text": "Headline with outcome"}}
   ],
   "primary_text": {{
-    "linkedin": "LinkedIn version...",
+    "linkedin": "LinkedIn version mentioning {primary_products}...",
     "facebook": "Facebook B2B version..."
   }},
   "descriptions": ["Description 1", "Description 2"],
@@ -220,33 +231,40 @@ You are a B2C copywriter specializing in consumer advertising on social media.
 Generate engaging Facebook/Instagram ad copy that connects with everyday consumers.
 
 COMPANY: {company_name}
-INDUSTRY: {industry}
+WHAT THEY SELL (USE THESE SPECIFIC TERMS, NOT GENERIC INDUSTRY TERMS): {primary_products}
 TAGLINE: {tagline}
 REPUTATION: {reputation}
 
-PRODUCTS/SERVICES FOR CONSUMERS:
+PRODUCTS/SERVICES DETAILS:
 {services_products}
 
 TARGET CONSUMER AUDIENCE:
 Segment: {audience_segment}
+What they're shopping for: {shopping_need}
+Their pain point: {pain_point}
+What they desire: {audience_desire}
 Demographics: {demographics}
-Interests: {interests}
-Desires: {desires}
 
-VALUE PROPOSITIONS:
+KEY BENEFITS TO HIGHLIGHT:
 {value_propositions}
 
-SOCIAL PROOF:
+SOCIAL PROOF (USE SPECIFIC NUMBERS):
 {statistics}
+
+IMPORTANT INSTRUCTIONS:
+- Use the SPECIFIC product terms provided above (e.g., "fashion", "clothing", "footwear") - NEVER use generic terms like "retail" or "products"
+- Reference what the audience is actually looking for based on their segment
+- Use the actual statistics/years in business as social proof
+- Make the hooks specific to the products and audience, not generic
 
 Generate engaging B2C ad copy:
 
-1. HOOKS (3 - conversational, relatable)
-   - Desire/aspiration hook
-   - Pain point hook
-   - Curiosity hook
+1. HOOKS (3 - must be specific to {primary_products} and {audience_segment})
+   - Desire hook: What {audience_segment} aspire to have/be (related to {primary_products})
+   - Pain point hook: A frustration {audience_segment} face when shopping for {primary_products}
+   - Curiosity hook: Something intriguing about {company_name}'s {primary_products}
 
-2. HEADLINES (3, max 40 chars)
+2. HEADLINES (3, max 40 chars) - mention specific products, not generic terms
    - Benefit-focused
    - Emotional appeal
    - Offer/value based
@@ -256,26 +274,26 @@ Generate engaging B2C ad copy:
    - Benefit-list (scannable, 80-120 words)
    - Urgency-based (FOMO, limited time, 60-100 words)
 
-   Each should feel conversational and relatable.
+   Each should reference {primary_products} specifically.
 
-4. DESCRIPTIONS (2 versions)
+4. DESCRIPTIONS (2 versions) - mention specific products
 
 5. CALL TO ACTION: [Shop Now, Learn More, Get Started, See Collection, Explore Now]
 
 Return as valid JSON:
 {{
   "hooks": {{
-    "desire": "Hook text",
-    "pain_point": "Hook text",
-    "curiosity": "Hook text"
+    "desire": "Hook about aspiration for {primary_products}",
+    "pain_point": "Hook about frustration shopping for {primary_products}",
+    "curiosity": "Hook creating intrigue about {company_name}'s {primary_products}"
   }},
   "headlines": [
-    {{"type": "benefit", "text": "Headline"}},
-    {{"type": "emotional", "text": "Headline"}},
-    {{"type": "offer", "text": "Headline"}}
+    {{"type": "benefit", "text": "Headline with specific product"}},
+    {{"type": "emotional", "text": "Headline with emotional appeal"}},
+    {{"type": "offer", "text": "Headline with value proposition"}}
   ],
   "primary_text": {{
-    "story": "Story version...",
+    "story": "Story version mentioning {primary_products}...",
     "benefits": "Benefits list version...",
     "urgency": "Urgency version..."
   }},
@@ -376,6 +394,136 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
         return "\n".join(service_parts) if service_parts else "Quality products and services"
 
+    def _extract_product_keywords(self, research_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract specific product/service keywords from research data.
+        Returns actual product terms instead of generic industry categories.
+        """
+        extracted = research_data.get('extracted_data', {})
+        summary = research_data.get('research_summary', {})
+
+        # Common product keyword mappings
+        product_keywords = []
+        benefit_keywords = []
+
+        # Extract from services/products
+        services = extracted.get('services_products', [])
+        for svc in services:
+            if isinstance(svc, dict):
+                desc = svc.get('description', '').lower()
+                name = svc.get('name', '').lower()
+
+                # Fashion/Clothing keywords
+                if any(kw in desc or kw in name for kw in ['fashion', 'clothing', 'clothes', 'apparel', 'wear', 'dress']):
+                    product_keywords.extend(['fashion', 'clothing', 'style'])
+                if any(kw in desc or kw in name for kw in ['footwear', 'shoes', 'boots']):
+                    product_keywords.append('footwear')
+                if any(kw in desc or kw in name for kw in ['accessories', 'jewelry', 'bags']):
+                    product_keywords.append('accessories')
+                if any(kw in desc or kw in name for kw in ['beauty', 'cosmetics', 'skincare']):
+                    product_keywords.append('beauty products')
+
+                # Service keywords
+                if any(kw in desc or kw in name for kw in ['finance', 'loan', 'credit', 'microfinance']):
+                    product_keywords.append('financing options')
+                if any(kw in desc or kw in name for kw in ['loyalty', 'rewards', 'club', 'membership']):
+                    benefit_keywords.append('loyalty rewards')
+
+                # Quality/Value keywords
+                if 'quality' in desc:
+                    benefit_keywords.append('quality')
+                if 'competitive' in desc or 'value' in desc or 'affordable' in desc:
+                    benefit_keywords.append('great value')
+                if 'family' in desc or 'families' in desc:
+                    benefit_keywords.append('family-friendly')
+
+        # Extract from value propositions
+        value_props = extracted.get('value_propositions', [])
+        for vp in value_props:
+            vp_lower = vp.lower()
+            if 'one-stop' in vp_lower or 'all-in-one' in vp_lower:
+                benefit_keywords.append('one-stop shop')
+            if 'family' in vp_lower:
+                benefit_keywords.append('whole family')
+
+        # Deduplicate
+        product_keywords = list(dict.fromkeys(product_keywords))
+        benefit_keywords = list(dict.fromkeys(benefit_keywords))
+
+        # Build primary product description
+        if product_keywords:
+            primary_products = ', '.join(product_keywords[:3])
+        else:
+            # Fallback to industry but make it specific
+            industry = summary.get('industry', '').lower()
+            if 'fashion' in industry or 'clothing' in industry or 'retail' in industry:
+                primary_products = 'fashion and clothing'
+            elif 'tech' in industry or 'software' in industry:
+                primary_products = 'technology solutions'
+            elif 'food' in industry or 'restaurant' in industry:
+                primary_products = 'food and dining'
+            else:
+                primary_products = 'products and services'
+
+        return {
+            'product_keywords': product_keywords,
+            'benefit_keywords': benefit_keywords,
+            'primary_products': primary_products,
+            'primary_benefit': benefit_keywords[0] if benefit_keywords else 'quality'
+        }
+
+    def _extract_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Extract context about an audience from its name and research data.
+        Returns specific descriptors for the audience.
+        """
+        audience_lower = audience_name.lower()
+        extracted = research_data.get('extracted_data', {})
+
+        context = {
+            'shopping_need': 'great products',
+            'pain_point': 'finding what you need',
+            'desire': 'quality and value',
+            'demographic_hint': ''
+        }
+
+        # Income-based context
+        if 'upper-income' in audience_lower or 'upper income' in audience_lower:
+            context['shopping_need'] = 'premium quality'
+            context['pain_point'] = 'finding exclusive, quality items'
+            context['desire'] = 'style and exclusivity'
+            context['demographic_hint'] = 'discerning shoppers'
+        elif 'middle-income' in audience_lower or 'middle income' in audience_lower:
+            context['shopping_need'] = 'quality at fair prices'
+            context['pain_point'] = 'balancing quality with budget'
+            context['desire'] = 'value without compromise'
+            context['demographic_hint'] = 'smart shoppers'
+        elif 'lower-income' in audience_lower or 'lower income' in audience_lower or 'budget' in audience_lower:
+            context['shopping_need'] = 'affordable options'
+            context['pain_point'] = 'stretching their budget'
+            context['desire'] = 'great deals and savings'
+            context['demographic_hint'] = 'value-conscious shoppers'
+
+        # Family context
+        if 'family' in audience_lower or 'families' in audience_lower:
+            context['shopping_need'] = 'outfits for the whole family'
+            context['pain_point'] = 'shopping at multiple stores for everyone'
+            context['desire'] = 'one place for everyone'
+
+        # Fashion context
+        if 'fashion' in audience_lower or 'style' in audience_lower:
+            context['shopping_need'] = 'trendy, stylish pieces'
+            context['pain_point'] = 'staying fashionable on budget'
+            context['desire'] = 'looking great'
+
+        # Corporate context
+        if 'corporate' in audience_lower or 'business' in audience_lower or 'workwear' in audience_lower:
+            context['shopping_need'] = 'professional attire'
+            context['pain_point'] = 'finding quality workwear'
+            context['desire'] = 'looking professional'
+
+        return context
+
     async def generate_ad_copy_from_research(
         self,
         research_data: Dict[str, Any],
@@ -404,15 +552,13 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
         # Build prompt data
         company_name = summary.get('company_name') or company_info.get('name') or 'Company'
-        industry = summary.get('industry') or company_info.get('industry') or 'Business'
         tagline = company_info.get('tagline') or summary.get('tagline') or ''
 
+        # Extract specific product keywords
+        product_info = self._extract_product_keywords(research_data)
+
         # Calculate years in business from statistics or key features
-        years_in_business = "Established"
-        for stat in extracted.get('statistics', []):
-            if 'founded' in str(stat.get('metric', '')).lower() or 'year' in str(stat.get('metric', '')).lower():
-                years_in_business = f"Since {stat.get('value', '')}"
-                break
+        years_in_business = self._extract_years(extracted.get('statistics', []))
 
         # Get services/products
         services_products = self._extract_services_string(extracted.get('services_products', []))
@@ -430,12 +576,15 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             audience_segment = {
                 'name': target_audiences[0] if target_audiences else 'General Audience',
                 'type': 'B2C',
-                'description': 'Customers interested in ' + industry.lower()
+                'description': 'Customers interested in ' + product_info['primary_products']
             }
+
+        # Get audience context
+        audience_context = self._extract_audience_context(audience_segment.get('name', ''), research_data)
 
         prompt_data = {
             'company_name': company_name,
-            'industry': industry,
+            'primary_products': product_info['primary_products'],
             'tagline': tagline,
             'years_in_business': years_in_business,
             'geographic_coverage': company_info.get('geographic_coverage', summary.get('geographic_coverage', '')),
@@ -443,8 +592,9 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             'value_propositions': value_propositions,
             'statistics': statistics,
             'audience_segment': audience_segment.get('name', 'Target Audience'),
+            'shopping_need': audience_context['shopping_need'],
+            'pain_point': audience_context['pain_point'],
             'audience_type': audience_segment.get('type', 'B2C'),
-            'audience_description': audience_segment.get('description', ''),
             'platform': platform,
             'brand_voice': brand_voice
         }
@@ -459,7 +609,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
             # Add metadata
             ad_data['company_name'] = company_name
-            ad_data['industry'] = industry
+            ad_data['primary_products'] = product_info['primary_products']
             ad_data['generated_from'] = 'market_research'
 
             logger.info(f"[AdCopyAgent] Generated ad copy for {company_name}")
@@ -467,10 +617,46 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
         except json.JSONDecodeError as e:
             logger.error(f"[AdCopyAgent] JSON decode error: {e}")
-            return self._fallback_ad_copy(company_name, industry, services_products, platform)
+            return self._fallback_ad_copy(company_name, product_info, audience_context, platform)
         except Exception as e:
             logger.error(f"[AdCopyAgent] Error generating ad copy: {e}")
-            return self._fallback_ad_copy(company_name, industry, services_products, platform)
+            return self._fallback_ad_copy(company_name, product_info, audience_context, platform)
+
+    def _extract_b2b_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Extract B2B context about an audience from its name and research data.
+        """
+        audience_lower = audience_name.lower()
+
+        context = {
+            'business_need': 'reliable business solutions',
+            'business_challenge': 'finding quality suppliers',
+            'job_titles': 'Decision makers, managers',
+            'company_types': 'SMEs, enterprises'
+        }
+
+        # Corporate/Workwear context
+        if 'corporate' in audience_lower or 'workwear' in audience_lower:
+            context['business_need'] = 'professional workwear and uniforms'
+            context['business_challenge'] = 'outfitting their workforce consistently'
+            context['job_titles'] = 'HR managers, procurement officers, office managers'
+            context['company_types'] = 'Corporations, government offices, schools'
+
+        # Manufacturing/Supply context
+        if 'manufacturer' in audience_lower or 'retailer' in audience_lower or 'supplier' in audience_lower:
+            context['business_need'] = 'reliable manufacturing partners'
+            context['business_challenge'] = 'maintaining quality supply chains'
+            context['job_titles'] = 'Procurement managers, supply chain directors'
+            context['company_types'] = 'Retailers, distributors, wholesalers'
+
+        # Financial services context
+        if 'finance' in audience_lower or 'credit' in audience_lower:
+            context['business_need'] = 'financial services and credit solutions'
+            context['business_challenge'] = 'managing cash flow and customer financing'
+            context['job_titles'] = 'Finance directors, CFOs'
+            context['company_types'] = 'Financial institutions, lenders'
+
+        return context
 
     async def generate_b2b_ad_copy(
         self,
@@ -492,16 +678,21 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         extracted = research_data.get('extracted_data', {})
         company_info = extracted.get('company_info', {})
 
+        # Extract specific product keywords
+        product_info = self._extract_product_keywords(research_data)
+        b2b_context = self._extract_b2b_audience_context(audience_segment.get('name', ''), research_data)
+
         prompt_data = {
             'company_name': summary.get('company_name', 'Company'),
-            'industry': summary.get('industry', 'Business'),
+            'primary_products': product_info['primary_products'],
             'credentials': ", ".join(extracted.get('certifications_awards', [])[:3]) or 'Industry leader',
             'years_in_business': self._extract_years(extracted.get('statistics', [])),
             'services_products': self._extract_services_string(extracted.get('services_products', [])),
             'audience_segment': audience_segment.get('name', 'Business Professionals'),
-            'job_titles': audience_segment.get('job_titles', 'Decision makers, managers'),
-            'company_types': audience_segment.get('company_types', 'SMEs, enterprises'),
-            'pain_points': audience_segment.get('pain_points', 'Efficiency, cost, quality'),
+            'business_need': b2b_context['business_need'],
+            'business_challenge': b2b_context['business_challenge'],
+            'job_titles': audience_segment.get('job_titles', b2b_context['job_titles']),
+            'company_types': audience_segment.get('company_types', b2b_context['company_types']),
             'differentiators': "\n".join([f"- {vp}" for vp in extracted.get('value_propositions', [])[:4]]),
             'statistics': self._extract_statistics_string(extracted.get('statistics', []))
         }
@@ -516,7 +707,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             return ad_data
         except Exception as e:
             logger.error(f"[AdCopyAgent] B2B copy error: {e}")
-            return self._fallback_b2b_copy(prompt_data)
+            return self._fallback_b2b_copy(prompt_data, product_info, b2b_context)
 
     async def generate_b2c_ad_copy(
         self,
@@ -538,16 +729,21 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         extracted = research_data.get('extracted_data', {})
         company_info = extracted.get('company_info', {})
 
+        # Extract specific product keywords instead of generic industry terms
+        product_info = self._extract_product_keywords(research_data)
+        audience_context = self._extract_audience_context(audience_segment.get('name', ''), research_data)
+
         prompt_data = {
             'company_name': summary.get('company_name', 'Company'),
-            'industry': summary.get('industry', 'Business'),
+            'primary_products': product_info['primary_products'],
             'tagline': company_info.get('tagline', ''),
             'reputation': f"{self._extract_years(extracted.get('statistics', []))} of trusted service",
             'services_products': self._extract_services_string(extracted.get('services_products', [])),
             'audience_segment': audience_segment.get('name', 'Consumers'),
-            'demographics': audience_segment.get('demographics', 'Adults 25-54'),
-            'interests': audience_segment.get('interests', 'Quality, value, convenience'),
-            'desires': audience_segment.get('desires', 'Better lifestyle, savings, quality'),
+            'shopping_need': audience_context['shopping_need'],
+            'pain_point': audience_context['pain_point'],
+            'audience_desire': audience_context['desire'],
+            'demographics': audience_segment.get('demographics', audience_context.get('demographic_hint', 'Adults 25-54')),
             'value_propositions': "\n".join([f"- {vp}" for vp in extracted.get('value_propositions', [])[:4]]),
             'statistics': self._extract_statistics_string(extracted.get('statistics', []))
         }
@@ -562,7 +758,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             return ad_data
         except Exception as e:
             logger.error(f"[AdCopyAgent] B2C copy error: {e}")
-            return self._fallback_b2c_copy(prompt_data)
+            return self._fallback_b2c_copy(prompt_data, product_info, audience_context)
 
     async def generate_multi_audience_ad_copy(
         self,
@@ -642,75 +838,145 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
                     return f"{stat.get('value', '')} years"
         return "Years"
 
-    def _fallback_ad_copy(self, company_name: str, industry: str, services: str, platform: str) -> Dict[str, Any]:
-        """Fallback ad copy when AI generation fails"""
+    def _fallback_ad_copy(self, company_name: str, product_info: Dict, audience_context: Dict, platform: str) -> Dict[str, Any]:
+        """Fallback ad copy when AI generation fails - uses actual product and audience data"""
+        # Extract actual product terms
+        if isinstance(product_info, dict):
+            products = product_info.get('primary_products', 'quality products')
+            benefits = product_info.get('benefit_keywords', [])
+        else:
+            products = 'quality products'
+            benefits = []
+
+        # Extract audience context
+        if isinstance(audience_context, dict):
+            shopping_need = audience_context.get('shopping_need', 'great products')
+            pain_point = audience_context.get('pain_point', 'finding what you need')
+            desire = audience_context.get('desire', 'quality')
+        else:
+            shopping_need = 'great products'
+            pain_point = 'finding what you need'
+            desire = 'quality'
+
+        # Build benefit string
+        benefit_text = benefits[0] if benefits else 'quality and value'
+
         return {
             "hooks": {
-                "pattern_interrupt": f"Looking for quality {industry.lower()}?",
-                "question": f"Need a trusted {industry.lower()} partner?",
-                "social_proof": f"{company_name} - Your trusted choice"
+                "pattern_interrupt": f"Still searching for the perfect {products}?",
+                "question": f"Want {products} that actually deliver on {benefit_text}?",
+                "social_proof": f"See why customers trust {company_name} for their {products}"
             },
             "headlines": [
-                {"type": "benefit", "text": f"Quality {industry} Solutions"},
+                {"type": "benefit", "text": f"{products.split(',')[0].title()} You'll Love"},
                 {"type": "curiosity", "text": f"Discover {company_name}"},
-                {"type": "social_proof", "text": f"Trusted {industry} Leader"}
+                {"type": "social_proof", "text": f"Trusted {products.split(',')[0].title()}"}
             ],
             "primary_text": {
-                "short": f"{company_name} offers quality {industry.lower()} solutions. Contact us today.",
-                "medium": f"{company_name} is your trusted partner for {industry.lower()}. We deliver quality and value. Contact us today to learn more.",
-                "long": f"{company_name} provides comprehensive {industry.lower()} solutions designed to meet your needs. With our commitment to quality and customer satisfaction, we're your trusted partner. Contact us today."
+                "short": f"{company_name} offers {products} with {benefit_text}. Find exactly what you're looking for today.",
+                "medium": f"Tired of {pain_point}? {company_name} makes it easy to find {products} that match your needs. Quality, selection, and {benefit_text} - all in one place. Visit us today.",
+                "long": f"Finding {shopping_need} shouldn't be frustrating. At {company_name}, we understand what you're looking for: {products} that deliver on {benefit_text}. That's why customers keep coming back to us. Stop settling and start experiencing the difference. Visit {company_name} today."
             },
             "descriptions": [
-                f"Quality {industry.lower()} from {company_name}",
-                f"Trusted {industry.lower()} solutions"
+                f"Quality {products} at {company_name}",
+                f"Your destination for {products}"
             ],
-            "call_to_action": "Learn More",
+            "call_to_action": "Shop Now",
             "platform": platform,
+            "primary_products": products,
             "generated_from": "fallback"
         }
 
-    def _fallback_b2b_copy(self, data: Dict) -> Dict[str, Any]:
-        """Fallback B2B copy"""
+    def _fallback_b2b_copy(self, data: Dict, product_info: Dict = None, b2b_context: Dict = None) -> Dict[str, Any]:
+        """Fallback B2B copy using actual product and audience data"""
+        company_name = data.get('company_name', 'our company')
+        years = data.get('years_in_business', 'Years')
+
+        # Use extracted product info or defaults
+        if product_info:
+            products = product_info.get('primary_products', 'business solutions')
+        else:
+            products = 'business solutions'
+
+        # Use B2B context or defaults
+        if b2b_context:
+            need = b2b_context.get('business_need', 'reliable partners')
+            challenge = b2b_context.get('business_challenge', 'quality and consistency')
+        else:
+            need = 'reliable partners'
+            challenge = 'quality and consistency'
+
+        audience = data.get('audience_segment', 'businesses')
+
         return {
             "hooks": {
-                "industry_insight": f"Transform your {data.get('industry', 'business')} operations",
-                "problem_aware": "Struggling with efficiency?",
-                "roi_results": "See measurable results"
+                "industry_insight": f"{years} of expertise in {products} for {audience}",
+                "problem_aware": f"Struggling with {challenge}?",
+                "roi_results": f"See why leading {audience} trust {company_name}"
             },
             "headlines": [
-                {"type": "authority", "text": "Industry-Leading Solutions"},
-                {"type": "solution", "text": "Streamline Your Operations"},
-                {"type": "results", "text": "Drive Business Growth"}
+                {"type": "authority", "text": f"{years} of Excellence"},
+                {"type": "solution", "text": f"Quality {products.split(',')[0].title()}"},
+                {"type": "results", "text": f"Trusted by {audience.title()}"}
             ],
             "primary_text": {
-                "linkedin": f"{data.get('company_name', 'We')} provides professional {data.get('industry', 'business')} solutions for organizations seeking quality and efficiency.",
-                "facebook": f"Looking for a trusted {data.get('industry', 'business')} partner? {data.get('company_name', 'We')} delivers results."
+                "linkedin": f"{company_name} has been providing {products} for {audience} with {years} of proven expertise. When you need {need}, partner with a name you can trust. Contact us to discuss your requirements.",
+                "facebook": f"Need {need}? {company_name} delivers {products} you can count on. {years} of experience. Get in touch today."
             },
-            "descriptions": ["Professional solutions", "Trusted partner"],
+            "descriptions": [
+                f"Professional {products} from {company_name}",
+                f"Trusted {products} partner"
+            ],
             "call_to_action": "Get Quote",
             "audience_type": "B2B",
             "generated_from": "fallback"
         }
 
-    def _fallback_b2c_copy(self, data: Dict) -> Dict[str, Any]:
-        """Fallback B2C copy"""
+    def _fallback_b2c_copy(self, data: Dict, product_info: Dict = None, audience_context: Dict = None) -> Dict[str, Any]:
+        """Fallback B2C copy using actual product and audience data"""
+        company_name = data.get('company_name', 'our store')
+
+        # Use extracted product info or defaults
+        if product_info:
+            products = product_info.get('primary_products', 'quality products')
+            benefits = product_info.get('benefit_keywords', ['quality', 'value'])
+        else:
+            products = 'quality products'
+            benefits = ['quality', 'value']
+
+        # Use audience context or defaults
+        if audience_context:
+            desire = audience_context.get('desire', 'quality and value')
+            pain = audience_context.get('pain_point', 'finding what you need')
+            shopping = audience_context.get('shopping_need', 'great products')
+        else:
+            desire = 'quality and value'
+            pain = 'finding what you need'
+            shopping = 'great products'
+
+        # Build contextual hooks based on actual data
+        audience = data.get('audience_segment', 'shoppers')
+
         return {
             "hooks": {
-                "desire": f"Get the {data.get('industry', 'quality')} you deserve",
-                "pain_point": "Tired of settling for less?",
-                "curiosity": "Discover something better"
+                "desire": f"Get the {products} you've been looking for",
+                "pain_point": f"Tired of {pain}?",
+                "curiosity": f"See why {audience} choose {company_name}"
             },
             "headlines": [
-                {"type": "benefit", "text": "Quality You Can Trust"},
-                {"type": "emotional", "text": "You Deserve the Best"},
-                {"type": "offer", "text": "Great Value Awaits"}
+                {"type": "benefit", "text": f"Quality {products.split(',')[0].title()}"},
+                {"type": "emotional", "text": f"Style Your Way"},
+                {"type": "offer", "text": f"Great {products.split(',')[0].title()} Deals"}
             ],
             "primary_text": {
-                "story": f"At {data.get('company_name', 'our store')}, we believe everyone deserves quality.",
-                "benefits": f"Quality products. Great prices. Trusted service. That's {data.get('company_name', 'us')}.",
-                "urgency": f"Don't miss out on {data.get('company_name', 'our')} amazing offerings."
+                "story": f"At {company_name}, we understand {audience} need {shopping}. That's why we've spent years perfecting our {products}. Come see the difference quality makes.",
+                "benefits": f"Looking for {products}? {company_name} offers: Quality you can trust. Prices that make sense. Selection for everyone. Visit us today.",
+                "urgency": f"Don't wait to upgrade your {products.split(',')[0]}. {company_name} has what you're looking for. Shop now."
             },
-            "descriptions": ["Quality and value", "Shop with confidence"],
+            "descriptions": [
+                f"Quality {products} at {company_name}",
+                f"Find your perfect {products.split(',')[0]} today"
+            ],
             "call_to_action": "Shop Now",
             "audience_type": "B2C",
             "generated_from": "fallback"
