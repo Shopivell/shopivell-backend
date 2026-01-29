@@ -511,11 +511,7 @@ class MarketResearchAgent:
         for platform in results["all_contacts"]["social_media"]:
             results["all_contacts"]["social_media"][platform] = list(set(results["all_contacts"]["social_media"][platform]))
 
-            return results
-
-        except Exception as e:
-            logger.error(f"[MarketResearchAgent] Multi-page scrape error: {e}")
-            return {"pages": [], "error": str(e)}
+        return results
 
     async def _extract_structured_website_data(self, content: str, url: str) -> Dict[str, Any]:
         """
