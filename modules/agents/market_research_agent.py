@@ -64,15 +64,13 @@ try:
     )
     SCREENSHOT_AVAILABLE = PLAYWRIGHT_AVAILABLE
     STORE_SCRAPING_AVAILABLE = True
-    logger.info(f"[MarketResearchAgent] Screenshot service available: {SCREENSHOT_AVAILABLE}")
-except ImportError as e:
+except ImportError:
     SCREENSHOT_AVAILABLE = False
     GEMINI_AVAILABLE = False
     STORE_SCRAPING_AVAILABLE = False
     capture_homepage_screenshot_sync = None
     analyze_brand_from_screenshot_sync = None
     extract_store_info_from_website = None
-    logger.warning(f"[MarketResearchAgent] Screenshot service not available: {e}")
 
 # Import OpenRouter adapter (with fallback to ChatOpenAI)
 try:
