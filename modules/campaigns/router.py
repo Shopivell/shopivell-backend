@@ -86,7 +86,7 @@ def scrape_url_and_create_campaign(
     )
 
 
-@campaign_router.post("/from-store", response_model=CreateCampaignFromStoreResponse)
+@campaign_router.post("/from-store", response_model=CreateCampaignFromStoreResponse, tags=["campaigns"])
 def create_campaign_from_store(
     request: CreateCampaignFromStoreRequest,
     db: Session = Depends(get_db)
