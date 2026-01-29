@@ -1175,5 +1175,17 @@ async def research_website_directly(
                 {"url": p.get("url", ""), "excerpt": p.get("content", "")[:500]}
                 for p in multi_page_data.get("pages", [])[:5]
             ] if multi_page_data else []
+        },
+        "website_data": {
+            "success": website_data.get("success", False),
+            "source": website_data.get("source", "unknown"),
+            "error": website_data.get("error"),
+            "content_length": len(website_data.get("content", "")),
+            "screenshot_url": website_data.get("screenshot_url"),
+        },
+        "multi_page_data": {
+            "source": multi_page_data.get("source", "unknown") if multi_page_data else None,
+            "success_count": multi_page_data.get("success_count", 0) if multi_page_data else 0,
+            "total_content_length": len(multi_page_data.get("combined_content", "")) if multi_page_data else 0,
         }
     }
