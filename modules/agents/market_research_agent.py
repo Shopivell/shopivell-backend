@@ -154,126 +154,161 @@ class MarketResearchAgent:
 
         return stats
 
-    def _scrape_with_beautifulsoup(self, url: str) -> Dict[str, Any]:
+    def _scrape_with_beautifulsoup(self, url: str, retries: int = 2) -> Dict[str, Any]:
         """
         Fallback scraper using BeautifulSoup when Tavily fails.
         Extracts text content, links, and metadata from the website.
+        Includes retry logic and flexible SSL handling for production servers.
         """
         if not BS4_AVAILABLE:
-            return {"content": "", "error": "BeautifulSoup not available"}
+            logger.warning("[MarketResearchAgent] BeautifulSoup not available - bs4 not installed")
+            return {"content": "", "error": "BeautifulSoup not available", "success": False}
 
-        try:
-            logger.info(f"[MarketResearchAgent] Scraping with BeautifulSoup: {url}")
+        last_error = None
 
-            # Request the page with a browser-like user agent
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-            }
+        for attempt in range(retries + 1):
+            try:
+                logger.info(f"[MarketResearchAgent] BeautifulSoup scraping attempt {attempt + 1}/{retries + 1}: {url}")
 
-            response = requests.get(url, headers=headers, timeout=30, verify=True)
-            response.raise_for_status()
+                # Request the page with a browser-like user agent
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                }
 
-            soup = BeautifulSoup(response.text, 'html.parser')
+                # Try with SSL verification first, then without on retry
+                verify_ssl = attempt == 0
 
-            # Remove script and style elements
-            for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript']):
-                element.decompose()
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    timeout=45,  # Longer timeout for slow servers
+                    verify=verify_ssl,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
 
-            # Extract metadata
-            title = soup.title.string if soup.title else ""
-            meta_desc = ""
-            meta_keywords = ""
+                logger.info(f"[MarketResearchAgent] BeautifulSoup got response: {response.status_code}, {len(response.text)} chars")
 
-            for meta in soup.find_all('meta'):
-                if meta.get('name', '').lower() == 'description':
-                    meta_desc = meta.get('content', '')
-                if meta.get('name', '').lower() == 'keywords':
-                    meta_keywords = meta.get('content', '')
+                soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Extract main content
-            content_parts = []
+                # Remove script and style elements
+                for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript']):
+                    element.decompose()
 
-            # Add title and meta
-            if title:
-                content_parts.append(f"# {title}")
-            if meta_desc:
-                content_parts.append(f"Description: {meta_desc}")
+                # Extract metadata
+                title = soup.title.string if soup.title else ""
+                meta_desc = ""
+                meta_keywords = ""
 
-            # Extract headings
-            for heading in soup.find_all(['h1', 'h2', 'h3']):
-                text = heading.get_text(strip=True)
-                if text and len(text) > 2:
-                    level = heading.name
-                    prefix = "#" * int(level[1])
-                    content_parts.append(f"{prefix} {text}")
+                for meta in soup.find_all('meta'):
+                    if meta.get('name', '').lower() == 'description':
+                        meta_desc = meta.get('content', '')
+                    if meta.get('name', '').lower() == 'keywords':
+                        meta_keywords = meta.get('content', '')
 
-            # Extract paragraphs
-            for p in soup.find_all('p'):
-                text = p.get_text(strip=True)
-                if text and len(text) > 20:
-                    content_parts.append(text)
+                # Extract main content
+                content_parts = []
 
-            # Extract list items
-            for li in soup.find_all('li'):
-                text = li.get_text(strip=True)
-                if text and len(text) > 10:
-                    content_parts.append(f"• {text}")
+                # Add title and meta
+                if title:
+                    content_parts.append(f"# {title}")
+                if meta_desc:
+                    content_parts.append(f"Description: {meta_desc}")
 
-            # Extract links for navigation structure
-            nav_links = []
-            for a in soup.find_all('a', href=True):
-                href = a.get('href', '')
-                text = a.get_text(strip=True)
-                if text and len(text) > 2 and len(text) < 50:
-                    if href.startswith('/') or href.startswith(url):
-                        nav_links.append(text)
+                # Extract headings
+                for heading in soup.find_all(['h1', 'h2', 'h3']):
+                    text = heading.get_text(strip=True)
+                    if text and len(text) > 2:
+                        level = heading.name
+                        prefix = "#" * int(level[1])
+                        content_parts.append(f"{prefix} {text}")
 
-            if nav_links:
-                content_parts.append(f"\nNavigation: {', '.join(list(set(nav_links))[:20])}")
+                # Extract paragraphs
+                for p in soup.find_all('p'):
+                    text = p.get_text(strip=True)
+                    if text and len(text) > 20:
+                        content_parts.append(text)
 
-            # Extract contact information from the page
-            page_text = soup.get_text()
+                # Extract list items
+                for li in soup.find_all('li'):
+                    text = li.get_text(strip=True)
+                    if text and len(text) > 10:
+                        content_parts.append(f"• {text}")
 
-            # Find emails
-            emails = list(set(EMAIL_PATTERN.findall(page_text)))
-            emails = [e for e in emails if not any(x in e.lower() for x in ['example.com', 'test.com', '.png', '.jpg'])]
+                # Extract links for navigation structure
+                nav_links = []
+                for a in soup.find_all('a', href=True):
+                    href = a.get('href', '')
+                    text = a.get_text(strip=True)
+                    if text and len(text) > 2 and len(text) < 50:
+                        if href.startswith('/') or href.startswith(url):
+                            nav_links.append(text)
 
-            # Find phones
-            phones = list(set(PHONE_PATTERN.findall(page_text)))
+                if nav_links:
+                    content_parts.append(f"\nNavigation: {', '.join(list(set(nav_links))[:20])}")
 
-            # Find social media links
-            social_media = {}
-            for platform, pattern in SOCIAL_PATTERNS.items():
-                matches = pattern.findall(response.text)
-                if matches:
-                    social_media[platform] = list(set(matches))
+                # Extract contact information from the page
+                page_text = soup.get_text()
 
-            # Combine content
-            content = "\n\n".join(content_parts)
+                # Find emails
+                emails = list(set(EMAIL_PATTERN.findall(page_text)))
+                emails = [e for e in emails if not any(x in e.lower() for x in ['example.com', 'test.com', '.png', '.jpg'])]
 
-            logger.info(f"[MarketResearchAgent] BeautifulSoup extracted {len(content)} chars, {len(emails)} emails, {len(phones)} phones")
+                # Find phones
+                phones = list(set(PHONE_PATTERN.findall(page_text)))
 
-            return {
-                "content": content[:15000],
-                "url": url,
-                "success": True,
-                "contact_info": {
-                    "emails": emails[:10],
-                    "phones": phones[:10],
-                    "social_media": social_media
-                },
-                "statistics": self._extract_statistics(content),
-                "source": "beautifulsoup"
-            }
+                # Find social media links
+                social_media = {}
+                for platform, pattern in SOCIAL_PATTERNS.items():
+                    matches = pattern.findall(response.text)
+                    if matches:
+                        social_media[platform] = list(set(matches))
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[MarketResearchAgent] BeautifulSoup request error: {e}")
-            return {"content": "", "error": f"Request failed: {str(e)}", "success": False}
-        except Exception as e:
-            logger.error(f"[MarketResearchAgent] BeautifulSoup scrape error: {e}")
-            return {"content": "", "error": str(e), "success": False}
+                # Combine content
+                content = "\n\n".join(content_parts)
+
+                logger.info(f"[MarketResearchAgent] BeautifulSoup extracted {len(content)} chars, {len(emails)} emails, {len(phones)} phones")
+
+                return {
+                    "content": content[:15000],
+                    "url": url,
+                    "success": True,
+                    "contact_info": {
+                        "emails": emails[:10],
+                        "phones": phones[:10],
+                        "social_media": social_media
+                    },
+                    "statistics": self._extract_statistics(content),
+                    "source": "beautifulsoup"
+                }
+
+            except requests.exceptions.SSLError as e:
+                last_error = f"SSL Error: {str(e)}"
+                logger.warning(f"[MarketResearchAgent] BeautifulSoup SSL error (attempt {attempt + 1}): {e}")
+                continue  # Retry without SSL verification
+
+            except requests.exceptions.Timeout as e:
+                last_error = f"Timeout: {str(e)}"
+                logger.warning(f"[MarketResearchAgent] BeautifulSoup timeout (attempt {attempt + 1}): {e}")
+                continue  # Retry
+
+            except requests.exceptions.RequestException as e:
+                last_error = f"Request failed: {str(e)}"
+                logger.error(f"[MarketResearchAgent] BeautifulSoup request error (attempt {attempt + 1}): {e}")
+                continue  # Retry
+
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"[MarketResearchAgent] BeautifulSoup scrape error (attempt {attempt + 1}): {e}")
+                break  # Don't retry on parsing errors
+
+        # All retries exhausted
+        logger.error(f"[MarketResearchAgent] BeautifulSoup failed after {retries + 1} attempts: {last_error}")
+        return {"content": "", "error": last_error, "success": False}
 
     def _scrape_website(self, url: str) -> Dict[str, Any]:
         """Scrape the target website to understand the business"""
