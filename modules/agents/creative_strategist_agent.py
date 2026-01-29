@@ -36,41 +36,6 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-# Industry-specific interest tag categories for Meta targeting
-INDUSTRY_INTEREST_CATEGORIES = {
-    "fintech": {
-        "core": ["Payment system", "Payment service provider", "E-commerce payment system", "Mobile payment",
-                 "Financial technology", "Mobile banking", "Digital wallet", "Contactless payment"],
-        "business": ["Business-to-business", "Business networking", "Procurement", "Consulting",
-                     "Enterprise software", "SaaS", "Cloud computing"],
-        "professional": ["LinkedIn", "Web conferencing", "Videotelephony", "Google Apps for Work",
-                        "Sales", "LiveChat", "Adobe Acrobat", "Microsoft Office"],
-        "mindset": ["Leadership", "Ambition", "Entrepreneurship", "Innovation", "Digital transformation"]
-    },
-    "security": {
-        "core": ["Anti-theft system", "Fire safety", "CCTV", "Access control", "Security system",
-                 "Surveillance", "Alarm system", "Smart security"],
-        "technology": ["Smart Technologies", "Internet of Things", "Artificial intelligence",
-                      "Machine learning", "Computer vision", "Biometrics"],
-        "property": ["Commercial property", "Property management", "Real estate", "Facility management",
-                    "Building automation", "Smart building"],
-        "automotive": ["Contactless payment", "Payment system", "Charging station", "Electric vehicle",
-                      "Electric car", "Fleet management", "Parking management"],
-        "business": ["Small and medium enterprises", "Small business software", "Business development",
-                    "Professional services", "Business model", "Sales management"]
-    },
-    "ecommerce": {
-        "core": ["Online shopping", "E-commerce", "Retail", "Shopping", "Consumer goods"],
-        "technology": ["Shopify", "WooCommerce", "Magento", "Payment gateway", "Shopping cart"],
-        "marketing": ["Digital marketing", "Social media marketing", "Email marketing", "SEO"],
-        "business": ["Dropshipping", "Wholesale", "Inventory management", "Supply chain"]
-    },
-    "saas": {
-        "core": ["Software as a service", "Cloud computing", "Enterprise software", "Business software"],
-        "productivity": ["Project management", "CRM", "ERP", "Collaboration tools", "Automation"],
-        "technology": ["API", "Integration", "Analytics", "Data visualization", "Business intelligence"]
-    }
-}
 
 
 # Hook Types for Meta Ads
@@ -216,13 +181,43 @@ Generate detailed Meta Ads audience targeting in this exact JSON format:
     ]
 }}
 
-IMPORTANT GUIDELINES:
+IMPORTANT GUIDELINES FOR INTEREST TAGS:
 1. Interest tags MUST be actual Facebook/Meta interests that exist in their targeting system
 2. Generate 25-40 total interest tags across all categories
 3. Be specific to the business industry and offerings
 4. Include both B2B and B2C targeting if applicable
 5. Suggest realistic job titles that exist on Facebook
 6. Consider the geographic market (Zimbabwe/Africa focus if applicable)
+
+GUARDRAILS FOR INTEREST TAG CATEGORIES:
+- core_interests: Include interests directly related to the business's products/services
+  Examples for fintech: Payment systems, Mobile banking, Digital wallets
+  Examples for security: CCTV, Access control, Surveillance systems
+
+- technology_interests: Include relevant software, platforms, and tech interests
+  Examples: Cloud computing, SaaS, IoT, AI, specific software names
+
+- business_interests: Include B2B, professional, and industry interests
+  Examples: Business networking, LinkedIn, Procurement, Consulting, Enterprise software
+
+- behavioral_interests: Include mindset, career, and behavioral interests
+  Examples: Leadership, Entrepreneurship, Innovation, Professional development
+
+- complementary_interests: Include broader related interests that expand reach
+  Examples: Industry publications, trade shows, professional associations
+
+GUARDRAILS FOR AUDIENCE SEGMENTS:
+- Generate 4-6 distinct audience segments
+- Each segment should represent a real buyer persona
+- Include decision-maker roles (e.g., "Corporate Finance Directors", "IT Security Managers")
+- Include end-user roles (e.g., "Tech-Savvy Consumers", "Small Business Owners")
+- Consider the buying journey stage for each segment
+
+GUARDRAILS FOR JOB TITLES:
+- Include C-level executives relevant to the industry
+- Include department heads and managers
+- Include specialist roles
+- Include small business owner variations
 
 Return ONLY valid JSON, no markdown or additional text.
 """)
@@ -320,26 +315,6 @@ Return ONLY valid JSON, no markdown.
             response = response[:-3]
         return response.strip()
 
-    def _detect_industry(self, services: List[str], content: str) -> str:
-        """Detect the industry based on services and content"""
-        content_lower = content.lower()
-        services_str = " ".join(services).lower() if services else ""
-
-        if any(kw in content_lower or kw in services_str for kw in
-               ["payment", "banking", "fintech", "transfer", "wallet", "pos", "atm"]):
-            return "fintech"
-        elif any(kw in content_lower or kw in services_str for kw in
-                 ["security", "cctv", "surveillance", "alarm", "anpr", "access control"]):
-            return "security"
-        elif any(kw in content_lower or kw in services_str for kw in
-                 ["ecommerce", "shop", "store", "retail", "cart"]):
-            return "ecommerce"
-        elif any(kw in content_lower or kw in services_str for kw in
-                 ["saas", "software", "platform", "cloud", "subscription"]):
-            return "saas"
-        else:
-            return "general"
-
     async def generate_meta_audience(
         self,
         website_data: Dict[str, Any],
@@ -400,29 +375,10 @@ Return ONLY valid JSON, no markdown.
         try:
             audience_data = json.loads(cleaned)
 
-            # Detect industry and add industry-specific tags
-            detected_industry = self._detect_industry(services, content_summary)
-            if detected_industry in INDUSTRY_INTEREST_CATEGORIES:
-                industry_tags = INDUSTRY_INTEREST_CATEGORIES[detected_industry]
-                # Merge with generated tags
-                for category, tags in industry_tags.items():
-                    existing_key = f"{category}_interests"
-                    if existing_key not in audience_data.get("interest_tags", {}):
-                        if "interest_tags" not in audience_data:
-                            audience_data["interest_tags"] = {}
-                        # Add unique tags
-                        existing_tags = []
-                        for key, val in audience_data["interest_tags"].items():
-                            if isinstance(val, list):
-                                existing_tags.extend(val)
-                        new_tags = [t for t in tags if t not in existing_tags]
-                        if new_tags:
-                            audience_data["interest_tags"][f"industry_{category}"] = new_tags[:6]
-
             return {
                 "success": True,
                 "company_name": company,
-                "detected_industry": detected_industry,
+                "industry": industry,
                 "audience_targeting": audience_data
             }
 
@@ -711,7 +667,7 @@ async def generate_audience_from_url(url: str, include_hooks: bool = False, num_
     result = {
         "url": url,
         "company_name": audience_result.get("company_name"),
-        "detected_industry": audience_result.get("detected_industry"),
+        "industry": audience_result.get("industry"),
         "website_research": {
             "pages_scraped": website_data.get("research_summary", {}).get("pages_scraped", 0),
             "services_found": len(website_data.get("extracted_data", {}).get("services_products", [])),
