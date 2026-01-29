@@ -68,6 +68,78 @@ except ImportError:
     CLOUDINARY_CONFIGURED = False
     print("[Screenshot] Cloudinary not installed - screenshots will be stored locally only")
 
+# ScreenshotOne API configuration (fallback when Playwright fails)
+SCREENSHOTONE_ACCESS_KEY = os.getenv("SCREENSHOTONE_ACCESS_KEY")
+SCREENSHOTONE_CONFIGURED = bool(SCREENSHOTONE_ACCESS_KEY)
+if SCREENSHOTONE_CONFIGURED:
+    print("[Screenshot] ScreenshotOne API configured as fallback")
+
+
+def capture_screenshot_via_api(url: str) -> Dict[str, Any]:
+    """
+    Capture a screenshot using ScreenshotOne API as a fallback.
+    This is useful when Playwright fails due to bot detection.
+
+    Args:
+        url: The website URL to capture
+
+    Returns:
+        Dict with screenshot_bytes and success status
+    """
+    if not SCREENSHOTONE_CONFIGURED:
+        return {
+            "success": False,
+            "error": "ScreenshotOne API not configured. Set SCREENSHOTONE_ACCESS_KEY env variable."
+        }
+
+    try:
+        from urllib.parse import quote
+
+        # ScreenshotOne API endpoint
+        api_url = (
+            f"https://api.screenshotone.com/take?"
+            f"access_key={SCREENSHOTONE_ACCESS_KEY}"
+            f"&url={quote(url, safe='')}"
+            f"&viewport_width=1920"
+            f"&viewport_height=1080"
+            f"&format=png"
+            f"&block_ads=true"
+            f"&block_trackers=true"
+            f"&delay=3"
+            f"&timeout=30"
+        )
+
+        print(f"[Screenshot] Trying ScreenshotOne API fallback for {url}")
+
+        response = requests.get(api_url, timeout=60)
+
+        if response.status_code == 200 and response.headers.get('content-type', '').startswith('image/'):
+            print(f"[Screenshot] ScreenshotOne API success: {len(response.content)} bytes")
+            return {
+                "success": True,
+                "screenshot_bytes": response.content
+            }
+        else:
+            error_msg = f"API returned status {response.status_code}"
+            if response.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get('error', error_msg)
+                except:
+                    pass
+            print(f"[Screenshot] ScreenshotOne API error: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    except Exception as e:
+        print(f"[Screenshot] ScreenshotOne API exception: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 
 def upload_screenshot_to_cloudinary(
     screenshot_bytes: bytes,
@@ -316,7 +388,53 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
             }
 
     except Exception as e:
-        print(f"[Screenshot] Error capturing screenshot: {e}")
+        print(f"[Screenshot] Playwright error: {e}")
+
+        # Try ScreenshotOne API as fallback
+        if SCREENSHOTONE_CONFIGURED:
+            api_result = capture_screenshot_via_api(url)
+            if api_result.get("success"):
+                screenshot_bytes = api_result["screenshot_bytes"]
+
+                # Generate filename and save locally
+                domain = urlparse(url).netloc.replace("www.", "").replace(".", "_")
+                import uuid as uuid_module
+                filename = f"{domain}_{uuid_module.uuid4().hex[:8]}.png"
+                screenshot_path = SCREENSHOT_DIR / filename
+
+                with open(screenshot_path, "wb") as f:
+                    f.write(screenshot_bytes)
+
+                print(f"[Screenshot] Fallback captured: {screenshot_path} ({len(screenshot_bytes)} bytes)")
+
+                # Upload to Cloudinary
+                cloudinary_url = None
+                cloudinary_thumbnail = None
+                if CLOUDINARY_CONFIGURED:
+                    cloudinary_result = upload_screenshot_to_cloudinary(
+                        screenshot_bytes=screenshot_bytes,
+                        filename=filename
+                    )
+                    if cloudinary_result.get("success"):
+                        cloudinary_url = cloudinary_result.get("secure_url")
+                        cloudinary_thumbnail = cloudinary_result.get("thumbnail_url")
+                        print(f"[Screenshot] Cloudinary URL: {cloudinary_url}")
+
+                return {
+                    "success": True,
+                    "screenshot_path": str(screenshot_path),
+                    "screenshot_filename": filename,
+                    "screenshot_base64": base64.b64encode(screenshot_bytes).decode("utf-8"),
+                    "screenshot_url": cloudinary_url,
+                    "thumbnail_url": cloudinary_thumbnail,
+                    "width": 1920,
+                    "height": 1080,
+                    "full_page": full_page,
+                    "url": url,
+                    "fallback_used": "screenshotone"
+                }
+
+        print(f"[Screenshot] All methods failed for {url}")
         return {
             "success": False,
             "error": str(e),
