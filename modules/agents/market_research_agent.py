@@ -33,6 +33,9 @@ from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from database import SessionLocal
 from .models import Campaign, MarketResearch
 
+# Set up logger early so it can be used in import blocks
+logger = logging.getLogger(__name__)
+
 # Import BeautifulSoup for fallback scraping
 try:
     from bs4 import BeautifulSoup
@@ -80,7 +83,6 @@ except ImportError:
     OPENROUTER_AVAILABLE = False
 
 load_dotenv()
-logger = logging.getLogger(__name__)
 
 
 # Regex patterns for extracting structured data
