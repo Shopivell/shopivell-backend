@@ -247,6 +247,71 @@ def get_research_by_id(research_id: uuid.UUID, db: Session = Depends(get_db)):
     return MarketResearchResponse.model_validate(research)
 
 
+@agents_router.post("/research/website")
+async def research_website(
+    url: str = Query(..., description="Website URL to research"),
+    business_name: Optional[str] = Query(None, description="Optional business name"),
+    deep_scrape: bool = Query(True, description="Scrape multiple pages for comprehensive analysis"),
+    extract_structure: bool = Query(True, description="Use AI to extract structured data")
+):
+    """
+    Research a website directly without requiring a campaign.
+
+    This enhanced endpoint performs:
+    - Deep multi-page scraping (home, about, services, contact, etc.)
+    - AI-powered structured data extraction:
+        - Company info (name, tagline, industry)
+        - Navigation structure
+        - Services/Products list
+        - Value propositions
+        - Partners/Members
+        - Leadership/Team
+        - Contact information (emails, phones, social media)
+        - Statistics and metrics
+    - Competitor search
+    - Industry trends research
+    - Audience insights
+
+    Args:
+        url: The website URL to research (e.g., https://zimswitch.co.zw)
+        business_name: Optional business name (auto-extracted if not provided)
+        deep_scrape: Whether to scrape multiple pages (default: True)
+        extract_structure: Whether to use AI extraction (default: True)
+
+    Returns:
+        Comprehensive research data including:
+        - extracted_data: Structured website information
+        - market_data: Competitors, trends, audience insights
+        - research_summary: Overview statistics
+    """
+    try:
+        from .market_research_agent import research_website_directly
+
+        logger.info(f"Starting direct website research for: {url}")
+
+        result = await research_website_directly(
+            url=url,
+            business_name=business_name,
+            deep_scrape=deep_scrape,
+            extract_structure=extract_structure
+        )
+
+        return {
+            "success": True,
+            "message": "Website research completed successfully",
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to research website: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to research website: {str(e)}"
+        )
+
+
 # ============ Creative Angle Endpoints ============
 
 @agents_router.post("/campaigns/{campaign_id}/angles")
