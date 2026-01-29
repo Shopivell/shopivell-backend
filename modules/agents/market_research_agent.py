@@ -23,8 +23,10 @@ import os
 import json
 import logging
 import re
+import asyncio
+import hashlib
 import requests
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
@@ -80,12 +82,23 @@ except ImportError:
     from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
 
+# Import Redis cache
+from utils.cache import RedisCache, CacheConfig, generate_cache_key
+
 load_dotenv()
 
 
 # Regex patterns for extracting structured data
 EMAIL_PATTERN = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-PHONE_PATTERN = re.compile(r'[\+]?[(]?[0-9]{1,3}[)]?[-\s\.]?[(]?[0-9]{1,4}[)]?[-\s\.]?[0-9]{1,4}[-\s\.]?[0-9]{1,9}')
+PHONE_PATTERN = re.compile(
+    r'(?<![v\d.])[\+]?[(]?[0-9]{1,4}[)]?[-\s.]?[(]?[0-9]{2,4}[)]?[-\s.]?[0-9]{3,4}[-\s.]?[0-9]{3,9}(?![.\d])'
+)
+
+
+def _validate_phone(phone: str) -> bool:
+    """Validate a phone match has at least 7 digits (filters out version numbers, dates, etc.)"""
+    digits = re.sub(r'\D', '', phone)
+    return len(digits) >= 7
 SOCIAL_PATTERNS = {
     'facebook': re.compile(r'(?:https?://)?(?:www\.)?facebook\.com/[a-zA-Z0-9._-]+', re.IGNORECASE),
     'twitter': re.compile(r'(?:https?://)?(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+', re.IGNORECASE),
@@ -101,17 +114,58 @@ class MarketResearchAgent:
     def __init__(self):
         self.llm = ChatOpenRouter(
             model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
-            temperature=0.7
+            temperature=0.3
         )
         self.embeddings = OpenAIEmbeddings()
         self.tavily = TavilyClient(api_key=tavily_api_key) if TAVILY_AVAILABLE else None
-        logger.info(f"[MarketResearchAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}, Tavily: {TAVILY_AVAILABLE}")
+        self.cache = RedisCache()
+        logger.info(f"[MarketResearchAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}, Tavily: {TAVILY_AVAILABLE}, Cache: {self.cache.is_connected}")
+
+    def _validate_url(self, url: str) -> Tuple[bool, str]:
+        """
+        Validate a URL before attempting to scrape it.
+        Checks format and reachability via a lightweight HEAD request.
+
+        Args:
+            url: The URL to validate
+
+        Returns:
+            (is_valid, final_url) - final_url accounts for redirects
+        """
+        # Check URL format
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            logger.warning(f"[MarketResearchAgent] Invalid URL format: {url}")
+            return False, url
+
+        if parsed.scheme not in ('http', 'https'):
+            logger.warning(f"[MarketResearchAgent] Unsupported URL scheme: {parsed.scheme}")
+            return False, url
+
+        # Check reachability with HEAD request
+        try:
+            response = requests.head(
+                url,
+                timeout=10,
+                allow_redirects=True,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            final_url = response.url
+            # Accept any 2xx or 3xx status, and some servers return 405 for HEAD
+            if response.status_code < 500:
+                return True, final_url
+            else:
+                logger.warning(f"[MarketResearchAgent] URL returned status {response.status_code}: {url}")
+                return False, url
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"[MarketResearchAgent] URL unreachable: {url} - {e}")
+            return False, url
 
     def _extract_contact_info(self, content: str) -> Dict[str, Any]:
         """Extract contact information from website content"""
         contacts = {
             "emails": list(set(EMAIL_PATTERN.findall(content))),
-            "phones": list(set(PHONE_PATTERN.findall(content))),
+            "phones": [p for p in set(PHONE_PATTERN.findall(content)) if _validate_phone(p)],
             "social_media": {}
         }
 
@@ -259,7 +313,7 @@ class MarketResearchAgent:
                 emails = [e for e in emails if not any(x in e.lower() for x in ['example.com', 'test.com', '.png', '.jpg'])]
 
                 # Find phones
-                phones = list(set(PHONE_PATTERN.findall(page_text)))
+                phones = [p for p in set(PHONE_PATTERN.findall(page_text)) if _validate_phone(p)]
 
                 # Find social media links
                 social_media = {}
@@ -312,6 +366,19 @@ class MarketResearchAgent:
 
     def _scrape_website(self, url: str) -> Dict[str, Any]:
         """Scrape the target website to understand the business"""
+        # Validate URL upfront
+        is_valid, final_url = self._validate_url(url)
+        if not is_valid:
+            return {"content": "", "error": f"Invalid or unreachable URL: {url}", "success": False}
+        url = final_url  # Use the final URL after redirects
+
+        # Check cache first
+        cache_key = generate_cache_key(url, prefix="mra:scrape:")
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"[MarketResearchAgent] Cache HIT for scrape: {url}")
+            return cached_result
+
         content = ""
 
         # Try Tavily first
@@ -355,7 +422,7 @@ class MarketResearchAgent:
                     logger.info(f"[MarketResearchAgent] Store scraping extracted {len(content)} chars")
 
                     # Return with store data contact info
-                    return {
+                    result = {
                         "content": content[:15000],
                         "url": url,
                         "success": True,
@@ -368,6 +435,8 @@ class MarketResearchAgent:
                         "screenshot_url": store_data.get("screenshot_url"),
                         "source": "store_scraping_service"
                     }
+                    self.cache.set(cache_key, result, ttl=CacheConfig.TTL_LONG)
+                    return result
 
             except Exception as e:
                 logger.error(f"[MarketResearchAgent] Store scraping fallback error: {e}")
@@ -377,7 +446,7 @@ class MarketResearchAgent:
             contact_info = self._extract_contact_info(content)
             statistics = self._extract_statistics(content)
 
-            return {
+            result = {
                 "content": content[:15000],
                 "url": url,
                 "success": True,
@@ -385,34 +454,127 @@ class MarketResearchAgent:
                 "statistics": statistics,
                 "source": "tavily"
             }
+            self.cache.set(cache_key, result, ttl=CacheConfig.TTL_LONG)
+            return result
 
         # Fallback to BeautifulSoup if all else fails
         if not content and BS4_AVAILABLE:
             logger.info(f"[MarketResearchAgent] Falling back to BeautifulSoup scraper: {url}")
             bs_result = self._scrape_with_beautifulsoup(url)
             if bs_result.get("success") and bs_result.get("content"):
+                self.cache.set(cache_key, bs_result, ttl=CacheConfig.TTL_LONG)
                 return bs_result
 
         # No content from any source
         logger.warning(f"[MarketResearchAgent] No content extracted from any source for: {url}")
         return {"content": "", "error": "No content extracted from any source", "success": False}
 
+    def _discover_internal_links(self, base_url: str) -> List[str]:
+        """
+        Discover internal links by scraping the homepage HTML.
+        Prioritizes pages with relevant keywords (about, service, product, etc.).
+
+        Returns:
+            List of discovered internal URLs, prioritized by relevance.
+        """
+        priority_keywords = [
+            "about", "service", "product", "team", "contact",
+            "pricing", "solution", "partner", "leadership", "portfolio"
+        ]
+
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            response = requests.get(base_url, headers=headers, timeout=15, allow_redirects=True)
+            response.raise_for_status()
+
+            if not BS4_AVAILABLE:
+                return []
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            parsed_base = urlparse(base_url)
+            base_domain = parsed_base.netloc
+
+            discovered = set()
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href']
+                full_url = urljoin(base_url, href)
+                parsed = urlparse(full_url)
+
+                # Only same-domain links
+                if parsed.netloc != base_domain:
+                    continue
+                # Skip anchors, javascript, mailto, etc.
+                if parsed.scheme not in ('http', 'https'):
+                    continue
+                # Skip files (images, PDFs, etc.)
+                path_lower = parsed.path.lower()
+                if any(path_lower.endswith(ext) for ext in ('.pdf', '.jpg', '.png', '.gif', '.svg', '.css', '.js', '.zip')):
+                    continue
+
+                # Normalize: strip fragment and trailing slash
+                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                if clean_url and clean_url != base_url.rstrip('/'):
+                    discovered.add(clean_url)
+
+            # Sort: priority keyword links first, then the rest
+            priority_links = []
+            other_links = []
+            for link in discovered:
+                path_lower = urlparse(link).path.lower()
+                if any(kw in path_lower for kw in priority_keywords):
+                    priority_links.append(link)
+                else:
+                    other_links.append(link)
+
+            logger.info(f"[MarketResearchAgent] Discovered {len(priority_links)} priority + {len(other_links)} other internal links")
+            return priority_links + other_links
+
+        except Exception as e:
+            logger.warning(f"[MarketResearchAgent] Link discovery failed: {e}")
+            return []
+
     def _scrape_multiple_pages(self, base_url: str, subpages: List[str] = None) -> Dict[str, Any]:
         """
         Scrape multiple pages from a website for comprehensive analysis.
         Uses Tavily first, falls back to BeautifulSoup if Tavily fails.
+        Dynamically discovers internal links from the homepage when no subpages are provided.
 
         Args:
             base_url: The main website URL
             subpages: List of subpage paths to scrape (e.g., ['/about', '/services', '/contact'])
         """
-        # Default subpages to check if none provided
+        # Validate URL upfront
+        is_valid, final_url = self._validate_url(base_url)
+        if not is_valid:
+            return {
+                "pages": [], "combined_content": "",
+                "all_contacts": {"emails": [], "phones": [], "social_media": {}},
+                "all_statistics": [], "success_count": 0, "source": "none",
+                "error": f"Invalid or unreachable URL: {base_url}"
+            }
+        base_url = final_url
+
+        # Default subpages: try dynamic discovery first, fall back to hardcoded list
+        hardcoded_subpages = [
+            '', '/about', '/about-us', '/services', '/products',
+            '/solutions', '/contact', '/contact-us', '/partners',
+            '/team', '/leadership', '/pricing'
+        ]
+
         if subpages is None:
-            subpages = [
-                '', '/about', '/about-us', '/services', '/products',
-                '/solutions', '/contact', '/contact-us', '/partners',
-                '/team', '/leadership', '/pricing'
-            ]
+            discovered_links = self._discover_internal_links(base_url)
+            if discovered_links:
+                # Use discovered links (homepage + discovered, up to 8)
+                urls_to_scrape = [base_url.rstrip('/')]
+                for link in discovered_links:
+                    if link not in urls_to_scrape and len(urls_to_scrape) < 8:
+                        urls_to_scrape.append(link)
+                logger.info(f"[MarketResearchAgent] Using {len(urls_to_scrape)} dynamically discovered URLs")
+            else:
+                subpages = hardcoded_subpages
+                logger.info(f"[MarketResearchAgent] Link discovery failed, using hardcoded subpages")
 
         results = {
             "pages": [],
@@ -423,14 +585,16 @@ class MarketResearchAgent:
             "source": "none"
         }
 
-        urls_to_scrape = []
         parsed_base = urlparse(base_url)
         base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
 
-        for subpage in subpages[:8]:  # Limit to 8 pages to avoid rate limits
-            full_url = urljoin(base_domain, subpage)
-            if full_url not in urls_to_scrape:
-                urls_to_scrape.append(full_url)
+        # Build URL list from subpages if not already built by discovery
+        if subpages is not None:
+            urls_to_scrape = []
+            for subpage in subpages[:8]:  # Limit to 8 pages to avoid rate limits
+                full_url = urljoin(base_domain, subpage)
+                if full_url not in urls_to_scrape:
+                    urls_to_scrape.append(full_url)
 
         # Try Tavily first
         tavily_success = False
@@ -518,6 +682,14 @@ class MarketResearchAgent:
         Use AI to extract structured data from website content.
         Extracts: navigation, services, products, partners, leadership, value propositions
         """
+        # Check cache keyed by content hash
+        content_hash = hashlib.md5(content[:8000].encode()).hexdigest()
+        cache_key = f"mra:structured:{content_hash}"
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"[MarketResearchAgent] Cache HIT for structured extraction: {url}")
+            return cached_result
+
         extraction_prompt = ChatPromptTemplate.from_template("""
 Analyze the following website content and extract structured information.
 Return a JSON object with the extracted data.
@@ -571,7 +743,9 @@ Return ONLY valid JSON, no other text.
             if result.endswith("```"):
                 result = result[:-3]
 
-            return json.loads(result.strip())
+            parsed = json.loads(result.strip())
+            self.cache.set(cache_key, parsed, ttl=CacheConfig.TTL_LONG)
+            return parsed
 
         except json.JSONDecodeError as e:
             logger.warning(f"[MarketResearchAgent] Failed to parse structured data: {e}")
@@ -590,6 +764,13 @@ Return ONLY valid JSON, no other text.
             products_str = ", ".join(products[:3]) if products else business_type
             query = f"{business_type} companies {location} {products_str} competitors"
 
+            # Check cache
+            cache_key = generate_cache_key(query, prefix="mra:competitors:")
+            cached_result = self.cache.get(cache_key)
+            if cached_result is not None:
+                logger.info(f"[MarketResearchAgent] Cache HIT for competitor search")
+                return cached_result
+
             logger.info(f"[MarketResearchAgent] Searching competitors: {query}")
 
             search_result = self.tavily.search(
@@ -606,6 +787,7 @@ Return ONLY valid JSON, no other text.
                     "description": result.get("content", "")[:500]
                 })
 
+            self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
             return competitors
 
         except Exception as e:
@@ -619,6 +801,13 @@ Return ONLY valid JSON, no other text.
 
         try:
             query = f"{industry} industry trends {year} market growth statistics"
+
+            # Check cache
+            cache_key = generate_cache_key(query, prefix="mra:trends:")
+            cached_result = self.cache.get(cache_key)
+            if cached_result is not None:
+                logger.info(f"[MarketResearchAgent] Cache HIT for trends search")
+                return cached_result
 
             logger.info(f"[MarketResearchAgent] Searching trends: {query}")
 
@@ -636,6 +825,7 @@ Return ONLY valid JSON, no other text.
                     "insight": result.get("content", "")[:400]
                 })
 
+            self.cache.set(cache_key, trends, ttl=CacheConfig.TTL_LONG)
             return trends
 
         except Exception as e:
@@ -649,6 +839,13 @@ Return ONLY valid JSON, no other text.
 
         try:
             query = f"{target_audience} buying behavior preferences {industry} consumer insights"
+
+            # Check cache
+            cache_key = generate_cache_key(query, prefix="mra:audience:")
+            cached_result = self.cache.get(cache_key)
+            if cached_result is not None:
+                logger.info(f"[MarketResearchAgent] Cache HIT for audience search")
+                return cached_result
 
             logger.info(f"[MarketResearchAgent] Searching audience insights: {query}")
 
@@ -666,6 +863,7 @@ Return ONLY valid JSON, no other text.
                     "insight": result.get("content", "")[:400]
                 })
 
+            self.cache.set(cache_key, insights, ttl=CacheConfig.TTL_LONG)
             return insights
 
         except Exception as e:
@@ -737,6 +935,15 @@ Return ONLY valid JSON, no other text.
         """
         logger.info(f"[MarketResearchAgent] Starting enhanced research for campaign: {campaign.name}")
 
+        # Validate URL upfront if provided
+        if source_url:
+            is_valid, final_url = self._validate_url(source_url)
+            if not is_valid:
+                logger.error(f"[MarketResearchAgent] Invalid source URL, skipping scrape: {source_url}")
+                source_url = None
+            else:
+                source_url = final_url
+
         # Step 1: Scrape the website with enhanced extraction
         website_data = {}
         structured_data = {}
@@ -776,16 +983,15 @@ Return ONLY valid JSON, no other text.
         if structured_data.get("target_audiences"):
             target_audience_str = ", ".join(structured_data["target_audiences"])
 
-        # Step 3: Search for real competitors
-        competitors = self._search_competitors(business_type, location, products)
-
-        # Step 4: Search for industry trends (use current year)
+        # Step 3-5: Search for competitors, trends, and audience insights in parallel
         from datetime import datetime
         current_year = str(datetime.now().year)
-        trends = self._search_industry_trends(business_type, year=current_year)
 
-        # Step 5: Search for audience insights
-        audience_data = self._search_audience_insights(target_audience_str, business_type)
+        competitors, trends, audience_data = await asyncio.gather(
+            asyncio.to_thread(self._search_competitors, business_type, location, products),
+            asyncio.to_thread(self._search_industry_trends, business_type, current_year),
+            asyncio.to_thread(self._search_audience_insights, target_audience_str, business_type),
+        )
 
         # Step 6: Build comprehensive prompt with REAL data including structured extraction
         prompt = ChatPromptTemplate.from_template("""
@@ -1064,6 +1270,21 @@ async def research_website_directly(
     """
     agent = MarketResearchAgent()
 
+    # Validate URL upfront
+    is_valid, final_url = agent._validate_url(url)
+    if not is_valid:
+        return {
+            "url": url,
+            "error": f"Invalid or unreachable URL: {url}",
+            "research_summary": {"company_name": business_name or "Unknown"},
+            "extracted_data": {},
+            "market_data": {"competitors": [], "industry_trends": [], "audience_insights": []},
+            "raw_content": {"main_page": "", "scraped_pages": []},
+            "website_data": {"success": False, "source": "none", "error": f"Invalid or unreachable URL: {url}", "content_length": 0},
+            "multi_page_data": {"source": None, "success_count": 0, "total_content_length": 0}
+        }
+    url = final_url
+
     logger.info(f"[MarketResearchAgent] Starting direct website research for: {url}")
 
     # Step 1: Scrape the main page
@@ -1091,17 +1312,16 @@ async def research_website_directly(
     if structured_data.get("services_products"):
         products = [sp.get("name", "") for sp in structured_data["services_products"][:5]]
 
-    # Step 5: Search for competitors
-    competitors = agent._search_competitors(industry, location, products)
-
-    # Step 6: Search for industry trends
+    # Step 5-7: Search for competitors, trends, and audience insights in parallel
     from datetime import datetime
     current_year = str(datetime.now().year)
-    trends = agent._search_industry_trends(industry, year=current_year)
-
-    # Step 7: Get audience insights based on target audiences
     target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
-    audience_insights = agent._search_audience_insights(target_audience_str, industry)
+
+    competitors, trends, audience_insights = await asyncio.gather(
+        asyncio.to_thread(agent._search_competitors, industry, location, products),
+        asyncio.to_thread(agent._search_industry_trends, industry, current_year),
+        asyncio.to_thread(agent._search_audience_insights, target_audience_str, industry),
+    )
 
     # Compile results
     all_contacts = multi_page_data.get("all_contacts") or website_data.get("contact_info", {})
