@@ -23,6 +23,7 @@ import os
 import json
 import logging
 import re
+import requests
 from typing import Dict, Any, Optional, List
 from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
@@ -31,6 +32,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from database import SessionLocal
 from .models import Campaign, MarketResearch
+
+# Import BeautifulSoup for fallback scraping
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+    BeautifulSoup = None
 
 # Import Tavily for web research
 try:
@@ -145,6 +154,127 @@ class MarketResearchAgent:
 
         return stats
 
+    def _scrape_with_beautifulsoup(self, url: str) -> Dict[str, Any]:
+        """
+        Fallback scraper using BeautifulSoup when Tavily fails.
+        Extracts text content, links, and metadata from the website.
+        """
+        if not BS4_AVAILABLE:
+            return {"content": "", "error": "BeautifulSoup not available"}
+
+        try:
+            logger.info(f"[MarketResearchAgent] Scraping with BeautifulSoup: {url}")
+
+            # Request the page with a browser-like user agent
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            }
+
+            response = requests.get(url, headers=headers, timeout=30, verify=True)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Remove script and style elements
+            for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript']):
+                element.decompose()
+
+            # Extract metadata
+            title = soup.title.string if soup.title else ""
+            meta_desc = ""
+            meta_keywords = ""
+
+            for meta in soup.find_all('meta'):
+                if meta.get('name', '').lower() == 'description':
+                    meta_desc = meta.get('content', '')
+                if meta.get('name', '').lower() == 'keywords':
+                    meta_keywords = meta.get('content', '')
+
+            # Extract main content
+            content_parts = []
+
+            # Add title and meta
+            if title:
+                content_parts.append(f"# {title}")
+            if meta_desc:
+                content_parts.append(f"Description: {meta_desc}")
+
+            # Extract headings
+            for heading in soup.find_all(['h1', 'h2', 'h3']):
+                text = heading.get_text(strip=True)
+                if text and len(text) > 2:
+                    level = heading.name
+                    prefix = "#" * int(level[1])
+                    content_parts.append(f"{prefix} {text}")
+
+            # Extract paragraphs
+            for p in soup.find_all('p'):
+                text = p.get_text(strip=True)
+                if text and len(text) > 20:
+                    content_parts.append(text)
+
+            # Extract list items
+            for li in soup.find_all('li'):
+                text = li.get_text(strip=True)
+                if text and len(text) > 10:
+                    content_parts.append(f"• {text}")
+
+            # Extract links for navigation structure
+            nav_links = []
+            for a in soup.find_all('a', href=True):
+                href = a.get('href', '')
+                text = a.get_text(strip=True)
+                if text and len(text) > 2 and len(text) < 50:
+                    if href.startswith('/') or href.startswith(url):
+                        nav_links.append(text)
+
+            if nav_links:
+                content_parts.append(f"\nNavigation: {', '.join(list(set(nav_links))[:20])}")
+
+            # Extract contact information from the page
+            page_text = soup.get_text()
+
+            # Find emails
+            emails = list(set(EMAIL_PATTERN.findall(page_text)))
+            emails = [e for e in emails if not any(x in e.lower() for x in ['example.com', 'test.com', '.png', '.jpg'])]
+
+            # Find phones
+            phones = list(set(PHONE_PATTERN.findall(page_text)))
+
+            # Find social media links
+            social_media = {}
+            for platform, pattern in SOCIAL_PATTERNS.items():
+                matches = pattern.findall(response.text)
+                if matches:
+                    social_media[platform] = list(set(matches))
+
+            # Combine content
+            content = "\n\n".join(content_parts)
+
+            logger.info(f"[MarketResearchAgent] BeautifulSoup extracted {len(content)} chars, {len(emails)} emails, {len(phones)} phones")
+
+            return {
+                "content": content[:15000],
+                "url": url,
+                "success": True,
+                "contact_info": {
+                    "emails": emails[:10],
+                    "phones": phones[:10],
+                    "social_media": social_media
+                },
+                "statistics": self._extract_statistics(content),
+                "source": "beautifulsoup"
+            }
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[MarketResearchAgent] BeautifulSoup request error: {e}")
+            return {"content": "", "error": f"Request failed: {str(e)}", "success": False}
+        except Exception as e:
+            logger.error(f"[MarketResearchAgent] BeautifulSoup scrape error: {e}")
+            return {"content": "", "error": str(e), "success": False}
+
     def _scrape_website(self, url: str) -> Dict[str, Any]:
         """Scrape the target website to understand the business"""
         content = ""
@@ -221,6 +351,13 @@ class MarketResearchAgent:
                 "source": "tavily"
             }
 
+        # Fallback to BeautifulSoup if all else fails
+        if not content and BS4_AVAILABLE:
+            logger.info(f"[MarketResearchAgent] Falling back to BeautifulSoup scraper: {url}")
+            bs_result = self._scrape_with_beautifulsoup(url)
+            if bs_result.get("success") and bs_result.get("content"):
+                return bs_result
+
         # No content from any source
         logger.warning(f"[MarketResearchAgent] No content extracted from any source for: {url}")
         return {"content": "", "error": "No content extracted from any source", "success": False}
@@ -228,14 +365,12 @@ class MarketResearchAgent:
     def _scrape_multiple_pages(self, base_url: str, subpages: List[str] = None) -> Dict[str, Any]:
         """
         Scrape multiple pages from a website for comprehensive analysis.
+        Uses Tavily first, falls back to BeautifulSoup if Tavily fails.
 
         Args:
             base_url: The main website URL
             subpages: List of subpage paths to scrape (e.g., ['/about', '/services', '/contact'])
         """
-        if not self.tavily:
-            return {"pages": [], "error": "Tavily not configured"}
-
         # Default subpages to check if none provided
         if subpages is None:
             subpages = [
@@ -249,7 +384,8 @@ class MarketResearchAgent:
             "combined_content": "",
             "all_contacts": {"emails": [], "phones": [], "social_media": {}},
             "all_statistics": [],
-            "success_count": 0
+            "success_count": 0,
+            "source": "none"
         }
 
         urls_to_scrape = []
@@ -261,44 +397,84 @@ class MarketResearchAgent:
             if full_url not in urls_to_scrape:
                 urls_to_scrape.append(full_url)
 
-        try:
-            logger.info(f"[MarketResearchAgent] Scraping {len(urls_to_scrape)} pages from {base_domain}")
+        # Try Tavily first
+        tavily_success = False
+        if self.tavily:
+            try:
+                logger.info(f"[MarketResearchAgent] Scraping {len(urls_to_scrape)} pages with Tavily from {base_domain}")
 
-            # Tavily can extract multiple URLs at once
-            extract_result = self.tavily.extract(urls=urls_to_scrape)
+                extract_result = self.tavily.extract(urls=urls_to_scrape)
 
-            if extract_result and extract_result.get("results"):
-                for page_result in extract_result["results"]:
-                    content = page_result.get("raw_content", "")
-                    page_url = page_result.get("url", "")
+                if extract_result and extract_result.get("results"):
+                    for page_result in extract_result["results"]:
+                        content = page_result.get("raw_content", "")
+                        page_url = page_result.get("url", "")
 
-                    if content:
+                        if content:
+                            tavily_success = True
+                            results["pages"].append({
+                                "url": page_url,
+                                "content": content[:5000],
+                                "success": True
+                            })
+                            results["combined_content"] += f"\n\n--- PAGE: {page_url} ---\n{content[:5000]}"
+                            results["success_count"] += 1
+                            results["source"] = "tavily"
+
+                            # Aggregate contacts
+                            page_contacts = self._extract_contact_info(content)
+                            results["all_contacts"]["emails"].extend(page_contacts["emails"])
+                            results["all_contacts"]["phones"].extend(page_contacts["phones"])
+                            for platform, links in page_contacts["social_media"].items():
+                                if platform not in results["all_contacts"]["social_media"]:
+                                    results["all_contacts"]["social_media"][platform] = []
+                                results["all_contacts"]["social_media"][platform].extend(links)
+
+                            # Aggregate statistics
+                            page_stats = self._extract_statistics(content)
+                            results["all_statistics"].extend(page_stats)
+
+            except Exception as e:
+                logger.error(f"[MarketResearchAgent] Tavily multi-page scrape error: {e}")
+
+        # Fallback to BeautifulSoup if Tavily failed
+        if not tavily_success and BS4_AVAILABLE:
+            logger.info(f"[MarketResearchAgent] Falling back to BeautifulSoup for multi-page scrape")
+            results["source"] = "beautifulsoup"
+
+            for page_url in urls_to_scrape[:5]:  # Limit to 5 pages for BeautifulSoup
+                try:
+                    bs_result = self._scrape_with_beautifulsoup(page_url)
+                    if bs_result.get("success") and bs_result.get("content"):
                         results["pages"].append({
                             "url": page_url,
-                            "content": content[:5000],
+                            "content": bs_result["content"][:5000],
                             "success": True
                         })
-                        results["combined_content"] += f"\n\n--- PAGE: {page_url} ---\n{content[:5000]}"
+                        results["combined_content"] += f"\n\n--- PAGE: {page_url} ---\n{bs_result['content'][:5000]}"
                         results["success_count"] += 1
 
                         # Aggregate contacts
-                        page_contacts = self._extract_contact_info(content)
-                        results["all_contacts"]["emails"].extend(page_contacts["emails"])
-                        results["all_contacts"]["phones"].extend(page_contacts["phones"])
-                        for platform, links in page_contacts["social_media"].items():
-                            if platform not in results["all_contacts"]["social_media"]:
-                                results["all_contacts"]["social_media"][platform] = []
-                            results["all_contacts"]["social_media"][platform].extend(links)
+                        if bs_result.get("contact_info"):
+                            results["all_contacts"]["emails"].extend(bs_result["contact_info"].get("emails", []))
+                            results["all_contacts"]["phones"].extend(bs_result["contact_info"].get("phones", []))
+                            for platform, links in bs_result["contact_info"].get("social_media", {}).items():
+                                if platform not in results["all_contacts"]["social_media"]:
+                                    results["all_contacts"]["social_media"][platform] = []
+                                results["all_contacts"]["social_media"][platform].extend(links)
 
                         # Aggregate statistics
-                        page_stats = self._extract_statistics(content)
-                        results["all_statistics"].extend(page_stats)
+                        if bs_result.get("statistics"):
+                            results["all_statistics"].extend(bs_result["statistics"])
 
-            # Deduplicate
-            results["all_contacts"]["emails"] = list(set(results["all_contacts"]["emails"]))
-            results["all_contacts"]["phones"] = list(set(results["all_contacts"]["phones"]))
-            for platform in results["all_contacts"]["social_media"]:
-                results["all_contacts"]["social_media"][platform] = list(set(results["all_contacts"]["social_media"][platform]))
+                except Exception as e:
+                    logger.error(f"[MarketResearchAgent] BeautifulSoup error for {page_url}: {e}")
+
+        # Deduplicate
+        results["all_contacts"]["emails"] = list(set(results["all_contacts"]["emails"]))
+        results["all_contacts"]["phones"] = list(set(results["all_contacts"]["phones"]))
+        for platform in results["all_contacts"]["social_media"]:
+            results["all_contacts"]["social_media"][platform] = list(set(results["all_contacts"]["social_media"][platform]))
 
             return results
 
