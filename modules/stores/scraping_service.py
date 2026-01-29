@@ -206,11 +206,65 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
             page = await context.new_page()
 
             # Navigate to URL with timeout
-            print(f"[Screenshot] Navigating to {url}")
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            # Use 'domcontentloaded' instead of 'networkidle' as many sites never reach networkidle
+            # due to ads, tracking scripts, live updates, etc.
 
-            # Wait for content to load
-            await page.wait_for_timeout(2000)
+            # Try HTTPS first, then fall back to HTTP if it fails
+            urls_to_try = [url]
+            if url.startswith('https://'):
+                # Add HTTP fallback
+                urls_to_try.append(url.replace('https://', 'http://'))
+
+            navigation_success = False
+            last_nav_error = None
+            final_url = url
+
+            for try_url in urls_to_try:
+                print(f"[Screenshot] Navigating to {try_url}")
+                try:
+                    await page.goto(try_url, wait_until="domcontentloaded", timeout=30000)
+                    navigation_success = True
+                    final_url = try_url
+                    break
+                except Exception as nav_error:
+                    last_nav_error = nav_error
+                    error_str = str(nav_error).lower()
+                    # Check if it's a connection error that might be fixed by HTTP fallback
+                    if any(err in error_str for err in ['err_connection', 'err_ssl', 'err_cert', 'timeout', 'net::']):
+                        print(f"[Screenshot] Connection failed for {try_url}: {nav_error}")
+                        if try_url != urls_to_try[-1]:
+                            print(f"[Screenshot] Trying HTTP fallback...")
+                        continue
+                    else:
+                        # Other errors - still try to continue
+                        print(f"[Screenshot] Navigation warning (continuing anyway): {nav_error}")
+                        navigation_success = True
+                        final_url = try_url
+                        break
+
+            if not navigation_success:
+                await browser.close()
+                raise Exception(f"Failed to navigate to {url}. Last error: {last_nav_error}")
+
+            # Wait for page to stabilize and render content
+            # Try waiting for common content indicators
+            try:
+                # Wait for body to be visible
+                await page.wait_for_selector("body", state="visible", timeout=5000)
+            except Exception:
+                pass
+
+            # Additional wait for JavaScript rendering
+            await page.wait_for_timeout(3000)
+
+            # Scroll to trigger lazy loading, then scroll back up
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                await page.wait_for_timeout(500)
+                await page.evaluate("window.scrollTo(0, 0)")
+                await page.wait_for_timeout(500)
+            except Exception:
+                pass
 
             # Generate unique filename
             domain = urlparse(url).netloc.replace("www.", "").replace(".", "_")
@@ -258,7 +312,7 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
                 "width": viewport_size["width"] if viewport_size else 1920,
                 "height": viewport_size["height"] if viewport_size else 1080,
                 "full_page": full_page,
-                "url": url
+                "url": final_url  # URL that was actually loaded (might be HTTP fallback)
             }
 
     except Exception as e:
