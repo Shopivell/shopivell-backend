@@ -1,0 +1,118 @@
+{
+  "url": "https://zimswitch.co.zw",
+  "research_summary": {
+    "company_name": "Zimswitch",
+    "tagline": "With You, Wherever Life Takes You",
+    "industry": "Financial Technology / Payment Infrastructure",
+    "geographic_coverage": "Zimbabwe (National)",
+    "pages_scraped": 1,
+    "competitors_found": 0,
+    "trends_found": 0,
+    "audience_insights_found": 0
+  },
+  "extracted_data": {
+    "company_info": {
+      "name": "Zimswitch",
+      "tagline": "With You, Wherever Life Takes You",
+      "industry": "Financial Technology / Payment Infrastructure",
+      "geographic_coverage": "Zimbabwe - National Electronic Funds Switch",
+      "designation": "Sole National Electronic Funds Switch and clearing house for Zimbabwe (designated by Reserve Bank of Zimbabwe)"
+    },
+    "navigation_structure": [
+      {"section": "Consumer", "items": ["ZIPIT", "ATM Services", "POS Payments", "Tap to Pay", "Zimswitch Online", "Recurring Payments"]},
+      {"section": "Business", "items": ["ZEEPAY", "POS Terminal Network", "Deposit Services", "Cash Withdrawal"]},
+      {"section": "Members", "items": ["Clearing & Settlement", "Risk Management", "Fraud Reporting", "Training"]}
+    ],
+    "services_products": [
+      {"name": "ZIPIT", "description": "Mobile money transfer service with P2P, Smart, and Pay variants for instant person-to-person transfers across banks."},
+      {"name": "ATM Services", "description": "Interbank ATM cash withdrawal services allowing customers to use any Zimswitch-enabled ATM regardless of their bank."},
+      {"name": "POS Payments", "description": "Point of Sale card purchases and contactless payments (Tap to Pay) at merchants nationwide."},
+      {"name": "Zimswitch Online", "description": "E-commerce payment gateway enabling secure online transactions for businesses and consumers."},
+      {"name": "ZEEPAY", "description": "Electronic Funds Transfer solution for businesses to process bulk payments including salaries, supplier payments, and disbursements."},
+      {"name": "Clearing & Settlement", "description": "Core infrastructure service providing clearing and settlement operations for all member financial institutions."},
+      {"name": "Risk Management", "description": "Fraud prevention and risk management services including fraud reporting portal for the financial ecosystem."},
+      {"name": "Training Services", "description": "Training and development services for member institutions on payment systems and security."}
+    ],
+    "value_propositions": [
+      "Secure, seamless payment experiences across all channels",
+      "Financial flexibility - access your money wherever you are",
+      "Interoperable infrastructure supporting ecosystem growth",
+      "Trusted processing with emphasis on fraud prevention",
+      "Single switch connecting all banks and financial institutions",
+      "Real-time transaction processing",
+      "Multi-currency support (USD and local currency)"
+    ],
+    "target_audiences": [
+      "Individual consumers needing money transfers",
+      "Small-to-medium enterprises (SMEs)",
+      "Commercial banks and fintechs",
+      "Merchants and retailers",
+      "Member financial institutions",
+      "Corporates needing bulk payment solutions",
+      "E-commerce businesses"
+    ],
+    "partners_members": [
+      "Stanbic Bank",
+      "Ecobank",
+      "POSB",
+      "FBC Holdings",
+      "CBZ Holdings",
+      "Success Microfinance Bank",
+      "Telecash",
+      "Innbucks",
+      "GetBucks",
+      "30+ financial institutions"
+    ],
+    "leadership": [
+      {"name": "Zabron Chilakalaka", "title": "CEO"}
+    ],
+    "key_features": [
+      "Designated by Reserve Bank of Zimbabwe as sole national switch",
+      "30+ member financial institutions",
+      "Nationwide ATM network coverage",
+      "POS terminals deployed across merchants",
+      "Multi-currency transaction support",
+      "Real-time payment processing",
+      "Fraud prevention and reporting systems",
+      "Interbank connectivity"
+    ],
+    "certifications_awards": [
+      "Reserve Bank of Zimbabwe designated national switch",
+      "Central clearing house for Zimbabwe"
+    ],
+    "call_to_actions": [
+      "Send Money with ZIPIT",
+      "Find ATM",
+      "Partner with Us",
+      "Report Fraud"
+    ],
+    "pricing_info": null,
+    "contact_info": {
+      "emails": ["info@zimswitch.co.zw"],
+      "phones": ["+263-242-746620", "+263-242-776742"],
+      "address": "Zimbabwe",
+      "social_media": {
+        "facebook": ["facebook.com/ZimswitchTech"],
+        "twitter": ["twitter.com/ZimswitchTech"],
+        "linkedin": ["linkedin.com/company/ZimswitchTech"]
+      }
+    },
+    "statistics": [
+      {"value": "30+", "metric": "Member Financial Institutions"},
+      {"value": "National", "metric": "Coverage"},
+      {"value": "2", "metric": "Currency Support (USD & ZWL)"},
+      {"value": "Real-time", "metric": "Transaction Processing"}
+    ]
+  },
+  "market_data": {
+    "competitors": [],
+    "industry_trends": [],
+    "audience_insights": []
+  },
+  "raw_content": {
+    "main_page": "Zimswitch operates as Zimbabwe's central payment infrastructure provider, enabling electronic fund transfers, clearing, and settlement services across the financial ecosystem. Designated by the Reserve Bank of Zimbabwe as the sole national electronic funds switch.",
+    "scraped_pages": [
+      {"url": "https://zimswitch.co.zw/", "excerpt": "With You, Wherever Life Takes You - Zimbabwe's national payment switch"}
+    ]
+  }
+}

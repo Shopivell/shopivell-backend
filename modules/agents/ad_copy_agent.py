@@ -423,11 +423,47 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
                 if any(kw in desc or kw in name for kw in ['beauty', 'cosmetics', 'skincare']):
                     product_keywords.append('beauty products')
 
+                # Fintech/Payment keywords
+                if any(kw in desc or kw in name for kw in ['payment', 'pay', 'transfer', 'transaction']):
+                    product_keywords.extend(['payments', 'money transfers'])
+                if any(kw in desc or kw in name for kw in ['atm', 'cash', 'withdrawal']):
+                    product_keywords.append('ATM services')
+                if any(kw in desc or kw in name for kw in ['pos', 'merchant', 'card']):
+                    product_keywords.append('card payments')
+                if any(kw in desc or kw in name for kw in ['mobile', 'p2p', 'instant']):
+                    product_keywords.append('instant transfers')
+                if any(kw in desc or kw in name for kw in ['online', 'e-commerce', 'ecommerce', 'gateway']):
+                    product_keywords.append('online payments')
+                if any(kw in desc or kw in name for kw in ['bulk', 'salary', 'disbursement', 'payroll']):
+                    product_keywords.append('bulk payments')
+
+                # Security/Surveillance keywords
+                if any(kw in desc or kw in name for kw in ['security', 'surveillance', 'cctv', 'camera', 'monitor']):
+                    product_keywords.extend(['security systems', 'surveillance'])
+                if any(kw in desc or kw in name for kw in ['alarm', 'access control', 'intrusion']):
+                    product_keywords.append('alarm systems')
+                if any(kw in desc or kw in name for kw in ['guard', 'patrol', 'protection']):
+                    product_keywords.append('security services')
+
+                # Technology/Software keywords
+                if any(kw in desc or kw in name for kw in ['software', 'app', 'platform', 'system']):
+                    product_keywords.append('software solutions')
+                if any(kw in desc or kw in name for kw in ['cloud', 'saas', 'hosting']):
+                    product_keywords.append('cloud services')
+
                 # Service keywords
                 if any(kw in desc or kw in name for kw in ['finance', 'loan', 'credit', 'microfinance']):
                     product_keywords.append('financing options')
                 if any(kw in desc or kw in name for kw in ['loyalty', 'rewards', 'club', 'membership']):
                     benefit_keywords.append('loyalty rewards')
+
+                # Benefit keywords
+                if any(kw in desc for kw in ['secure', 'security', 'fraud', 'protect']):
+                    benefit_keywords.append('security')
+                if any(kw in desc for kw in ['instant', 'real-time', 'fast', 'quick']):
+                    benefit_keywords.append('instant processing')
+                if any(kw in desc for kw in ['interbank', 'any bank', 'interoperable']):
+                    benefit_keywords.append('interbank access')
 
                 # Quality/Value keywords
                 if 'quality' in desc:
@@ -458,10 +494,20 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             industry = summary.get('industry', '').lower()
             if 'fashion' in industry or 'clothing' in industry or 'retail' in industry:
                 primary_products = 'fashion and clothing'
+            elif 'fintech' in industry or 'payment' in industry or 'financial' in industry:
+                primary_products = 'payment solutions'
+            elif 'security' in industry or 'surveillance' in industry:
+                primary_products = 'security solutions'
             elif 'tech' in industry or 'software' in industry:
                 primary_products = 'technology solutions'
             elif 'food' in industry or 'restaurant' in industry:
                 primary_products = 'food and dining'
+            elif 'health' in industry or 'medical' in industry:
+                primary_products = 'healthcare services'
+            elif 'education' in industry or 'training' in industry:
+                primary_products = 'education and training'
+            elif 'consulting' in industry or 'advisory' in industry:
+                primary_products = 'consulting services'
             else:
                 primary_products = 'products and services'
 
@@ -521,6 +567,43 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             context['shopping_need'] = 'professional attire'
             context['pain_point'] = 'finding quality workwear'
             context['desire'] = 'looking professional'
+
+        # Fintech/Payment audiences
+        if 'consumer' in audience_lower and ('transfer' in audience_lower or 'payment' in audience_lower or 'money' in audience_lower):
+            context['shopping_need'] = 'fast, secure money transfers'
+            context['pain_point'] = 'slow bank transfers and high fees'
+            context['desire'] = 'instant, affordable payments'
+
+        if 'sme' in audience_lower or 'small' in audience_lower and 'enterprise' in audience_lower:
+            context['shopping_need'] = 'efficient payment processing'
+            context['pain_point'] = 'managing multiple payment channels'
+            context['desire'] = 'streamlined operations'
+
+        if 'merchant' in audience_lower or 'retailer' in audience_lower:
+            context['shopping_need'] = 'reliable POS and card acceptance'
+            context['pain_point'] = 'payment failures and slow settlements'
+            context['desire'] = 'seamless customer payments'
+
+        if 'bank' in audience_lower or 'fintech' in audience_lower or 'financial institution' in audience_lower:
+            context['shopping_need'] = 'robust clearing infrastructure'
+            context['pain_point'] = 'interoperability challenges'
+            context['desire'] = 'seamless integration'
+
+        if 'e-commerce' in audience_lower or 'online' in audience_lower:
+            context['shopping_need'] = 'secure online payment gateway'
+            context['pain_point'] = 'cart abandonment due to payment issues'
+            context['desire'] = 'smooth checkout experience'
+
+        # Security industry audiences
+        if 'homeowner' in audience_lower or 'residential' in audience_lower or 'home' in audience_lower:
+            context['shopping_need'] = 'home security systems'
+            context['pain_point'] = 'worry about break-ins and safety'
+            context['desire'] = 'peace of mind'
+
+        if 'property' in audience_lower or 'estate' in audience_lower:
+            context['shopping_need'] = 'property surveillance'
+            context['pain_point'] = 'monitoring large areas'
+            context['desire'] = 'comprehensive coverage'
 
         return context
 
