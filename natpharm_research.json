@@ -1,0 +1,83 @@
+{
+  "url": "https://www.natpharm.co.zw",
+  "research_summary": {
+    "company_name": "National Pharmaceutical Company (NatPharm)",
+    "tagline": "Access to Affordable Quality Medicines",
+    "industry": "Pharmaceutical Distribution / Healthcare",
+    "geographic_coverage": "Zimbabwe (National - 7 branches)",
+    "pages_scraped": 1,
+    "competitors_found": 0,
+    "trends_found": 0,
+    "audience_insights_found": 0
+  },
+  "extracted_data": {
+    "company_info": {
+      "name": "National Pharmaceutical Company (NatPharm)",
+      "tagline": "Access to Affordable Quality Medicines",
+      "industry": "Pharmaceutical Distribution / Healthcare Supply Chain",
+      "geographic_coverage": "Zimbabwe - 7 branches nationwide (Harare, Bulawayo, Masvingo, Gweru, Chinhoyi, Mutare)"
+    },
+    "services_products": [
+      {"name": "Pharmaceutical Procurement", "description": "Procurement of medical supplies and pharmaceutical products for public health institutions."},
+      {"name": "Warehousing & Storage", "description": "State-of-the-art warehousing facilities designed to preserve drug potency and maintain quality."},
+      {"name": "Distribution Services", "description": "Custom-designed delivery fleet ensuring medicines reach health institutions across all provinces."},
+      {"name": "Last Mile Delivery", "description": "Specialized last mile delivery service ensuring medicines reach even remote health facilities."},
+      {"name": "Manufacturing", "description": "Pharmaceutical manufacturing capabilities for essential medicines."}
+    ],
+    "value_propositions": [
+      "Access to affordable quality medicines for all Zimbabweans",
+      "State-of-the-art warehousing facilities for the nation's medical requirements",
+      "Custom-designed delivery fleet to preserve drug potency",
+      "Last mile delivery to remote health facilities",
+      "Robust, compliant procurement processes",
+      "Partnership with international health organizations"
+    ],
+    "target_audiences": [
+      "Public health institutions in Zimbabwe",
+      "Government hospitals and clinics",
+      "Healthcare providers across provincial regions",
+      "Rural health centers",
+      "Development partners and NGOs"
+    ],
+    "partners_members": [
+      "WHO (World Health Organization)",
+      "UNICEF",
+      "UNDP",
+      "USAID",
+      "Global Fund",
+      "National AIDS Council"
+    ],
+    "leadership": [],
+    "key_features": [
+      "7 branch locations across Zimbabwe",
+      "State-of-the-art warehousing facilities",
+      "Custom-designed cold chain delivery fleet",
+      "Last mile delivery capability",
+      "International partner network",
+      "Compliant procurement processes"
+    ],
+    "certifications_awards": [],
+    "call_to_actions": [
+      "Contact Us",
+      "Find Branch",
+      "Partner With Us"
+    ],
+    "pricing_info": null,
+    "contact_info": {
+      "emails": ["info@natpharm.co.zw"],
+      "phones": ["+263 242 621 991"],
+      "address": "14 Lobengula Road, Southerton, Harare, Zimbabwe",
+      "social_media": {}
+    },
+    "statistics": [
+      {"value": "7", "metric": "Branch Locations"},
+      {"value": "6+", "metric": "Provinces Served"},
+      {"value": "6", "metric": "International Development Partners"}
+    ]
+  },
+  "market_data": {
+    "competitors": [],
+    "industry_trends": [],
+    "audience_insights": []
+  }
+}

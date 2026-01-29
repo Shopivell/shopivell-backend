@@ -1,0 +1,87 @@
+{
+  "url": "https://cassava.co.zw",
+  "research_summary": {
+    "company_name": "Cassava",
+    "tagline": "Streamline. Simplify. Succeed.",
+    "industry": "Business Management Software / SaaS",
+    "geographic_coverage": "Zimbabwe",
+    "pages_scraped": 1,
+    "competitors_found": 0,
+    "trends_found": 0,
+    "audience_insights_found": 0
+  },
+  "extracted_data": {
+    "company_info": {
+      "name": "Cassava",
+      "tagline": "Streamline. Simplify. Succeed.",
+      "industry": "Business Management Software / SaaS",
+      "geographic_coverage": "Zimbabwe - SME Market"
+    },
+    "services_products": [
+      {"name": "Invoicing", "description": "Professional invoicing and quote generation with custom branding for businesses."},
+      {"name": "Expense Tracking", "description": "Track and manage business expenses with automated categorization and reporting."},
+      {"name": "Contract Management", "description": "Create, store, and manage business contracts digitally with easy access."},
+      {"name": "Project Management", "description": "Project management and task delegation tools for team collaboration."},
+      {"name": "Payment Processing", "description": "Integrated payment processing via PayFast and PayStack gateways."},
+      {"name": "CRM", "description": "Customer relationship management to track clients, leads, and interactions."},
+      {"name": "Time Logging", "description": "Time tracking capabilities for billing and productivity management."},
+      {"name": "Business Analytics", "description": "Real-time business analytics and reporting dashboards."}
+    ],
+    "value_propositions": [
+      "Streamline, simplify, and succeed in business management",
+      "Cloud-based accessibility across all devices (Mac, PC, tablet, phone)",
+      "Automated invoice generation from estimates",
+      "Custom branding for professional documents",
+      "Real-time business analytics and reporting",
+      "All-in-one platform consolidating multiple business functions",
+      "Designed specifically for Zimbabwe's SME market"
+    ],
+    "target_audiences": [
+      "Solo entrepreneurs and freelancers",
+      "Small to medium-sized enterprises (SMEs)",
+      "Zimbabwean businesses",
+      "Startups needing business management tools",
+      "Service-based businesses needing invoicing"
+    ],
+    "partners_members": [
+      "PayFast",
+      "PayStack"
+    ],
+    "leadership": [],
+    "key_features": [
+      "Cloud-based platform",
+      "Multi-device accessibility",
+      "Integrated payment gateways",
+      "Custom branding",
+      "Real-time analytics",
+      "All-in-one business management"
+    ],
+    "certifications_awards": [],
+    "call_to_actions": [
+      "Start Free Trial",
+      "Get Started",
+      "View Pricing"
+    ],
+    "pricing_info": {
+      "basic": "US$14.99/month (1 user, 20 invoices)",
+      "essentials": "US$29.99/month (3 users)",
+      "plus": "US$49.99/month (5 users, includes project management)"
+    },
+    "contact_info": {
+      "emails": ["info@cassava.co.zw"],
+      "phones": ["(+263) 71-694-9091"],
+      "address": "Zimbabwe",
+      "social_media": {}
+    },
+    "statistics": [
+      {"value": "3", "metric": "Pricing Plans"},
+      {"value": "US$14.99", "metric": "Starting Price/Month"},
+      {"value": "Cloud", "metric": "Platform Type"}
+    ]
+  },
+  "market_data": {
+    "competitors": [],
+    "industry_trends": [],
+    "audience_insights": []
+  }
+}

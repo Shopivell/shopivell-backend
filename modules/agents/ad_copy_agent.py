@@ -450,6 +450,38 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
                     product_keywords.append('software solutions')
                 if any(kw in desc or kw in name for kw in ['cloud', 'saas', 'hosting']):
                     product_keywords.append('cloud services')
+                if any(kw in desc or kw in name for kw in ['invoice', 'invoicing', 'billing']):
+                    product_keywords.append('invoicing tools')
+                if any(kw in desc or kw in name for kw in ['crm', 'customer relationship', 'client management']):
+                    product_keywords.append('CRM')
+                if any(kw in desc or kw in name for kw in ['project management', 'task', 'collaboration']):
+                    product_keywords.append('project management')
+                if any(kw in desc or kw in name for kw in ['analytics', 'reporting', 'dashboard']):
+                    product_keywords.append('business analytics')
+
+                # Telecom keywords
+                if any(kw in desc or kw in name for kw in ['voice', 'call', 'sms', 'messaging']):
+                    product_keywords.append('voice and SMS')
+                if any(kw in desc or kw in name for kw in ['data', 'internet', 'connectivity', 'broadband']):
+                    product_keywords.append('data and internet')
+                if any(kw in desc or kw in name for kw in ['5g', '4g', 'lte', 'network']):
+                    product_keywords.append('mobile network')
+                if any(kw in desc or kw in name for kw in ['roaming', 'international']):
+                    product_keywords.append('international roaming')
+                if any(kw in desc or kw in name for kw in ['gaming', 'game', 'entertainment']):
+                    product_keywords.append('digital entertainment')
+                if any(kw in desc or kw in name for kw in ['esim', 'sim']):
+                    product_keywords.append('eSIM services')
+
+                # Healthcare/Pharma keywords
+                if any(kw in desc or kw in name for kw in ['medicine', 'pharmaceutical', 'drug', 'medication']):
+                    product_keywords.append('medicines')
+                if any(kw in desc or kw in name for kw in ['health', 'medical', 'healthcare']):
+                    product_keywords.append('healthcare services')
+                if any(kw in desc or kw in name for kw in ['distribution', 'delivery', 'supply chain']):
+                    product_keywords.append('distribution services')
+                if any(kw in desc or kw in name for kw in ['warehouse', 'storage', 'inventory']):
+                    product_keywords.append('warehousing')
 
                 # Service keywords
                 if any(kw in desc or kw in name for kw in ['finance', 'loan', 'credit', 'microfinance']):
