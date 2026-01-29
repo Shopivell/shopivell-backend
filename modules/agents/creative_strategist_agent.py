@@ -151,7 +151,8 @@ Generate detailed Meta Ads audience targeting in this exact JSON format:
     "interest_tags": {{
         "core_interests": ["Primary interests directly related to the business - 8-12 tags"],
         "technology_interests": ["Technology and software related interests - 5-8 tags"],
-        "business_interests": ["Business and professional interests - 5-8 tags"],
+        "business_interests": ["Business and professional B2B interests - 5-8 tags"],
+        "consumer_interests": ["B2C/residential interests - home owners, families, personal users - 5-8 tags"],
         "behavioral_interests": ["Behavioral and mindset interests - 4-6 tags"],
         "complementary_interests": ["Related but broader interests - 4-6 tags"]
     }},
@@ -205,13 +206,20 @@ GUARDRAILS FOR INTEREST TAG CATEGORIES:
 
 - complementary_interests: Include broader related interests that expand reach
   Examples: Industry publications, trade shows, professional associations
+  For B2C: Home improvement, Home security, Property investment, Real estate, Family safety
 
 GUARDRAILS FOR AUDIENCE SEGMENTS:
-- Generate 4-6 distinct audience segments
+- Generate 5-8 distinct audience segments
 - Each segment should represent a real buyer persona
+- IMPORTANT: Always consider BOTH B2B and B2C audiences:
+  - B2B: Corporate decision-makers, business owners, facility managers, etc.
+  - B2C: Individual consumers, home owners, families, property owners, etc.
+- For security/home services: MUST include Home Owners, Property Owners, Residential Customers
+- For financial services: MUST include Individual Consumers, Personal Banking Users
 - Include decision-maker roles (e.g., "Corporate Finance Directors", "IT Security Managers")
-- Include end-user roles (e.g., "Tech-Savvy Consumers", "Small Business Owners")
+- Include end-user/consumer roles (e.g., "Home Owners", "Tech-Savvy Consumers", "Property Owners")
 - Consider the buying journey stage for each segment
+- Don't over-index on corporate - residential/consumer markets are often larger
 
 GUARDRAILS FOR JOB TITLES:
 - Include C-level executives relevant to the industry
