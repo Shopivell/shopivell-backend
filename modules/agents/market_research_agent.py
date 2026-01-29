@@ -41,6 +41,27 @@ except ImportError:
     TAVILY_AVAILABLE = False
     tavily_api_key = None
 
+# Import screenshot and scraping functions from stores module (optional enhancement)
+try:
+    from modules.stores.scraping_service import (
+        capture_homepage_screenshot_sync,
+        analyze_brand_from_screenshot_sync,
+        extract_store_info_from_website,
+        PLAYWRIGHT_AVAILABLE,
+        GEMINI_AVAILABLE
+    )
+    SCREENSHOT_AVAILABLE = PLAYWRIGHT_AVAILABLE
+    STORE_SCRAPING_AVAILABLE = True
+    logger.info(f"[MarketResearchAgent] Screenshot service available: {SCREENSHOT_AVAILABLE}")
+except ImportError as e:
+    SCREENSHOT_AVAILABLE = False
+    GEMINI_AVAILABLE = False
+    STORE_SCRAPING_AVAILABLE = False
+    capture_homepage_screenshot_sync = None
+    analyze_brand_from_screenshot_sync = None
+    extract_store_info_from_website = None
+    logger.warning(f"[MarketResearchAgent] Screenshot service not available: {e}")
+
 # Import OpenRouter adapter (with fallback to ChatOpenAI)
 try:
     from modules.openrouter.langchain_adapter import ChatOpenRouter
