@@ -7,6 +7,10 @@ import os
 import json
 import re
 import asyncio
+import nest_asyncio
+
+# Allow nested event loops (needed when FastAPI's async loop is already running)
+nest_asyncio.apply()
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
