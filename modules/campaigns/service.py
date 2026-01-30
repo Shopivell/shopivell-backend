@@ -172,6 +172,10 @@ class CampaignService:
                 # Create ad sets (will use user assets if available)
                 self._create_ad_sets(campaign, ad_content, asset_ids)
 
+            # Strip large screenshot_base64 from scraped_data before DB commit
+            if campaign.scraped_data and isinstance(campaign.scraped_data, dict):
+                campaign.scraped_data.pop("screenshot_base64", None)
+
             campaign.status = CampaignStatus.READY
             self.db.commit()
             self.db.refresh(campaign)
@@ -260,6 +264,10 @@ class CampaignService:
 
                 # Create ad sets
                 self._create_ad_sets(campaign, ad_content, asset_ids)
+
+            # Strip large screenshot_base64 from scraped_data before DB commit
+            if campaign.scraped_data and isinstance(campaign.scraped_data, dict):
+                campaign.scraped_data.pop("screenshot_base64", None)
 
             campaign.status = CampaignStatus.READY
             self.db.commit()
@@ -622,6 +630,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
             # Capture homepage screenshot for campaign creative reference
             screenshot_url = None
             screenshot_thumbnail_url = None
+            screenshot_base64_data = None
             if SCREENSHOT_AVAILABLE:
                 try:
                     print(f"[Screenshot] Capturing homepage screenshot for campaign...")
@@ -629,6 +638,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
                     if screenshot_result.get("success"):
                         screenshot_url = screenshot_result.get("screenshot_url")  # Cloudinary URL
                         screenshot_thumbnail_url = screenshot_result.get("thumbnail_url")
+                        screenshot_base64_data = screenshot_result.get("screenshot_base64")  # Raw for cropping
                         print(f"[Screenshot] Captured: {screenshot_url}")
                     else:
                         print(f"[Screenshot] Failed: {screenshot_result.get('error')}")
@@ -648,6 +658,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
                 # Homepage screenshot for ad creative reference
                 "screenshot_url": screenshot_url,
                 "screenshot_thumbnail_url": screenshot_thumbnail_url,
+                "screenshot_base64": screenshot_base64_data,
                 # Categorized images
                 "uniform_images": uniform_images,
                 "vehicle_images": vehicle_images,
@@ -1049,193 +1060,47 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                     print(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
                     print(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
-                    # =====================================================================
-                    # IMAGE GENERATION TEMPORARILY DISABLED
-                    # TODO: Re-enable when ready to generate AI images
-                    # =====================================================================
-                    # Step 2: Generate image using Gemini with reference images (only if no user asset)
-                    # if not user_asset_url:
-                    #     brand_name = store_name or business_name
-                    #
-                    #     # Build reference images for Gemini (uniforms, vehicles from Vision AI)
-                    #     reference_images = []
-                    #     for url in uniform_images[:2]:  # Max 2 uniform images
-                    #         reference_images.append({"url": url, "type": "uniform"})
-                    #     for url in vehicle_images[:1]:  # Max 1 vehicle image
-                    #         reference_images.append({"url": url, "type": "vehicle"})
-                    #     for url in equipment_images[:1]:  # Max 1 equipment image
-                    #         reference_images.append({"url": url, "type": "equipment"})
-                    #
-                    #     print(f"[GeminiGenerator] Generating image for ad set: {ad_set.name}")
-                    #     print(f"[GeminiGenerator] Brand: {brand_name}, Colors: {color_theme_to_use}")
-                    #     print(f"[GeminiGenerator] Reference images: logo={bool(logo_url_to_use)}, uniforms={len(uniform_images)}, vehicles={len(vehicle_images)}")
-                    #
-                    #     # Build the image prompt with Brand DNA style guidance
-                    #     style_prompt_section = scraped_data.get("style_prompt", "")
-                    #
-                    #     if agent_image_prompt:
-                    #         image_prompt = agent_image_prompt
-                    #     else:
-                    #         scraped_desc = scraped_data.get("store_description", "") or scraped_data.get("description", "")
-                    #         image_prompt = f"""Professional advertisement for {brand_name}.
-                    # {primary_text or description or scraped_desc or ''}
-                    # Style: Clean composition, commercial photography, high-quality marketing visual.
-                    # The image should reflect the brand identity and be suitable for social media advertising."""
-                    #
-                    #     # Add brand color to prompt if available
-                    #     if color_theme_to_use:
-                    #         image_prompt += f"\nBrand color: {color_theme_to_use} - use as accent color throughout the image."
-                    #
-                    #     # Add Brand DNA style prompt for style-matched generation
-                    #     if style_prompt_section:
-                    #         image_prompt += f"\n\n=== VISUAL STYLE REQUIREMENTS (MUST FOLLOW) ===\n{style_prompt_section}"
-                    #         print(f"[GeminiGenerator] Added Brand DNA style prompt for style-matched generation")
-                    #
-                    #     # Try Gemini first (with reference images)
-                    #     result = None
-                    #     gemini_success = False
-                    #
-                    #     if self.gemini_generator and self.gemini_generator.client:
-                    #         try:
-                    #             gemini_result = loop.run_until_complete(
-                    #                 self.gemini_generator.generate_ad_image(
-                    #                     prompt=image_prompt,
-                    #                     logo_url=logo_url_to_use,
-                    #                     reference_images=reference_images,
-                    #                     output_path=None  # Don't save locally, we'll upload to Cloudinary
-                    #                 )
-                    #             )
-                    #
-                    #             if gemini_result.get("success") and gemini_result.get("image_base64"):
-                    #                 generated_image_base64 = gemini_result["image_base64"]
-                    #                 gemini_success = True
-                    #                 print(f"[GeminiGenerator] SUCCESS - Generated image with {gemini_result.get('reference_images_used', 0)} reference images")
-                    #
-                    #                 # Step 3: Add text overlays using AdImageComposer
-                    #                 try:
-                    #                     import base64 as b64
-                    #                     base_image_bytes = b64.b64decode(generated_image_base64)
-                    #
-                    #                     # Extract bullet points from features or ad_set_data
-                    #                     bullet_points = features[:4] if features else []
-                    #                     if not bullet_points and ad_set_data.get("value_proposition"):
-                    #                         bullet_points = [ad_set_data.get("value_proposition")]
-                    #
-                    #                     # Compose the ad with text overlays
-                    #                     compose_result = self.ad_image_composer.compose_ad_image(
-                    #                         base_image=base_image_bytes,
-                    #                         headline=agent_headline or headline or business_name,
-                    #                         bullet_points=bullet_points,
-                    #                         cta_text=campaign.conversion_button or "Learn More",
-                    #                         logo_url=logo_url_to_use,
-                    #                         brand_color=color_theme_to_use or "#FFD700"
-                    #                     )
-                    #
-                    #                     if compose_result.get("success") and compose_result.get("image_base64"):
-                    #                         generated_image_base64 = compose_result["image_base64"]
-                    #                         print(f"[AdImageComposer] SUCCESS - Added text overlays (headline, {len(bullet_points)} bullets, CTA)")
-                    #                     else:
-                    #                         print(f"[AdImageComposer] Warning - Using base image without overlays: {compose_result.get('error')}")
-                    #                 except Exception as compose_err:
-                    #                     print(f"[AdImageComposer] Warning - Composition failed, using base image: {compose_err}")
-                    #
-                    #                 # Upload to Cloudinary
-                    #                 try:
-                    #                     import cloudinary.uploader
-                    #                     import base64
-                    #                     image_bytes = base64.b64decode(generated_image_base64)
-                    #                     upload_result = cloudinary.uploader.upload(
-                    #                         image_bytes,
-                    #                         folder="shopivell/generated/ads",
-                    #                         resource_type="image"
-                    #                     )
-                    #                     generated_cloudinary_url = upload_result.get("secure_url")
-                    #                     print(f"[GeminiGenerator] Uploaded to Cloudinary: {generated_cloudinary_url}")
-                    #                 except Exception as cloud_err:
-                    #                     print(f"[GeminiGenerator] Cloudinary upload failed: {cloud_err}")
-                    #             else:
-                    #                 print(f"[GeminiGenerator] Failed: {gemini_result.get('error', 'Unknown error')}")
-                    #         except Exception as gemini_err:
-                    #             print(f"[GeminiGenerator] Error: {gemini_err}")
-                    #
-                    #     # Fallback to MediaGenerator if Gemini failed
-                    #     if not gemini_success:
-                    #         print(f"[MediaGenerator] Falling back to MediaGenerator for ad set: {ad_set.name}")
-                    #
-                    #         # Map ad style to media generator style
-                    #         style_map = {
-                    #             AdStyle.MODERN: "professional",
-                    #             AdStyle.VIBRANT: "vibrant",
-                    #             AdStyle.PROFESSIONAL: "professional",
-                    #             AdStyle.ELEGANT: "luxury",
-                    #             AdStyle.BOLD: "bold"
-                    #         }
-                    #         image_style = style_map.get(styles[i % len(styles)], "professional")
-                    #
-                    #         result = loop.run_until_complete(
-                    #             self.media_generator.generate_image(
-                    #                 prompt=image_prompt,
-                    #                 style=image_style,
-                    #                 aspect_ratio="1:1",
-                    #                 upload_to_cloud=False,  # Don't upload yet, compose first
-                    #                 cloudinary_folder="shopivell/generated/ads"
-                    #             )
-                    #         )
-                    #
-                    #         if result.get("image_base64"):
-                    #             generated_image_base64 = result["image_base64"]
-                    #             print(f"[MediaGenerator] Generated base image for ad set: {ad_set.name}, provider: {result.get('provider_used')}")
-                    #
-                    #             # Add text overlays using AdImageComposer
-                    #             try:
-                    #                 import base64 as b64
-                    #                 base_image_bytes = b64.b64decode(generated_image_base64)
-                    #
-                    #                 bullet_points = features[:4] if features else []
-                    #                 if not bullet_points and ad_set_data.get("value_proposition"):
-                    #                     bullet_points = [ad_set_data.get("value_proposition")]
-                    #
-                    #                 compose_result = self.ad_image_composer.compose_ad_image(
-                    #                     base_image=base_image_bytes,
-                    #                     headline=agent_headline or headline or business_name,
-                    #                     bullet_points=bullet_points,
-                    #                     cta_text=campaign.conversion_button or "Learn More",
-                    #                     logo_url=logo_url_to_use,
-                    #                     brand_color=color_theme_to_use or "#FFD700"
-                    #                 )
-                    #
-                    #                 if compose_result.get("success") and compose_result.get("image_base64"):
-                    #                     generated_image_base64 = compose_result["image_base64"]
-                    #                     print(f"[AdImageComposer] SUCCESS - Added text overlays (headline, {len(bullet_points)} bullets, CTA)")
-                    #                 else:
-                    #                     print(f"[AdImageComposer] Warning - Using base image: {compose_result.get('error')}")
-                    #             except Exception as compose_err:
-                    #                 print(f"[AdImageComposer] Warning - Composition failed: {compose_err}")
-                    #
-                    #             # Upload composed image to Cloudinary
-                    #             try:
-                    #                 import cloudinary.uploader
-                    #                 import base64
-                    #                 image_bytes = base64.b64decode(generated_image_base64)
-                    #                 upload_result = cloudinary.uploader.upload(
-                    #                     image_bytes,
-                    #                     folder="shopivell/generated/ads",
-                    #                     resource_type="image"
-                    #                 )
-                    #                 generated_cloudinary_url = upload_result.get("secure_url")
-                    #                 print(f"[MediaGenerator] Uploaded to Cloudinary: {generated_cloudinary_url}")
-                    #             except Exception as cloud_err:
-                    #                 print(f"[MediaGenerator] Cloudinary upload failed: {cloud_err}")
-                    #         else:
-                    #             print(f"[MediaGenerator] Warning: No image generated for ad set: {ad_set.name}")
-                    # else:
-                    #     print(f"[GeminiGenerator] Skipping image generation - using user asset for ad set: {ad_set.name}")
-                    # =====================================================================
-                    # END OF DISABLED IMAGE GENERATION
-                    # =====================================================================
+                    # Step 2: Generate image with cropped screenshot sections
+                    if not user_asset_url and agent_image_prompt:
+                        try:
+                            # Strip text overlay directives from the AI prompt
+                            scene_prompt = self.media_generator._strip_text_overlay_from_prompt(agent_image_prompt)
 
-                    # Log that image generation is disabled
-                    print(f"[CampaignService] Image generation disabled - creating ad set without AI-generated image: {ad_set.name}")
+                            # Get brand colors
+                            brand_colors = scraped_data.get("brand_colors", [])
+                            accent = color_theme_to_use or (brand_colors[0] if brand_colors else "#FFB800")
+
+                            print(f"[MediaGenerator] Generating campaign ad for: {ad_set.name}")
+                            ad_result = loop.run_until_complete(
+                                self.media_generator.generate_campaign_ad(
+                                    store_name=business_name,
+                                    store_description=primary_text or description or "",
+                                    business_type=scraped_data.get("business_identity", {}).get("industry", "business") if isinstance(scraped_data.get("business_identity"), dict) else "business",
+                                    logo_url=logo_url_to_use,
+                                    screenshot_url=scraped_data.get("screenshot_url"),
+                                    screenshot_base64=scraped_data.get("screenshot_base64"),
+                                    color_theme=color_theme_to_use,
+                                    accent_color=accent,
+                                    products_or_services=features,
+                                    key_benefits=ad_set_data.get("key_benefits", features[:3]) if features else None,
+                                    scene_prompt=scene_prompt,
+                                    headline=agent_headline or headline or business_name,
+                                    bullet_points=features[:3] if features else None,
+                                    cta_text=campaign.conversion_button or "Learn More",
+                                    upload_to_cloud=True,
+                                )
+                            )
+
+                            if ad_result.get("success"):
+                                generated_image_base64 = ad_result.get("image_base64")
+                                generated_cloudinary_url = ad_result.get("cloudinary_url")
+                                print(f"[MediaGenerator] SUCCESS - Generated ad: {generated_cloudinary_url or 'base64 only'}")
+                            else:
+                                print(f"[MediaGenerator] Failed: {ad_result.get('error')}")
+                        except Exception as gen_err:
+                            print(f"[MediaGenerator] Error generating campaign ad: {gen_err}")
+                    elif user_asset_url:
+                        print(f"[MediaGenerator] Using user asset for ad set: {ad_set.name}")
 
                 finally:
                     loop.close()

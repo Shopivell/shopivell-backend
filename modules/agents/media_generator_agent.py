@@ -2336,6 +2336,277 @@ STYLE REQUIREMENTS:
             "error": None
         }
 
+    # ------------------------------------------------------------------
+    # Campaign ad generation with screenshot cropping
+    # ------------------------------------------------------------------
+
+    def _download_image_bytes(self, url: str) -> Optional[bytes]:
+        """Download image from URL and return raw bytes."""
+        try:
+            import requests as req
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+            resp = req.get(url, headers=headers, timeout=30)
+            if resp.status_code == 200 and len(resp.content) > 500:
+                return resp.content
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Failed to download image from {url}: {e}")
+        return None
+
+    def _crop_screenshot_sections(self, screenshot_bytes: bytes) -> List[Dict[str, Any]]:
+        """Crop full-page screenshot into focused sections so Gemini can see details."""
+        try:
+            from PIL import Image as PILImage
+            from io import BytesIO
+
+            img = PILImage.open(BytesIO(screenshot_bytes))
+            w, h = img.size
+            sections = []
+
+            # Section 1: Header/Logo area (top ~500px)
+            header_h = min(500, h)
+            header = img.crop((0, 0, w, header_h))
+            buf = BytesIO()
+            header.save(buf, format="PNG")
+            sections.append({"label": "HEADER (logo, navigation, branding)", "bytes": buf.getvalue()})
+
+            # Sections 2-4: Content sections (~1500px each)
+            section_h = 1500
+            y = header_h
+            idx = 2
+            while y < h and idx <= 4:
+                end_y = min(y + section_h, h)
+                section = img.crop((0, y, w, end_y))
+                buf = BytesIO()
+                section.save(buf, format="PNG")
+                sections.append({"label": f"CONTENT SECTION {idx-1} (services, images, assets)", "bytes": buf.getvalue()})
+                y = end_y
+                idx += 1
+
+            logger.info(f"[MediaGenerator] Cropped screenshot ({w}x{h}) into {len(sections)} sections")
+            return sections
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Failed to crop screenshot: {e}")
+            return []
+
+    def _crop_logo_from_screenshot(self, screenshot_bytes: bytes) -> Optional[bytes]:
+        """Crop the top-left corner of the screenshot where the logo typically sits."""
+        try:
+            from PIL import Image as PILImage
+            from io import BytesIO
+
+            img = PILImage.open(BytesIO(screenshot_bytes))
+            w, h = img.size
+            logo_crop = img.crop((0, 0, min(350, w), min(100, h)))
+            buf = BytesIO()
+            logo_crop.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Failed to crop logo from screenshot: {e}")
+            return None
+
+    async def generate_campaign_ad(
+        self,
+        store_name: str,
+        store_description: str = "",
+        business_type: str = "business",
+        logo_url: str = None,
+        screenshot_url: str = None,
+        screenshot_base64: str = None,
+        color_theme: str = None,
+        accent_color: str = None,
+        products_or_services: List[str] = None,
+        key_benefits: List[str] = None,
+        scene_prompt: str = "",
+        headline: str = None,
+        bullet_points: List[str] = None,
+        cta_text: str = "Learn More",
+        upload_to_cloud: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Generate a campaign ad image using cropped screenshot sections.
+
+        This is the production orchestrator that:
+        1. Gets screenshot bytes (from base64 or by downloading URL)
+        2. Crops into focused sections for Gemini
+        3. Resolves logo (URL or cropped from screenshot)
+        4. Generates scene with Gemini using multi-image prompt
+        5. Composes final ad with PIL (headline, bullets, CTA, logo)
+        6. Uploads to Cloudinary
+
+        Args:
+            store_name: Business name
+            store_description: What the business does
+            business_type: Industry type
+            logo_url: URL to company logo (PIL-renderable formats only)
+            screenshot_url: Cloudinary URL to full-page screenshot
+            screenshot_base64: Base64-encoded screenshot (avoids re-download)
+            color_theme: Primary brand color hex
+            accent_color: Accent/CTA color hex
+            products_or_services: List of services for bullet points
+            key_benefits: List of key benefits
+            scene_prompt: Pre-stripped scene prompt from AdCreativeAgent
+            headline: Headline text for the ad
+            bullet_points: Override bullet points (else uses products_or_services)
+            cta_text: CTA button text
+            upload_to_cloud: Upload result to Cloudinary
+
+        Returns:
+            Dict with success, image_base64, cloudinary_url, thumbnail_url, error
+        """
+        import tempfile
+
+        brand_color = accent_color or color_theme or "#FFB800"
+        primary_color = color_theme or "#1A233A"
+
+        # Step 1: Get screenshot bytes
+        screenshot_bytes = None
+        if screenshot_base64:
+            try:
+                screenshot_bytes = base64.b64decode(screenshot_base64)
+                logger.info(f"[MediaGenerator] Using provided screenshot_base64 ({len(screenshot_bytes):,} bytes)")
+            except Exception:
+                pass
+        if not screenshot_bytes and screenshot_url:
+            screenshot_bytes = self._download_image_bytes(screenshot_url)
+            if screenshot_bytes:
+                logger.info(f"[MediaGenerator] Downloaded screenshot from URL ({len(screenshot_bytes):,} bytes)")
+
+        # Step 2: Crop into sections
+        sections = []
+        if screenshot_bytes:
+            sections = self._crop_screenshot_sections(screenshot_bytes)
+
+        # Step 3: Resolve logo
+        pil_formats = ['.png', '.jpg', '.jpeg', '.webp', '.ico', '.gif']
+        has_pil_logo = bool(logo_url and any(logo_url.lower().endswith(ext) for ext in pil_formats))
+        logo_crop_bytes = None
+        logo_temp_path = None
+
+        if not has_pil_logo and screenshot_bytes:
+            logo_crop_bytes = self._crop_logo_from_screenshot(screenshot_bytes)
+            if logo_crop_bytes:
+                has_pil_logo = True
+                logger.info("[MediaGenerator] Using cropped screenshot logo as fallback")
+
+        # Step 4: Generate scene with Gemini using cropped sections
+        scene_b64 = None
+
+        if sections and self.gemini_generator:
+            try:
+                result = await self.gemini_generator.generate_ad_image_with_sections(
+                    prompt=scene_prompt,
+                    screenshot_sections=sections,
+                    company_name=store_name,
+                    primary_color=primary_color,
+                    accent_color=brand_color,
+                    what_they_do=store_description,
+                    has_pil_logo=has_pil_logo,
+                )
+                if result.get("success"):
+                    scene_b64 = result["image_base64"]
+                    logger.info(f"[MediaGenerator] Scene generated with sections via {result.get('model')}")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Section-based generation failed: {e}")
+
+        # Step 4b: Fallback - try with full screenshot as single reference
+        if not scene_b64 and screenshot_url and self.gemini_generator:
+            try:
+                logger.info("[MediaGenerator] Falling back to full screenshot reference...")
+                fallback_result = await self.gemini_generator.generate_ad_image(
+                    prompt=scene_prompt,
+                    reference_images=[{"url": screenshot_url, "type": "screenshot"}],
+                )
+                if fallback_result.get("success"):
+                    scene_b64 = fallback_result["image_base64"]
+                    logger.info("[MediaGenerator] Scene generated with full screenshot fallback")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Full screenshot fallback failed: {e}")
+
+        if not scene_b64:
+            return {
+                "success": False,
+                "image_base64": None,
+                "cloudinary_url": None,
+                "thumbnail_url": None,
+                "error": "Failed to generate scene image"
+            }
+
+        # Step 5: Resolve logo for PIL overlay
+        logo_for_compose = logo_url if (logo_url and any(logo_url.lower().endswith(ext) for ext in pil_formats)) else None
+
+        if not logo_for_compose and logo_crop_bytes:
+            # Save cropped logo to temp file
+            try:
+                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                tmp.write(logo_crop_bytes)
+                tmp.close()
+                logo_temp_path = tmp.name
+                logo_for_compose = logo_temp_path
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Failed to save temp logo: {e}")
+
+        # Step 6: Compose final ad with PIL
+        try:
+            from modules.agents.ad_image_composer import AdImageComposer
+            composer = AdImageComposer()
+            scene_bytes = base64.b64decode(scene_b64)
+
+            # Resolve bullet points
+            bullets = bullet_points or (products_or_services[:3] if products_or_services else key_benefits[:3] if key_benefits else [])
+            bullets = [b if len(b) < 55 else b[:52] + "..." for b in bullets]
+
+            compose_result = composer.compose_modern_ad_image(
+                base_image=scene_bytes,
+                headline=headline or f"Discover {store_name}",
+                bullet_points=bullets,
+                cta_text=cta_text,
+                brand_name=store_name,
+                brand_color=brand_color,
+                logo_url=logo_for_compose,
+            )
+
+            if not compose_result.get("success"):
+                logger.warning(f"[MediaGenerator] Compose failed: {compose_result.get('error')}")
+                # Use raw scene as fallback
+                final_b64 = scene_b64
+            else:
+                final_b64 = compose_result["image_base64"]
+                logger.info("[MediaGenerator] Final ad composed with PIL overlays")
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Compose error: {e}, using raw scene")
+            final_b64 = scene_b64
+        finally:
+            # Clean up temp logo file
+            if logo_temp_path:
+                try:
+                    os.remove(logo_temp_path)
+                except Exception:
+                    pass
+
+        # Step 7: Upload to Cloudinary
+        cloudinary_url = None
+        thumbnail_url = None
+        if upload_to_cloud and final_b64:
+            try:
+                upload_result = self.upload_to_cloudinary(
+                    image_base64=final_b64,
+                    folder="shopivell/generated/campaign_ads",
+                )
+                if upload_result.get("success"):
+                    cloudinary_url = upload_result.get("secure_url")
+                    thumbnail_url = upload_result.get("thumbnail_url")
+                    logger.info(f"[MediaGenerator] Uploaded to Cloudinary: {cloudinary_url}")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Cloudinary upload failed: {e}")
+
+        return {
+            "success": True,
+            "image_base64": final_b64,
+            "cloudinary_url": cloudinary_url,
+            "thumbnail_url": thumbnail_url,
+            "error": None
+        }
+
     def list_industries(self) -> List[str]:
         """List all available industry templates."""
         return list(self.INDUSTRY_TEMPLATES.keys())

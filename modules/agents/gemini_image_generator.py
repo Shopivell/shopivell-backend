@@ -287,6 +287,116 @@ IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
                 "image_base64": None
             }
 
+    async def generate_ad_image_with_sections(
+        self,
+        prompt: str,
+        screenshot_sections: List[Dict[str, Any]],
+        company_name: str = "Company",
+        primary_color: str = "#1A233A",
+        accent_color: str = "#FFB800",
+        what_they_do: str = "",
+        has_pil_logo: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generate ad image using cropped screenshot sections as multi-image references.
+
+        Instead of passing a single full-page screenshot, this method accepts
+        pre-cropped sections (header, content areas) so Gemini can see fine
+        details like logos, uniforms, vehicles, and products.
+
+        Args:
+            prompt: Stripped scene prompt (no text overlay directives)
+            screenshot_sections: List of {"label": str, "bytes": bytes} dicts
+            company_name: Business name
+            primary_color: Brand primary color hex
+            accent_color: Brand accent color hex
+            what_they_do: Business description
+            has_pil_logo: If True, instruct Gemini not to add standalone logos
+
+        Returns:
+            Dict with 'success', 'image_base64', 'model', 'error'
+        """
+        if not GEMINI_AVAILABLE or not self.client:
+            return {"success": False, "image_base64": None, "error": "Gemini not available"}
+
+        # Build enhanced prompt (ported from test script generate_scene)
+        enhanced = f"""I am attaching CROPPED SECTIONS of {company_name}'s website homepage so you can see the details clearly.
+
+{company_name} does: {what_they_do}
+
+YOUR TASK: Generate a professional advertising image for {company_name}.
+
+Study each attached image carefully. Use any useful assets you find - uniforms, vehicles, equipment, products, colors, branding - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+
+"""
+        if has_pil_logo:
+            enhanced += "DO NOT add any standalone logo graphic or company name text overlay to the image. However, if vehicles, uniforms, or equipment from the screenshot already have branding on them, keep that branding as it appears. The real logo will be added separately.\n"
+        else:
+            enhanced += "Include the company logo as it appears on the screenshot. Copy it exactly.\n"
+
+        enhanced += f"""
+Match the website's color scheme: background {primary_color}, accents {accent_color}.
+
+SCENE TO GENERATE:
+{prompt}
+
+RULES:
+- NO text overlays, NO headlines, NO buttons, NO bullet text
+- ONLY generate the photorealistic scene
+"""
+
+        # Build content parts: text prompt + cropped section images
+        content_parts = [enhanced]
+        for section in screenshot_sections:
+            try:
+                part = types.Part.from_bytes(data=section["bytes"], mime_type="image/png")
+                content_parts.append(part)
+            except Exception as e:
+                logger.warning(f"[GeminiImageGenerator] Failed to create part for section {section.get('label')}: {e}")
+
+        logger.info(f"[GeminiImageGenerator] Passing {len(screenshot_sections)} cropped sections to Gemini")
+
+        # Try models in order
+        models = ["gemini-3-pro-image-preview", "gemini-2.0-flash-exp-image-generation"]
+
+        for model_name in models:
+            try:
+                logger.info(f"[GeminiImageGenerator] Trying {model_name} with sections...")
+                resp = self.client.models.generate_content(
+                    model=model_name,
+                    contents=content_parts,
+                    config=types.GenerateContentConfig(
+                        response_modalities=['IMAGE', 'TEXT'],
+                        temperature=0.8,
+                    )
+                )
+
+                img_data = None
+                resp_text = None
+                for part in resp.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        resp_text = part.text
+                    elif hasattr(part, 'inline_data') and part.inline_data:
+                        img_data = part.inline_data.data
+
+                if img_data:
+                    b64 = base64.b64encode(img_data).decode() if isinstance(img_data, bytes) else img_data
+                    raw = base64.b64decode(b64) if isinstance(img_data, str) else img_data
+                    logger.info(f"[GeminiImageGenerator] {model_name} generated {len(raw):,} bytes")
+                    return {
+                        "success": True,
+                        "image_base64": b64,
+                        "model": model_name,
+                        "error": None
+                    }
+                else:
+                    logger.warning(f"[GeminiImageGenerator] No image from {model_name}")
+
+            except Exception as e:
+                logger.warning(f"[GeminiImageGenerator] {model_name} failed: {str(e)[:200]}")
+
+        return {"success": False, "image_base64": None, "model": None, "error": "All models failed"}
+
     async def generate_ad_image_with_profile(
         self,
         prompt: str,
