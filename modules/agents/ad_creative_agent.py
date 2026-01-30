@@ -4,7 +4,7 @@ This agent takes creative angles and generates:
 1. Detailed image prompts for AI image generation
 2. Ad angles (descriptions) for the ad content
 
-Uses Claude (Anthropic API) for best quality prompts, with OpenAI fallback.
+Uses OpenRouter to route to Claude or GPT-4o.
 """
 
 import os
@@ -13,14 +13,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 
-# Import Anthropic (Claude) - primary choice for prompt generation
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-
-# Import OpenAI for fallback
+# Import OpenAI client (used for OpenRouter's OpenAI-compatible API)
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
@@ -34,28 +27,28 @@ logger = logging.getLogger(__name__)
 class AdCreativeAgent:
     """AI Agent for generating ad creatives with high-quality structured image prompts.
 
-    Uses Claude (Anthropic) for best quality prompts, with OpenAI (GPT-4o) fallback.
+    Uses OpenRouter to route to Claude (primary) or GPT-4o (fallback).
     """
 
     def __init__(self):
-        # Initialize Claude client if available
-        self.anthropic_client = None
-        self.openai_client = None
+        self.client = None
+        self.primary_model = "anthropic/claude-sonnet-4"
+        self.fallback_model = "openai/gpt-4o"
 
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        openai_key = os.getenv("OPENAI_API_KEY")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
-        if ANTHROPIC_AVAILABLE and anthropic_key:
-            self.anthropic_client = anthropic.Anthropic(api_key=anthropic_key)
-            logger.info("[AdCreativeAgent] Initialized with Claude (Anthropic API)")
-
-        if OPENAI_AVAILABLE and openai_key:
-            self.openai_client = OpenAI(api_key=openai_key)
-            if not self.anthropic_client:
-                logger.info("[AdCreativeAgent] Initialized with OpenAI (fallback)")
-
-        if not self.anthropic_client and not self.openai_client:
-            logger.warning("[AdCreativeAgent] No API clients available!")
+        if OPENAI_AVAILABLE and openrouter_key:
+            self.client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=openrouter_key,
+                default_headers={
+                    "HTTP-Referer": "https://shopivell.com",
+                    "X-Title": "Shopivell Ad Generator",
+                }
+            )
+            logger.info("[AdCreativeAgent] Initialized with OpenRouter")
+        else:
+            logger.warning("[AdCreativeAgent] No OpenRouter API key or OpenAI package not available!")
 
         # STRUCTURED prompt template that generates high-quality image prompts
         # This format produces prompts like a professional creative director would write
@@ -232,19 +225,13 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         # Build prompt from template
         prompt_text = self.prompt_template.format(**creative_data)
 
-        # Try Claude first (best for creative prompts)
-        if self.anthropic_client:
-            try:
-                return await self._generate_with_claude(prompt_text, product_name, visual_direction, angle_value_proposition)
-            except Exception as e:
-                print(f"[AdCreativeAgent] Claude error: {e}")
-
-        # Fall back to OpenAI
-        if self.openai_client:
-            try:
-                return await self._generate_with_openai(prompt_text, product_name, visual_direction, angle_value_proposition)
-            except Exception as e:
-                print(f"[AdCreativeAgent] OpenAI error: {e}")
+        # Try primary model (Claude) via OpenRouter, then fallback (GPT-4o)
+        if self.client:
+            for model in [self.primary_model, self.fallback_model]:
+                try:
+                    return await self._generate_with_openrouter(prompt_text, model, product_name, visual_direction, angle_value_proposition)
+                except Exception as e:
+                    print(f"[AdCreativeAgent] {model} error: {e}")
 
         # Return fallback values if all fails
         return {
@@ -253,54 +240,13 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
             "headline": f"Discover {product_name}"
         }
 
-    async def _generate_with_claude(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
-        """Generate creative using Claude (Anthropic API)"""
-        model_name = "claude-sonnet-4-20250514"
-        max_tokens = 800  # Reduced from 1500 to save costs
+    async def _generate_with_openrouter(self, prompt_text: str, model_name: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
+        """Generate creative using OpenRouter (routes to Claude, GPT-4o, etc.)"""
+        max_tokens = 800
 
-        print(f"[AdCreativeAgent] Using Claude ({model_name}, max_tokens={max_tokens})...")
+        print(f"[AdCreativeAgent] Using OpenRouter ({model_name}, max_tokens={max_tokens})...")
 
-        message = self.anthropic_client.messages.create(
-            model=model_name,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "user", "content": prompt_text}
-            ]
-        )
-
-        response_text = message.content[0].text
-
-        # Log token usage
-        input_tokens = message.usage.input_tokens
-        output_tokens = message.usage.output_tokens
-        print(f"[AdCreativeAgent] Claude tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
-
-        # Parse response
-        result = self._parse_creative_response(response_text)
-
-        # Ensure valid values
-        if not result["image_prompt"]:
-            result["image_prompt"] = self._generate_fallback_prompt(product_name, visual_direction)
-        if not result["ad_angle"]:
-            result["ad_angle"] = f"Discover {product_name} - {angle_value_proposition or 'Your perfect choice'}"
-        if not result["headline"]:
-            result["headline"] = f"Discover {product_name}"
-
-        # Add AI model info to result
-        result["ai_model"] = model_name
-        result["tokens_used"] = input_tokens + output_tokens
-
-        print(f"[AdCreativeAgent] Claude generation successful (used {input_tokens + output_tokens} tokens)")
-        return result
-
-    async def _generate_with_openai(self, prompt_text: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
-        """Generate creative using OpenAI (GPT-4o) as fallback"""
-        model_name = "gpt-4o"
-        max_tokens = 800  # Reduced from 1500 to save costs
-
-        print(f"[AdCreativeAgent] Using OpenAI ({model_name}, max_tokens={max_tokens}) as fallback...")
-
-        response = self.openai_client.chat.completions.create(
+        response = self.client.chat.completions.create(
             model=model_name,
             messages=[
                 {"role": "user", "content": prompt_text}
@@ -312,9 +258,9 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         response_text = response.choices[0].message.content
 
         # Log token usage
-        input_tokens = response.usage.prompt_tokens
-        output_tokens = response.usage.completion_tokens
-        print(f"[AdCreativeAgent] OpenAI tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
+        print(f"[AdCreativeAgent] {model_name} tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
 
         # Parse response
         result = self._parse_creative_response(response_text)
@@ -331,7 +277,7 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         result["ai_model"] = model_name
         result["tokens_used"] = input_tokens + output_tokens
 
-        print(f"[AdCreativeAgent] OpenAI generation successful (used {input_tokens + output_tokens} tokens)")
+        print(f"[AdCreativeAgent] {model_name} generation successful (used {input_tokens + output_tokens} tokens)")
         return result
 
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
