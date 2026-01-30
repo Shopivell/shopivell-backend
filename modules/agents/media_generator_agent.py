@@ -2516,36 +2516,33 @@ STYLE REQUIREMENTS:
     ) -> Dict[str, Any]:
         """
         Generate an ad image using Pollinations.ai (free, no API key required).
-        Uses FLUX model under the hood via JSON POST API.
+        Uses FLUX model under the hood via GET URL API.
         """
         try:
-            # Build a concise single-line prompt for better results
+            import urllib.parse
+
+            # Build a concise SINGLE-LINE prompt (no newlines - they break the URL)
             logo_note = "no logos" if has_pil_logo else "subtle branding"
-            short_desc = what_they_do[:150] if what_they_do else store_name
-            scene_text = prompt[:400] if prompt else f"professional ad for {store_name}"
+            short_desc = (what_they_do[:120] if what_they_do else store_name).replace("\n", " ")
+            scene_text = (prompt[:300] if prompt else f"professional ad for {store_name}").replace("\n", " ")
+
             poll_prompt = (
-                f"Professional advertising photo for {store_name}. "
-                f"{short_desc}. SCENE: {scene_text}. "
-                f"STYLE: photorealistic commercial photography, colors {primary_color} and {accent_color}, "
-                f"professional ad look, NO text overlays, NO headlines, NO watermarks, {logo_note}, "
-                f"clean composition with space at bottom for text overlay, square format"
+                f"Professional advertising photo for {store_name}, "
+                f"{short_desc}, SCENE: {scene_text}, "
+                f"photorealistic commercial photography, colors {primary_color} and {accent_color}, "
+                f"professional ad, NO text overlays, NO watermarks, {logo_note}, "
+                f"clean composition with space at bottom"
             )
+            # Remove any remaining newlines and limit length
+            poll_prompt = poll_prompt.replace("\n", " ").replace("\r", " ")[:800]
 
-            # Use JSON POST API (more reliable than GET with long prompts)
-            api_url = "https://image.pollinations.ai/"
-            payload = {
-                "prompt": poll_prompt[:1000],
-                "width": 1024,
-                "height": 1024,
-                "model": "flux",
-                "nologo": True,
-                "seed": -1,
-            }
+            encoded = urllib.parse.quote(poll_prompt)
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&model=flux"
 
-            logger.info("[MediaGenerator] Calling Pollinations.ai POST API (free FLUX)...")
+            logger.info(f"[MediaGenerator] Calling Pollinations.ai (free FLUX), prompt length: {len(poll_prompt)}")
 
             async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(api_url, json=payload, follow_redirects=True)
+                response = await client.get(url, follow_redirects=True)
                 response.raise_for_status()
 
                 content_type = response.headers.get("content-type", "")
@@ -2553,25 +2550,9 @@ STYLE REQUIREMENTS:
                     image_b64 = base64.b64encode(response.content).decode()
                     logger.info(f"[MediaGenerator] Pollinations.ai generated image ({len(image_b64):,} chars base64)")
                     return {"success": True, "image_base64": image_b64, "model": "pollinations-flux", "error": None}
-
-                # If POST didn't return image, try GET with short prompt
-                logger.info("[MediaGenerator] POST returned non-image, trying GET fallback...")
-                import urllib.parse
-                short_prompt = f"Professional advertising photo for {store_name}, {scene_text[:200]}, photorealistic, no text"
-                encoded = urllib.parse.quote(short_prompt.replace("\n", " ")[:500])
-                get_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&model=flux"
-
-                response = await client.get(get_url, follow_redirects=True)
-                response.raise_for_status()
-
-                content_type = response.headers.get("content-type", "")
-                if content_type.startswith("image") or len(response.content) > 10000:
-                    image_b64 = base64.b64encode(response.content).decode()
-                    logger.info(f"[MediaGenerator] Pollinations.ai GET generated image ({len(image_b64):,} chars base64)")
-                    return {"success": True, "image_base64": image_b64, "model": "pollinations-flux", "error": None}
-
-                logger.warning(f"[MediaGenerator] Pollinations.ai returned non-image: {content_type}")
-                return {"success": False, "image_base64": None, "error": "Non-image response"}
+                else:
+                    logger.warning(f"[MediaGenerator] Pollinations.ai returned non-image: {content_type}, {len(response.content)} bytes")
+                    return {"success": False, "image_base64": None, "error": "Non-image response"}
 
         except Exception as e:
             logger.warning(f"[MediaGenerator] Pollinations.ai failed: {e}")
