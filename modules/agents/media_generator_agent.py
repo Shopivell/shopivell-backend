@@ -2592,7 +2592,7 @@ STYLE REQUIREMENTS:
                     image_base64=final_b64,
                     folder="shopivell/generated/campaign_ads",
                 )
-                if upload_result.get("success"):
+                if upload_result.get("uploaded"):
                     cloudinary_url = upload_result.get("secure_url")
                     thumbnail_url = upload_result.get("thumbnail_url")
                     logger.info(f"[MediaGenerator] Uploaded to Cloudinary: {cloudinary_url}")
