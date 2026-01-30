@@ -10,6 +10,7 @@ Creates complete ad creatives like professional marketing images.
 Style inspired by professional security/business ads.
 """
 
+import os
 import io
 import base64
 import logging
@@ -33,6 +34,7 @@ class AdImageComposer:
     """
 
     def __init__(self):
+        self.font_headline = None
         self.font_bold_large = None
         self.font_bold = None
         self.font_regular = None
@@ -49,6 +51,7 @@ class AdImageComposer:
 
         for path in font_paths_bold:
             try:
+                self.font_headline = ImageFont.truetype(path, 60)
                 self.font_bold_large = ImageFont.truetype(path, 52)
                 self.font_bold = ImageFont.truetype(path, 36)
                 self.font_regular = ImageFont.truetype(path, 28)
@@ -58,6 +61,7 @@ class AdImageComposer:
                 continue
 
         logger.warning("[AdImageComposer] Using default font")
+        self.font_headline = ImageFont.load_default()
         self.font_bold_large = ImageFont.load_default()
         self.font_bold = ImageFont.load_default()
         self.font_regular = ImageFont.load_default()
@@ -81,8 +85,13 @@ class AdImageComposer:
         return (0, 0, 0) if luminance > 0.5 else (255, 255, 255)
 
     def _fetch_logo(self, logo_url: str) -> Optional[Image.Image]:
-        """Fetch and return logo image"""
+        """Fetch and return logo image from URL or local file path"""
         try:
+            # Handle local file paths
+            if os.path.isfile(logo_url):
+                logo = Image.open(logo_url)
+                return logo.convert("RGBA")
+
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'image/*,*/*',
@@ -94,6 +103,193 @@ class AdImageComposer:
         except Exception as e:
             logger.warning(f"[AdImageComposer] Failed to fetch logo: {e}")
         return None
+
+    def _wrap_text(self, text: str, font: ImageFont, max_width: int, draw: ImageDraw) -> List[str]:
+        """Word-wrap text to fit within max_width pixels."""
+        words = text.split()
+        lines = []
+        current_line = ""
+
+        for word in words:
+            test_line = f"{current_line} {word}".strip()
+            text_w, _ = self._get_text_size(draw, test_line, font)
+            if text_w <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+
+        if current_line:
+            lines.append(current_line)
+
+        return lines if lines else [text]
+
+    def compose_modern_ad_image(
+        self,
+        base_image: bytes,
+        headline: str,
+        bullet_points: List[str] = None,
+        cta_text: str = "Learn More",
+        brand_name: str = None,
+        brand_color: str = "#FFD700",
+        logo_url: str = None
+    ) -> Dict[str, Any]:
+        """
+        Compose a modern full-bleed ad image with gradient overlay.
+
+        Layout: full-bleed scene background, dark gradient overlay at top,
+        brand name top-left, large headline, bullet points, rounded CTA button
+        at bottom-right.
+
+        Args:
+            base_image: Base image bytes (from AI generation)
+            headline: Main headline text (large, bold, white)
+            bullet_points: List of benefit bullet points
+            cta_text: Call-to-action button text
+            brand_name: Company/brand name (top-left)
+            brand_color: Hex color for brand name and CTA button
+            logo_url: URL to company logo (placed top-left)
+
+        Returns:
+            Dict with 'success', 'image_base64', 'error'
+        """
+        try:
+            # Load base image as RGBA, full-bleed background
+            img = Image.open(io.BytesIO(base_image)).convert("RGBA")
+            width, height = img.size
+
+            # Create overlay layer
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+
+            # Determine brand color
+            brand_rgb = self._hex_to_rgb(brand_color) if brand_color else DEFAULT_BRAND_COLOR
+            cta_text_color = self._get_contrast_color(brand_rgb)
+
+            # === DARK GRADIENT OVERLAY ===
+            # rgba(0,0,0,180) at top fading to rgba(0,0,0,0) at ~55% height
+            gradient_end = int(height * 0.55)
+            for y in range(gradient_end):
+                alpha = int(180 * (1.0 - y / gradient_end))
+                draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha))
+
+            # Track text cursor position
+            text_x = int(width * 0.05)  # 5% left margin
+            current_y = int(height * 0.05)  # 5% top margin
+
+            # === OPTIONAL LOGO (top-left) ===
+            logo_right_edge = text_x
+            if logo_url:
+                logo = self._fetch_logo(logo_url)
+                if logo:
+                    # Scale logo proportionally to image size
+                    max_logo_h = max(int(height * 0.08), 55)   # ~8% of image height
+                    max_logo_w = max(int(width * 0.20), 150)    # ~20% of image width
+                    ratio = min(max_logo_w / logo.width, max_logo_h / logo.height)
+                    # Don't upscale small logos beyond 2x
+                    ratio = min(ratio, 2.0)
+                    new_w = int(logo.width * ratio)
+                    new_h = int(logo.height * ratio)
+                    logo = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    overlay.paste(logo, (text_x, current_y), logo)
+                    logo_right_edge = text_x + new_w + 15
+
+            # === BRAND NAME (small uppercase, top-left, brand color) ===
+            if brand_name:
+                brand_name_upper = brand_name.upper()
+                brand_x = logo_right_edge
+                draw.text(
+                    (brand_x, current_y + 15),
+                    brand_name_upper,
+                    font=self.font_regular,
+                    fill=brand_rgb + (255,)
+                )
+
+            current_y = int(height * 0.15)  # Headline starts at ~15% from top
+
+            # === HEADLINE (large bold white, left-aligned, word-wrapped) ===
+            max_text_width = int(width * 0.85)
+            headline_lines = self._wrap_text(headline.upper(), self.font_headline, max_text_width, draw)
+
+            for line in headline_lines:
+                draw.text(
+                    (text_x, current_y),
+                    line,
+                    font=self.font_headline,
+                    fill=(255, 255, 255, 255)
+                )
+                _, line_h = self._get_text_size(draw, line, self.font_headline)
+                current_y += line_h + 10
+
+            current_y += 20  # Spacing after headline
+
+            # === BULLET POINTS (white text with bullet prefix) ===
+            if bullet_points:
+                for point in bullet_points[:5]:  # Max 5 bullets
+                    bullet_text = f"\u2022  {point}"
+                    draw.text(
+                        (text_x + 10, current_y),
+                        bullet_text,
+                        font=self.font_regular,
+                        fill=(255, 255, 255, 230)
+                    )
+                    _, point_h = self._get_text_size(draw, bullet_text, self.font_regular)
+                    current_y += point_h + 12
+
+            # === CTA BUTTON (rounded rectangle, bottom-right, brand color fill) ===
+            cta_upper = cta_text.upper()
+            cta_w, cta_h = self._get_text_size(draw, cta_upper, self.font_bold)
+            btn_padding_x = 40
+            btn_padding_y = 18
+            btn_width = cta_w + btn_padding_x * 2
+            btn_height = cta_h + btn_padding_y * 2
+
+            btn_x = width - btn_width - int(width * 0.05)
+            btn_y = height - btn_height - int(height * 0.08)
+
+            draw.rounded_rectangle(
+                [(btn_x, btn_y), (btn_x + btn_width, btn_y + btn_height)],
+                radius=btn_height // 2,
+                fill=brand_rgb + (255,)
+            )
+
+            # Center CTA text inside button
+            cta_text_x = btn_x + (btn_width - cta_w) // 2
+            cta_text_y = btn_y + (btn_height - cta_h) // 2
+            draw.text(
+                (cta_text_x, cta_text_y),
+                cta_upper,
+                font=self.font_bold,
+                fill=cta_text_color
+            )
+
+            # Alpha-composite overlay onto base, return base64 PNG
+            result = Image.alpha_composite(img, overlay)
+            result_rgb = result.convert("RGB")
+
+            output_buffer = io.BytesIO()
+            result_rgb.save(output_buffer, format="PNG", quality=95)
+            output_buffer.seek(0)
+
+            image_base64 = base64.b64encode(output_buffer.read()).decode('utf-8')
+
+            logger.info("[AdImageComposer] Successfully composed modern ad image")
+            return {
+                "success": True,
+                "image_base64": image_base64,
+                "error": None
+            }
+
+        except Exception as e:
+            logger.error(f"[AdImageComposer] Error composing modern image: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "image_base64": None,
+                "error": str(e)
+            }
 
     def compose_ad_image(
         self,
@@ -276,4 +472,29 @@ def compose_ad_from_base64(
         cta_text=cta_text,
         logo_url=logo_url,
         brand_color=brand_color
+    )
+
+
+def compose_modern_ad_from_base64(
+    base_image_b64: str,
+    headline: str,
+    bullet_points: List[str] = None,
+    cta_text: str = "Learn More",
+    brand_name: str = None,
+    brand_color: str = "#FFD700",
+    logo_url: str = None
+) -> Dict[str, Any]:
+    """
+    Convenience function to compose a modern full-bleed ad from base64 image.
+    """
+    composer = AdImageComposer()
+    image_bytes = base64.b64decode(base_image_b64)
+    return composer.compose_modern_ad_image(
+        base_image=image_bytes,
+        headline=headline,
+        bullet_points=bullet_points,
+        cta_text=cta_text,
+        brand_name=brand_name,
+        brand_color=brand_color,
+        logo_url=logo_url
     )

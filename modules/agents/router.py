@@ -21,6 +21,7 @@ from .creative_angles_agent import CreativeAnglesAgent
 from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
 from .media_generator_agent import MediaGeneratorAgent
+from modules.stores.models import Store
 from .vision_compliance_service import vision_compliance_service
 from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType
 from .scheduler import rules_scheduler, start_rules_scheduler, stop_rules_scheduler
@@ -1199,6 +1200,78 @@ async def generate_luxury_assets(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate luxury assets: {str(e)}"
+        )
+
+
+# ============ Store Ad Generation ============
+
+@agents_router.post("/generate-store-ad")
+async def generate_store_ad(
+    store_id: uuid.UUID,
+    headline: Optional[str] = None,
+    bullet_points: Optional[List[str]] = None,
+    cta_text: str = "Learn More",
+    aspect_ratio: str = "1:1",
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a modern ad image for a store using its profile data.
+
+    Uses the store's screenshot as a Gemini reference image to generate a
+    photorealistic scene background, then composites text overlays (headline,
+    bullet points, CTA button) using PIL for pixel-perfect rendering.
+
+    Args:
+        store_id: UUID of the store to generate ad for
+        headline: Optional headline text (auto-generated from store data if not provided)
+        bullet_points: Optional bullet point list (auto-generated if not provided)
+        cta_text: Call-to-action button text (default: "Learn More")
+        aspect_ratio: Image aspect ratio (default: "1:1")
+
+    Returns:
+        Generated ad image with base64 data and Cloudinary URLs
+    """
+    # Look up the store
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Store with id {store_id} not found"
+        )
+
+    try:
+        agent = MediaGeneratorAgent()
+        result = await agent.generate_store_ad(
+            store_name=store.store_name,
+            store_description=store.store_description or "",
+            business_type=store.business_type or "general",
+            logo_url=store.logo_url,
+            screenshot_url=store.screenshot_url,
+            color_theme=store.color_theme,
+            products_or_services=store.products_or_services,
+            headline=headline,
+            bullet_points=bullet_points,
+            cta_text=cta_text,
+            aspect_ratio=aspect_ratio,
+            upload_to_cloud=True
+        )
+
+        return {
+            "success": result.get("success", False),
+            "store_id": str(store_id),
+            "store_name": store.store_name,
+            "image_base64": result.get("image_base64"),
+            "cloudinary_url": result.get("cloudinary_url"),
+            "thumbnail_url": result.get("thumbnail_url"),
+            "metadata": result.get("metadata"),
+            "error": result.get("error")
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate store ad: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate store ad: {str(e)}"
         )
 
 
