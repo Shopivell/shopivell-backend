@@ -411,6 +411,10 @@ class MediaGeneratorAgent:
         self.available_image_providers = self._get_available_image_providers()
         self.available_video_providers = self._get_available_video_providers()
 
+        # Initialize Gemini image generator for campaign ad generation
+        from modules.agents.gemini_image_generator import GeminiImageGenerator
+        self.gemini_generator = GeminiImageGenerator(api_key=self.gemini_api_key)
+
         logger.info(f"[MediaGeneratorAgent] Initialized with image providers: {self.available_image_providers}")
         logger.info(f"[MediaGeneratorAgent] Initialized with video providers: {self.available_video_providers}")
 
