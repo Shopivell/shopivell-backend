@@ -1035,7 +1035,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                 asyncio.set_event_loop(loop)
                 try:
                     # Generate creative with agent
-                    print(f"[AdCreativeAgent] Generating creative for ad set: {ad_set.name}")
+                    logger.info(f"[AdCreativeAgent] Generating creative for ad set: {ad_set.name}")
                     creative = loop.run_until_complete(
                         self.ad_creative_agent.generate_ad_creative(
                             product_name=business_name,
@@ -1057,8 +1057,8 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                     agent_ad_angle = creative.get("ad_angle", "")
                     agent_headline = creative.get("headline", "")
 
-                    print(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
-                    print(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
+                    logger.info(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
+                    logger.info(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
                     # Step 2: Generate image with cropped screenshot sections
                     if not user_asset_url and agent_image_prompt:
@@ -1070,7 +1070,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                             brand_colors = scraped_data.get("brand_colors", [])
                             accent = color_theme_to_use or (brand_colors[0] if brand_colors else "#FFB800")
 
-                            print(f"[MediaGenerator] Generating campaign ad for: {ad_set.name}")
+                            logger.info(f"[MediaGenerator] Generating campaign ad for: {ad_set.name}")
                             ad_result = loop.run_until_complete(
                                 self.media_generator.generate_campaign_ad(
                                     store_name=business_name,
@@ -1094,19 +1094,23 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                             if ad_result.get("success"):
                                 generated_image_base64 = ad_result.get("image_base64")
                                 generated_cloudinary_url = ad_result.get("cloudinary_url")
-                                print(f"[MediaGenerator] SUCCESS - Generated ad: {generated_cloudinary_url or 'base64 only'}")
+                                logger.info(f"[MediaGenerator] SUCCESS - Generated ad: {generated_cloudinary_url or 'base64 only'}")
                             else:
-                                print(f"[MediaGenerator] Failed: {ad_result.get('error')}")
+                                logger.error(f"[MediaGenerator] Failed: {ad_result.get('error')}")
                         except Exception as gen_err:
-                            print(f"[MediaGenerator] Error generating campaign ad: {gen_err}")
+                            import traceback
+                            logger.error(f"[MediaGenerator] Error generating campaign ad: {gen_err}")
+                            logger.error(f"[MediaGenerator] Traceback: {traceback.format_exc()}")
                     elif user_asset_url:
-                        print(f"[MediaGenerator] Using user asset for ad set: {ad_set.name}")
+                        logger.info(f"[MediaGenerator] Using user asset for ad set: {ad_set.name}")
 
                 finally:
                     loop.close()
 
             except Exception as e:
-                print(f"[AdCreativeAgent/AdGenerator] Error for ad set {i+1}: {e}")
+                import traceback
+                logger.error(f"[AdCreativeAgent/AdGenerator] Error for ad set {i+1}: {e}")
+                logger.error(f"[AdCreativeAgent/AdGenerator] Traceback: {traceback.format_exc()}")
 
             # Create ad content with generated image and agent's ad angle
             # Use user asset URL if available, otherwise use Cloudinary URL from AI generation
