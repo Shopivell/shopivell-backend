@@ -2676,16 +2676,30 @@ STYLE REQUIREMENTS:
         if screenshot_bytes:
             sections = self._crop_screenshot_sections(screenshot_bytes)
 
-        # Step 3: Resolve logo
+        # Step 3: Resolve logo (skip tiny favicons < 64px, use cropped screenshot instead)
         pil_formats = ['.png', '.jpg', '.jpeg', '.webp', '.ico', '.gif']
         has_pil_logo = bool(logo_url and any(logo_url.lower().endswith(ext) for ext in pil_formats))
         logo_crop_bytes = None
         logo_temp_path = None
 
+        # Check if the logo URL is a tiny favicon - if so, prefer cropped screenshot
+        if has_pil_logo and logo_url:
+            try:
+                logo_bytes_check = self._download_image_bytes(logo_url)
+                if logo_bytes_check:
+                    from PIL import Image as PILCheck
+                    check_img = PILCheck.open(BytesIO(logo_bytes_check))
+                    if check_img.width < 64 or check_img.height < 64:
+                        logger.info(f"[MediaGenerator] Logo too small ({check_img.width}x{check_img.height}), will use cropped screenshot instead")
+                        has_pil_logo = False  # Force fallback to cropped screenshot
+            except Exception:
+                pass
+
         if not has_pil_logo and screenshot_bytes:
             logo_crop_bytes = self._crop_logo_from_screenshot(screenshot_bytes)
             if logo_crop_bytes:
                 has_pil_logo = True
+                logo_url = None  # Clear the tiny favicon URL so composer uses the temp file
                 logger.info("[MediaGenerator] Using cropped screenshot logo as fallback")
 
         # Step 4: Generate scene with Gemini using cropped sections

@@ -34,33 +34,46 @@ class AdImageComposer:
     """
 
     def __init__(self):
-        self.font_headline = None
-        self.font_bold_large = None
-        self.font_bold = None
-        self.font_regular = None
-        self._load_fonts()
+        self._font_path = None
+        self._find_font_path()
 
-    def _load_fonts(self):
-        """Load fonts for text rendering"""
-        font_paths_bold = [
+    def _find_font_path(self):
+        """Find a usable font file path"""
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/System/Library/Fonts/Helvetica.ttc",
         ]
-
-        for path in font_paths_bold:
+        for path in font_paths:
             try:
-                self.font_headline = ImageFont.truetype(path, 60)
-                self.font_bold_large = ImageFont.truetype(path, 52)
-                self.font_bold = ImageFont.truetype(path, 36)
-                self.font_regular = ImageFont.truetype(path, 28)
-                logger.info(f"[AdImageComposer] Loaded font: {path}")
+                ImageFont.truetype(path, 20)
+                self._font_path = path
+                logger.info(f"[AdImageComposer] Found font: {path}")
                 return
             except (IOError, OSError):
                 continue
+        logger.warning("[AdImageComposer] No TrueType font found, will use default")
 
-        logger.warning("[AdImageComposer] Using default font")
+    def _load_fonts_for_size(self, width: int, height: int):
+        """Load fonts scaled proportionally to image dimensions."""
+        # Scale fonts to image size (percentages of image height)
+        size = min(width, height)
+        headline_px = max(int(size * 0.07), 48)     # ~7% of image = 72px on 1024
+        bold_large_px = max(int(size * 0.06), 40)    # ~6% = 61px on 1024
+        bold_px = max(int(size * 0.045), 32)          # ~4.5% = 46px on 1024
+        regular_px = max(int(size * 0.035), 26)       # ~3.5% = 36px on 1024
+
+        if self._font_path:
+            try:
+                self.font_headline = ImageFont.truetype(self._font_path, headline_px)
+                self.font_bold_large = ImageFont.truetype(self._font_path, bold_large_px)
+                self.font_bold = ImageFont.truetype(self._font_path, bold_px)
+                self.font_regular = ImageFont.truetype(self._font_path, regular_px)
+                return
+            except (IOError, OSError):
+                pass
+
         self.font_headline = ImageFont.load_default()
         self.font_bold_large = ImageFont.load_default()
         self.font_bold = ImageFont.load_default()
@@ -159,6 +172,9 @@ class AdImageComposer:
             img = Image.open(io.BytesIO(base_image)).convert("RGBA")
             width, height = img.size
 
+            # Load fonts scaled to image dimensions
+            self._load_fonts_for_size(width, height)
+
             # Create overlay layer
             overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
@@ -183,12 +199,18 @@ class AdImageComposer:
             if logo_url:
                 logo = self._fetch_logo(logo_url)
                 if logo:
+                    # Skip tiny favicons (< 64px) - they look terrible when scaled up
+                    if logo.width < 64 and logo.height < 64:
+                        logger.warning(f"[AdImageComposer] Logo too small ({logo.width}x{logo.height}), skipping")
+                        logo = None
+
+                if logo:
                     # Scale logo proportionally to image size
-                    max_logo_h = max(int(height * 0.08), 55)   # ~8% of image height
-                    max_logo_w = max(int(width * 0.20), 150)    # ~20% of image width
+                    max_logo_h = max(int(height * 0.10), 70)    # ~10% of image height
+                    max_logo_w = max(int(width * 0.22), 170)     # ~22% of image width
                     ratio = min(max_logo_w / logo.width, max_logo_h / logo.height)
-                    # Don't upscale small logos beyond 2x
-                    ratio = min(ratio, 2.0)
+                    # Don't upscale small logos beyond 1.5x to avoid blurriness
+                    ratio = min(ratio, 1.5)
                     new_w = int(logo.width * ratio)
                     new_h = int(logo.height * ratio)
                     logo = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
@@ -322,6 +344,9 @@ class AdImageComposer:
             # Load base image
             img = Image.open(io.BytesIO(base_image)).convert("RGBA")
             width, height = img.size
+
+            # Load fonts scaled to image dimensions
+            self._load_fonts_for_size(width, height)
 
             # Create overlay layer
             overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
