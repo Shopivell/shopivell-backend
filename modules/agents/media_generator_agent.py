@@ -2408,7 +2408,7 @@ STYLE REQUIREMENTS:
             logger.warning(f"[MediaGenerator] Failed to crop logo from screenshot: {e}")
             return None
 
-    async def _generate_with_dalle(
+    async def _generate_with_openrouter_image(
         self,
         prompt: str,
         store_name: str = "Company",
@@ -2416,13 +2416,49 @@ STYLE REQUIREMENTS:
         primary_color: str = "#1A233A",
         accent_color: str = "#FFB800",
         has_pil_logo: bool = False,
+        screenshot_sections: List[Dict] = None,
     ) -> Dict[str, Any]:
         """
         Generate an ad image using Nano Banana Pro (Gemini 3 Pro) via OpenRouter
-        chat completions with modalities=["image","text"], then DALL-E 3 direct fallback.
+        chat completions with modalities=["image","text"].
+
+        Passes cropped screenshot sections as multimodal image inputs so the model
+        can see the actual website (logos, uniforms, vehicles, colors, products)
+        and reproduce them accurately - same approach as the direct Gemini pipeline.
         """
-        # Build a detailed prompt
-        image_prompt = f"""Professional advertising image for {store_name}.
+        openrouter_key = self.openrouter_api_key
+        if not openrouter_key:
+            return {"success": False, "image_base64": None, "error": "No OpenRouter API key"}
+
+        # Build the same enhanced prompt used by generate_ad_image_with_sections()
+        if screenshot_sections:
+            enhanced_prompt = f"""I am attaching CROPPED SECTIONS of {store_name}'s website homepage so you can see the details clearly.
+
+{store_name} does: {what_they_do}
+
+YOUR TASK: Generate a professional advertising image for {store_name}.
+
+Study each attached image carefully. Use any useful assets you find - uniforms, vehicles, equipment, products, colors, branding - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+
+"""
+            if has_pil_logo:
+                enhanced_prompt += "DO NOT add any standalone logo graphic or company name text overlay to the image. However, if vehicles, uniforms, or equipment from the screenshot already have branding on them, keep that branding as it appears. The real logo will be added separately.\n"
+            else:
+                enhanced_prompt += "Include the company logo as it appears on the screenshot. Copy it exactly.\n"
+
+            enhanced_prompt += f"""
+Match the website's color scheme: background {primary_color}, accents {accent_color}.
+
+SCENE TO GENERATE:
+{prompt}
+
+RULES:
+- NO text overlays, NO headlines, NO buttons, NO bullet text
+- ONLY generate the photorealistic scene
+"""
+        else:
+            # Text-only fallback prompt (no reference images available)
+            enhanced_prompt = f"""Professional advertising image for {store_name}.
 {store_name} does: {what_they_do}
 
 SCENE: {prompt}
@@ -2437,83 +2473,83 @@ STYLE REQUIREMENTS:
 - 1:1 square aspect ratio
 """
 
-        # Try 1: Nano Banana Pro via OpenRouter chat completions
-        openrouter_key = self.openrouter_api_key
-        if openrouter_key:
-            for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.5-flash-image-preview"]:
+        # Build multimodal content: text + section images as base64 data URLs
+        content_parts = []
+
+        # Add each screenshot section as an image part
+        if screenshot_sections:
+            for section in screenshot_sections:
                 try:
-                    logger.info(f"[MediaGenerator] Calling {model_id} via OpenRouter chat completions...")
-                    async with httpx.AsyncClient(timeout=120.0) as client:
-                        response = await client.post(
-                            "https://openrouter.ai/api/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {openrouter_key}",
-                                "Content-Type": "application/json",
-                                "HTTP-Referer": "https://shopivell.com",
-                                "X-Title": "Shopivell Ad Generator",
-                            },
-                            json={
-                                "model": model_id,
-                                "messages": [
-                                    {"role": "user", "content": image_prompt[:4000]}
-                                ],
-                                "modalities": ["image", "text"],
-                            },
-                        )
-                        response.raise_for_status()
-                        result = response.json()
-
-                    # Extract image from response
-                    if result.get("choices"):
-                        message = result["choices"][0].get("message", {})
-
-                        # Check message.images[] (OpenRouter format)
-                        images = message.get("images", [])
-                        if images:
-                            image_url = images[0].get("image_url", {}).get("url", "")
-                            if image_url.startswith("data:image/"):
-                                image_b64 = image_url.split(",", 1)[1]
-                                logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image ({len(image_b64):,} chars)")
-                                return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
-
-                        # Check content parts (alternative format)
-                        content = message.get("content", "")
-                        if isinstance(content, list):
-                            for part in content:
-                                if isinstance(part, dict) and part.get("type") == "image_url":
-                                    img_url = part.get("image_url", {}).get("url", "")
-                                    if img_url.startswith("data:image/"):
-                                        image_b64 = img_url.split(",", 1)[1]
-                                        logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image (content parts)")
-                                        return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
-
-                    logger.warning(f"[MediaGenerator] {model_id} via OpenRouter returned no image")
+                    section_b64 = base64.b64encode(section["bytes"]).decode()
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{section_b64}"
+                        }
+                    })
                 except Exception as e:
-                    logger.warning(f"[MediaGenerator] {model_id} via OpenRouter failed: {str(e)[:200]}")
+                    logger.warning(f"[MediaGenerator] Failed to encode section {section.get('label')}: {e}")
 
-        # Try 2: DALL-E 3 via direct OpenAI API
-        openai_key = self.openai_api_key
-        if openai_key:
+        # Add the text prompt last (after images, so model sees images first)
+        content_parts.append({
+            "type": "text",
+            "text": enhanced_prompt[:4000]
+        })
+
+        logger.info(f"[MediaGenerator] OpenRouter request: {len(content_parts)} parts ({len(content_parts)-1} images + text)")
+
+        for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.5-flash-image-preview"]:
             try:
-                from openai import OpenAI
-                client = OpenAI(api_key=openai_key)
-                logger.info("[MediaGenerator] Calling DALL-E 3 via direct OpenAI...")
-                response = client.images.generate(
-                    model="dall-e-3",
-                    prompt=image_prompt[:4000],
-                    size="1024x1024",
-                    quality="standard",
-                    n=1,
-                    response_format="b64_json",
-                )
-                if response.data and response.data[0].b64_json:
-                    image_b64 = response.data[0].b64_json
-                    logger.info(f"[MediaGenerator] DALL-E 3 generated image ({len(image_b64):,} chars base64)")
-                    return {"success": True, "image_base64": image_b64, "model": "dall-e-3", "error": None}
-            except Exception as e:
-                logger.warning(f"[MediaGenerator] DALL-E via OpenAI failed: {e}")
+                logger.info(f"[MediaGenerator] Calling {model_id} via OpenRouter with {len(screenshot_sections or [])} sections...")
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openrouter_key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://shopivell.com",
+                            "X-Title": "Shopivell Ad Generator",
+                        },
+                        json={
+                            "model": model_id,
+                            "messages": [
+                                {"role": "user", "content": content_parts}
+                            ],
+                            "modalities": ["image", "text"],
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
 
-        return {"success": False, "image_base64": None, "error": "All OpenRouter/DALL-E providers failed"}
+                # Extract image from response
+                if result.get("choices"):
+                    message = result["choices"][0].get("message", {})
+
+                    # Check message.images[] (OpenRouter image generation format)
+                    images = message.get("images", [])
+                    if images:
+                        image_url = images[0].get("image_url", {}).get("url", "")
+                        if image_url.startswith("data:image/"):
+                            image_b64 = image_url.split(",", 1)[1]
+                            logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image ({len(image_b64):,} chars)")
+                            return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
+
+                    # Check content parts (alternative response format)
+                    msg_content = message.get("content", "")
+                    if isinstance(msg_content, list):
+                        for part in msg_content:
+                            if isinstance(part, dict) and part.get("type") == "image_url":
+                                img_url = part.get("image_url", {}).get("url", "")
+                                if img_url.startswith("data:image/"):
+                                    image_b64 = img_url.split(",", 1)[1]
+                                    logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image (content parts)")
+                                    return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
+
+                logger.warning(f"[MediaGenerator] {model_id} via OpenRouter returned no image")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] {model_id} via OpenRouter failed: {str(e)[:200]}")
+
+        return {"success": False, "image_base64": None, "error": "All OpenRouter image models failed"}
 
     async def _generate_with_pollinations(
         self,
@@ -2686,23 +2722,24 @@ STYLE REQUIREMENTS:
             except Exception as e:
                 logger.warning(f"[MediaGenerator] Full screenshot fallback failed: {e}")
 
-        # Step 4c: OpenRouter Nano Banana Pro / DALL-E fallback when direct Gemini quota is exhausted
+        # Step 4c: OpenRouter Nano Banana Pro with same screenshot sections (bypasses direct Gemini quota)
         if not scene_b64:
             try:
-                logger.info("[MediaGenerator] Trying OpenRouter Nano Banana Pro / DALL-E fallback...")
-                dalle_result = await self._generate_with_dalle(
+                logger.info("[MediaGenerator] Trying Nano Banana Pro via OpenRouter (with screenshot sections)...")
+                or_result = await self._generate_with_openrouter_image(
                     prompt=scene_prompt,
                     store_name=store_name,
                     what_they_do=store_description,
                     primary_color=primary_color,
                     accent_color=brand_color,
                     has_pil_logo=has_pil_logo,
+                    screenshot_sections=sections,
                 )
-                if dalle_result.get("success"):
-                    scene_b64 = dalle_result["image_base64"]
-                    logger.info(f"[MediaGenerator] Scene generated with DALL-E fallback")
+                if or_result.get("success"):
+                    scene_b64 = or_result["image_base64"]
+                    logger.info(f"[MediaGenerator] Scene generated via OpenRouter {or_result.get('model')}")
             except Exception as e:
-                logger.warning(f"[MediaGenerator] DALL-E fallback failed: {e}")
+                logger.warning(f"[MediaGenerator] OpenRouter image fallback failed: {e}")
 
         # Step 4d: Free Pollinations.ai fallback (FLUX model, no API key needed)
         if not scene_b64:
