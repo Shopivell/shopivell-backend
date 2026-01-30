@@ -2418,19 +2418,11 @@ STYLE REQUIREMENTS:
         has_pil_logo: bool = False,
     ) -> Dict[str, Any]:
         """
-        Generate an ad image using DALL-E 3 via OpenRouter as fallback.
-
-        DALL-E cannot use reference images, so we build a detailed text-only prompt.
+        Generate an ad image using Nano Banana Pro (Gemini 3 Pro) via OpenRouter
+        chat completions with modalities=["image","text"], then DALL-E 3 direct fallback.
         """
-        openrouter_key = self.openrouter_api_key
-        if not openrouter_key:
-            return {"success": False, "image_base64": None, "error": "No OpenRouter API key"}
-
-        try:
-            from openai import OpenAI
-
-            # Build a detailed prompt since DALL-E can't see reference images
-            dalle_prompt = f"""Professional advertising image for {store_name}.
+        # Build a detailed prompt
+        image_prompt = f"""Professional advertising image for {store_name}.
 {store_name} does: {what_they_do}
 
 SCENE: {prompt}
@@ -2445,65 +2437,83 @@ STYLE REQUIREMENTS:
 - 1:1 square aspect ratio
 """
 
-            # Try direct OpenAI API first (DALL-E requires native images endpoint)
-            openai_key = self.openai_api_key
-            if openai_key:
+        # Try 1: Nano Banana Pro via OpenRouter chat completions
+        openrouter_key = self.openrouter_api_key
+        if openrouter_key:
+            for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.5-flash-image-preview"]:
                 try:
-                    client = OpenAI(api_key=openai_key)
-                    logger.info("[MediaGenerator] Calling DALL-E 3 via OpenAI...")
-                    response = client.images.generate(
-                        model="dall-e-3",
-                        prompt=dalle_prompt[:4000],
-                        size="1024x1024",
-                        quality="standard",
-                        n=1,
-                        response_format="b64_json",
-                    )
-                    if response.data and response.data[0].b64_json:
-                        image_b64 = response.data[0].b64_json
-                        logger.info(f"[MediaGenerator] DALL-E 3 generated image ({len(image_b64):,} chars base64)")
-                        return {"success": True, "image_base64": image_b64, "model": "dall-e-3", "error": None}
+                    logger.info(f"[MediaGenerator] Calling {model_id} via OpenRouter chat completions...")
+                    async with httpx.AsyncClient(timeout=120.0) as client:
+                        response = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {openrouter_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://shopivell.com",
+                                "X-Title": "Shopivell Ad Generator",
+                            },
+                            json={
+                                "model": model_id,
+                                "messages": [
+                                    {"role": "user", "content": image_prompt[:4000]}
+                                ],
+                                "modalities": ["image", "text"],
+                            },
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+
+                    # Extract image from response
+                    if result.get("choices"):
+                        message = result["choices"][0].get("message", {})
+
+                        # Check message.images[] (OpenRouter format)
+                        images = message.get("images", [])
+                        if images:
+                            image_url = images[0].get("image_url", {}).get("url", "")
+                            if image_url.startswith("data:image/"):
+                                image_b64 = image_url.split(",", 1)[1]
+                                logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image ({len(image_b64):,} chars)")
+                                return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
+
+                        # Check content parts (alternative format)
+                        content = message.get("content", "")
+                        if isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and part.get("type") == "image_url":
+                                    img_url = part.get("image_url", {}).get("url", "")
+                                    if img_url.startswith("data:image/"):
+                                        image_b64 = img_url.split(",", 1)[1]
+                                        logger.info(f"[MediaGenerator] {model_id} via OpenRouter generated image (content parts)")
+                                        return {"success": True, "image_base64": image_b64, "model": model_id, "error": None}
+
+                    logger.warning(f"[MediaGenerator] {model_id} via OpenRouter returned no image")
                 except Exception as e:
-                    logger.warning(f"[MediaGenerator] DALL-E via OpenAI failed: {e}")
+                    logger.warning(f"[MediaGenerator] {model_id} via OpenRouter failed: {str(e)[:200]}")
 
-            # Try OpenRouter with image-capable models (gpt-image-1)
-            if openrouter_key:
-                try:
-                    client = OpenAI(
-                        base_url="https://openrouter.ai/api/v1",
-                        api_key=openrouter_key,
-                        default_headers={
-                            "HTTP-Referer": "https://shopivell.com",
-                            "X-Title": "Shopivell Ad Generator",
-                        }
-                    )
-                    logger.info("[MediaGenerator] Calling gpt-image-1 via OpenRouter...")
-                    response = client.images.generate(
-                        model="openai/gpt-image-1",
-                        prompt=dalle_prompt[:4000],
-                        size="1024x1024",
-                        n=1,
-                    )
-                    if response.data:
-                        img_data = response.data[0]
-                        image_b64 = getattr(img_data, 'b64_json', None)
-                        if not image_b64 and hasattr(img_data, 'url') and img_data.url:
-                            # Download the image from URL
-                            import requests as req
-                            resp = req.get(img_data.url, timeout=30)
-                            resp.raise_for_status()
-                            image_b64 = base64.b64encode(resp.content).decode()
-                        if image_b64:
-                            logger.info(f"[MediaGenerator] gpt-image-1 via OpenRouter generated image")
-                            return {"success": True, "image_base64": image_b64, "model": "openai/gpt-image-1", "error": None}
-                except Exception as e:
-                    logger.warning(f"[MediaGenerator] OpenRouter image gen failed: {e}")
+        # Try 2: DALL-E 3 via direct OpenAI API
+        openai_key = self.openai_api_key
+        if openai_key:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=openai_key)
+                logger.info("[MediaGenerator] Calling DALL-E 3 via direct OpenAI...")
+                response = client.images.generate(
+                    model="dall-e-3",
+                    prompt=image_prompt[:4000],
+                    size="1024x1024",
+                    quality="standard",
+                    n=1,
+                    response_format="b64_json",
+                )
+                if response.data and response.data[0].b64_json:
+                    image_b64 = response.data[0].b64_json
+                    logger.info(f"[MediaGenerator] DALL-E 3 generated image ({len(image_b64):,} chars base64)")
+                    return {"success": True, "image_base64": image_b64, "model": "dall-e-3", "error": None}
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] DALL-E via OpenAI failed: {e}")
 
-            return {"success": False, "image_base64": None, "error": "All DALL-E providers failed"}
-
-        except Exception as e:
-            logger.warning(f"[MediaGenerator] DALL-E generation failed: {e}")
-            return {"success": False, "image_base64": None, "error": str(e)}
+        return {"success": False, "image_base64": None, "error": "All OpenRouter/DALL-E providers failed"}
 
     async def _generate_with_pollinations(
         self,
@@ -2676,10 +2686,10 @@ STYLE REQUIREMENTS:
             except Exception as e:
                 logger.warning(f"[MediaGenerator] Full screenshot fallback failed: {e}")
 
-        # Step 4c: DALL-E fallback via OpenAI when Gemini quota is exhausted
+        # Step 4c: OpenRouter Nano Banana Pro / DALL-E fallback when direct Gemini quota is exhausted
         if not scene_b64:
             try:
-                logger.info("[MediaGenerator] Trying DALL-E fallback...")
+                logger.info("[MediaGenerator] Trying OpenRouter Nano Banana Pro / DALL-E fallback...")
                 dalle_result = await self._generate_with_dalle(
                     prompt=scene_prompt,
                     store_name=store_name,
