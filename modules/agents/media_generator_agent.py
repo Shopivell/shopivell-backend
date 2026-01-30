@@ -2505,6 +2505,54 @@ STYLE REQUIREMENTS:
             logger.warning(f"[MediaGenerator] DALL-E generation failed: {e}")
             return {"success": False, "image_base64": None, "error": str(e)}
 
+    async def _generate_with_pollinations(
+        self,
+        prompt: str,
+        store_name: str = "Company",
+        what_they_do: str = "",
+        primary_color: str = "#1A233A",
+        accent_color: str = "#FFB800",
+        has_pil_logo: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generate an ad image using Pollinations.ai (free, no API key required).
+        Uses FLUX model under the hood.
+        """
+        try:
+            import urllib.parse
+
+            poll_prompt = f"""Professional advertising photograph for {store_name}.
+{store_name}: {what_they_do}
+
+SCENE: {prompt}
+
+STYLE: Photorealistic commercial photography, color scheme {primary_color} and {accent_color},
+professional advertising look, NO text, NO headlines, NO buttons, NO watermarks,
+{"NO logos" if has_pil_logo else "subtle company branding"},
+clean composition with space for text overlay at bottom, square format."""
+
+            encoded = urllib.parse.quote(poll_prompt[:1500])
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&model=flux"
+
+            logger.info("[MediaGenerator] Calling Pollinations.ai (free FLUX)...")
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+
+                content_type = response.headers.get("content-type", "")
+                if content_type.startswith("image") or len(response.content) > 10000:
+                    image_b64 = base64.b64encode(response.content).decode()
+                    logger.info(f"[MediaGenerator] Pollinations.ai generated image ({len(image_b64):,} chars base64)")
+                    return {"success": True, "image_base64": image_b64, "model": "pollinations-flux", "error": None}
+                else:
+                    logger.warning(f"[MediaGenerator] Pollinations.ai returned non-image: {content_type}")
+                    return {"success": False, "image_base64": None, "error": "Non-image response"}
+
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Pollinations.ai failed: {e}")
+            return {"success": False, "image_base64": None, "error": str(e)}
+
     async def generate_campaign_ad(
         self,
         store_name: str,
@@ -2623,10 +2671,10 @@ STYLE REQUIREMENTS:
             except Exception as e:
                 logger.warning(f"[MediaGenerator] Full screenshot fallback failed: {e}")
 
-        # Step 4c: DALL-E fallback via OpenRouter when Gemini quota is exhausted
+        # Step 4c: DALL-E fallback via OpenAI when Gemini quota is exhausted
         if not scene_b64:
             try:
-                logger.info("[MediaGenerator] Trying DALL-E fallback via OpenRouter...")
+                logger.info("[MediaGenerator] Trying DALL-E fallback...")
                 dalle_result = await self._generate_with_dalle(
                     prompt=scene_prompt,
                     store_name=store_name,
@@ -2640,6 +2688,24 @@ STYLE REQUIREMENTS:
                     logger.info(f"[MediaGenerator] Scene generated with DALL-E fallback")
             except Exception as e:
                 logger.warning(f"[MediaGenerator] DALL-E fallback failed: {e}")
+
+        # Step 4d: Free Pollinations.ai fallback (FLUX model, no API key needed)
+        if not scene_b64:
+            try:
+                logger.info("[MediaGenerator] Trying Pollinations.ai free fallback...")
+                poll_result = await self._generate_with_pollinations(
+                    prompt=scene_prompt,
+                    store_name=store_name,
+                    what_they_do=store_description,
+                    primary_color=primary_color,
+                    accent_color=brand_color,
+                    has_pil_logo=has_pil_logo,
+                )
+                if poll_result.get("success"):
+                    scene_b64 = poll_result["image_base64"]
+                    logger.info("[MediaGenerator] Scene generated with Pollinations.ai free fallback")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Pollinations.ai fallback failed: {e}")
 
         if not scene_b64:
             return {
