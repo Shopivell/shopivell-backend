@@ -212,9 +212,13 @@ IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
                         enhanced_prompt += f"""
 - EQUIPMENT REFERENCE #{equipment_count}: Use the provided equipment image as reference for any security/business equipment shown.
 """
+                    elif img_type == 'screenshot' or img_type == 'scene':
+                        enhanced_prompt += """
+- WEBSITE REFERENCE: This is a screenshot of the company's website. Use anything useful from it as reference - any images, colors, vehicles, uniforms, equipment, products, or any other visual assets. Copy them as closely as possible. Match the color scheme and overall aesthetic.
+"""
                     else:
-                        enhanced_prompt += f"""
-- SCENE REFERENCE: Use this image as visual style reference for the overall scene composition.
+                        enhanced_prompt += """
+- REFERENCE IMAGE: Use this image as a direct visual reference. Copy the visual elements, style, and assets shown in it.
 """
                     logger.info(f"[GeminiImageGenerator] Added {img_type} reference: {img_url}")
 

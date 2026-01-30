@@ -1,11 +1,12 @@
 # media_generator_agent.py - AI Agent for Image and Video Generation
 """
 Multi-provider media generation agent supporting:
-- Images: Gemini 3 Pro (direct API), Imagen 3, DALL-E 3, Stability AI, Replicate (Flux)
+- Images: Gemini (multiple models with fallback), Imagen 4, DALL-E 3, Stability AI, Replicate (Flux)
 - Videos: Google Veo 2, Replicate (Stable Video Diffusion), Runway ML, Luma AI
 
 Primary Providers:
-- IMAGE: Gemini 3 Pro (gemini-3-pro-preview via direct Gemini API) - Best quality with native text
+- IMAGE: Gemini (gemini-2.0-flash-exp-image-generation → gemini-2.5-flash-image → gemini-3-pro-image-preview)
+- IMAGE FALLBACK: Imagen 4 (imagen-4.0-generate-001)
 - VIDEO: Veo 2 (veo-2.0-generate-001) - Up to 8-second clips with audio
 """
 
@@ -869,13 +870,20 @@ class MediaGeneratorAgent:
 
             raise Exception("Replicate prediction timed out")
 
+    # Gemini image-generation models in priority order (verified available)
+    GEMINI_IMAGE_MODELS = [
+        "gemini-3-pro-image-preview",              # Pro image preview - Primary
+        "gemini-2.0-flash-exp-image-generation",   # Flash image gen fallback
+        "gemini-2.5-flash-image",                  # Flash image variant fallback
+    ]
+
     async def _generate_gemini_pro_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
-        """Generate image using Gemini 3 Pro via direct Gemini API.
+        """Generate image using Gemini via direct Gemini API with model fallback.
 
         This is the PRIMARY image provider:
         - Best quality for ad images with text
         - Native text rendering in images
-        - Model: gemini-3-pro-preview (direct API)
+        - Tries multiple Gemini image models in priority order
         """
         if not self.gemini_api_key:
             raise ValueError("Gemini API key not configured")
@@ -900,52 +908,52 @@ Requirements:
 - Premium, sophisticated aesthetic
 - Photorealistic, 8K quality"""
 
-            logger.info("[MediaGeneratorAgent] Generating with Gemini 3 Pro via direct API (gemini-3-pro-preview)...")
+            # Try each Gemini image model in priority order
+            last_error = None
+            for model_name in self.GEMINI_IMAGE_MODELS:
+                try:
+                    logger.info(f"[MediaGeneratorAgent] Generating with Gemini model: {model_name}...")
 
-            # Generate content with image output
-            response = client.models.generate_content(
-                model="gemini-3-pro-preview",
-                contents=enhanced_prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE", "TEXT"],
-                    temperature=0.7
-                )
-            )
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=enhanced_prompt,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE", "TEXT"],
+                            temperature=0.7
+                        )
+                    )
 
-            # Process response to extract image
-            if response and response.candidates:
-                for candidate in response.candidates:
-                    if candidate.content and candidate.content.parts:
-                        for part in candidate.content.parts:
-                            # Check for inline_data (image bytes)
-                            if hasattr(part, 'inline_data') and part.inline_data:
-                                image_data = part.inline_data
-                                if hasattr(image_data, 'data') and image_data.data:
-                                    # Data is already base64 encoded or raw bytes
-                                    if isinstance(image_data.data, bytes):
-                                        image_base64 = base64.b64encode(image_data.data).decode("utf-8")
-                                    else:
-                                        image_base64 = image_data.data
-                                    logger.info("[MediaGeneratorAgent] Gemini 3 Pro generation successful via direct API")
-                                    return {
-                                        "image_base64": image_base64,
-                                        "model": "gemini-3-pro-preview",
-                                        "supports_text": True
-                                    }
+                    # Process response to extract image
+                    if response and response.candidates:
+                        for candidate in response.candidates:
+                            if candidate.content and candidate.content.parts:
+                                for part in candidate.content.parts:
+                                    if hasattr(part, 'inline_data') and part.inline_data:
+                                        image_data = part.inline_data
+                                        if hasattr(image_data, 'data') and image_data.data:
+                                            if isinstance(image_data.data, bytes):
+                                                image_base64 = base64.b64encode(image_data.data).decode("utf-8")
+                                            else:
+                                                image_base64 = image_data.data
+                                            logger.info(f"[MediaGeneratorAgent] Gemini generation successful with {model_name}")
+                                            return {
+                                                "image_base64": image_base64,
+                                                "model": model_name,
+                                                "supports_text": True
+                                            }
 
-            # If no image in structured response, check for text with image instructions
-            logger.warning("[MediaGeneratorAgent] No image found in Gemini response, trying alternate parsing...")
+                    logger.warning(f"[MediaGeneratorAgent] No image in response from {model_name}, trying next...")
+                    last_error = f"No image generated by {model_name}"
 
-            # Log response for debugging
-            if response:
-                logger.info(f"[MediaGeneratorAgent] Response type: {type(response)}")
-                if hasattr(response, 'text'):
-                    logger.info(f"[MediaGeneratorAgent] Response text preview: {response.text[:200] if response.text else 'None'}")
+                except Exception as model_err:
+                    last_error = str(model_err)
+                    logger.warning(f"[MediaGeneratorAgent] {model_name} failed: {last_error[:150]}, trying next...")
+                    continue
 
-            raise Exception("No image generated by Gemini 3 Pro")
+            raise Exception(f"All Gemini image models failed. Last error: {last_error}")
 
         except Exception as e:
-            raise Exception(f"Gemini 3 Pro image generation failed: {str(e)}")
+            raise Exception(f"Gemini image generation failed: {str(e)}")
 
     async def _generate_imagen_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate image using Google Imagen 3 (fallback provider)"""
@@ -969,32 +977,47 @@ Requirements:
             }
             mapped_ar = ar_map.get(aspect_ratio, "1:1")
 
-            logger.info(f"[MediaGeneratorAgent] Generating with Imagen 3, aspect ratio: {mapped_ar}")
+            # Imagen models in priority order (verified available)
+            imagen_models = [
+                "imagen-4.0-generate-001",
+                "imagen-4.0-fast-generate-001",
+                "imagen-4.0-ultra-generate-001",
+            ]
 
-            # Use Imagen 3 for high-quality image generation
-            response = client.models.generate_images(
-                model="imagen-3.0-generate-002",
-                prompt=prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio=mapped_ar,
-                    safety_filter_level="BLOCK_MEDIUM_AND_ABOVE"
-                )
-            )
+            last_error = None
+            for imagen_model in imagen_models:
+                try:
+                    logger.info(f"[MediaGeneratorAgent] Generating with {imagen_model}, aspect ratio: {mapped_ar}")
 
-            if response.generated_images:
-                image = response.generated_images[0]
-                image_base64 = base64.b64encode(image.image.image_bytes).decode("utf-8")
-                logger.info("[MediaGeneratorAgent] Imagen 3 generation successful")
-                return {
-                    "image_base64": image_base64,
-                    "model": "imagen-3.0-generate-002"
-                }
+                    response = client.models.generate_images(
+                        model=imagen_model,
+                        prompt=prompt,
+                        config=types.GenerateImagesConfig(
+                            number_of_images=1,
+                            aspect_ratio=mapped_ar,
+                            safety_filter_level="BLOCK_MEDIUM_AND_ABOVE"
+                        )
+                    )
 
-            raise Exception("No image generated by Imagen 3")
+                    if response.generated_images:
+                        image = response.generated_images[0]
+                        image_base64 = base64.b64encode(image.image.image_bytes).decode("utf-8")
+                        logger.info(f"[MediaGeneratorAgent] {imagen_model} generation successful")
+                        return {
+                            "image_base64": image_base64,
+                            "model": imagen_model
+                        }
+
+                    last_error = f"No image generated by {imagen_model}"
+                except Exception as model_err:
+                    last_error = str(model_err)
+                    logger.warning(f"[MediaGeneratorAgent] {imagen_model} failed: {last_error[:150]}")
+                    continue
+
+            raise Exception(f"All Imagen models failed. Last error: {last_error}")
 
         except Exception as e:
-            raise Exception(f"Imagen 3 image generation failed: {str(e)}")
+            raise Exception(f"Imagen image generation failed: {str(e)}")
 
     def _generate_placeholder_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate a placeholder image when all providers fail"""
@@ -1851,6 +1874,467 @@ STYLE REQUIREMENTS:
             style="professional",
             aspect_ratio=aspect_ratio
         )
+
+    # ==================== STORE AD GENERATION ====================
+
+    def _strip_text_overlay_from_prompt(self, prompt: str) -> str:
+        """
+        Remove text-overlay directives from an AdCreativeAgent-generated prompt.
+
+        AdCreativeAgent embeds TEXT OVERLAY, BULLET POINTS, and CTA BUTTON
+        instructions for image generators that render text natively.
+        Since generate_store_ad uses AdImageComposer (PIL) for text rendering,
+        we strip those directives so Gemini generates only the scene/background.
+        """
+        import re
+
+        # Remove "TEXT OVERLAY: ..." sentences (headline banner instructions)
+        cleaned = re.sub(r"TEXT OVERLAY:\s*[^.]*\.?\s*", "", prompt)
+
+        # Remove bullet-point overlay instructions
+        # e.g. "On the left side of the image, display 3 bullet points in white text: • ... • ... • ..."
+        cleaned = re.sub(
+            r"On the left side of the image,?\s*display\s+\d*\s*bullet\s+points?[^.]*\.\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove CTA button instructions
+        # e.g. "Include a blue #0066CC colored button on the right side with white text reading: 'GET STARTED'."
+        cleaned = re.sub(
+            r"Include\s+a\s+[\w\s#]+colored\s+button[^.]*\.\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove LOGO placement instructions (logo comes from screenshot reference)
+        cleaned = re.sub(
+            r"LOGO:\s*[^.]*\.\s*", "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove "Ensure all text overlays are crisp..." trailing sentences
+        cleaned = re.sub(
+            r"Ensure\s+all\s+text\s+(overlays?\s+)?[^.]*\.\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove "Subject positioned center-right" (PIL composer handles layout)
+        cleaned = re.sub(
+            r"Subject\s+positioned\s+center-right\.?\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Collapse multiple spaces / leading whitespace
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+        # Append instruction telling Gemini to produce a clean scene only
+        cleaned += (
+            " Do NOT include any headlines, paragraph text, bullet text, buttons, "
+            "or text overlays of any kind in the generated image. "
+            "Generate ONLY the photorealistic scene and background."
+        )
+
+        return cleaned
+
+    def _build_scene_prompt(
+        self,
+        business_type: str,
+        products_or_services: List[str] = None,
+        store_description: str = None,
+        has_screenshot: bool = False
+    ) -> str:
+        """
+        Build a photorealistic scene prompt for background generation.
+        Maps business_type to INDUSTRY_TEMPLATES where possible.
+        When a screenshot reference is provided, instructs Gemini to extract
+        and incorporate brand assets (logos, icons, color identity) from it.
+        """
+        # Try to match business_type to an industry template
+        template = None
+        business_lower = (business_type or "").lower().replace(" ", "_")
+
+        # Direct match
+        if business_lower in self.INDUSTRY_TEMPLATES:
+            template = self.INDUSTRY_TEMPLATES[business_lower]
+        else:
+            # Fuzzy match by checking if business_type contains a template key
+            for key, tmpl in self.INDUSTRY_TEMPLATES.items():
+                if key in business_lower or business_lower in key:
+                    template = tmpl
+                    break
+
+        prompt_parts = []
+
+        if template:
+            # Use template backgrounds and subjects
+            bg = template["backgrounds"][0] if template["backgrounds"] else "professional business setting"
+            subject = template["subjects"][0] if template["subjects"] else "business scene"
+            mood = template.get("mood", "professional")
+            color_scheme = template["color_schemes"][0] if template.get("color_schemes") else "professional colors"
+
+            prompt_parts.append(
+                f"Photorealistic scene of a {bg} featuring {subject}. "
+                f"Mood: {mood}. Color palette: {color_scheme}."
+            )
+
+            # Add avoidance items
+            if template.get("avoid"):
+                prompt_parts.append(
+                    f"Do NOT include: {', '.join(template['avoid'])}."
+                )
+        else:
+            # Generic scene based on business_type
+            prompt_parts.append(
+                f"Photorealistic professional scene for a {business_type} business. "
+                f"Clean, modern setting with professional lighting."
+            )
+
+        # Incorporate products/services context
+        if products_or_services:
+            services_str = ", ".join(products_or_services[:5])
+            prompt_parts.append(
+                f"The scene should visually relate to these services: {services_str}."
+            )
+
+        # Incorporate store description for context
+        if store_description:
+            # Use first 200 chars of description for context
+            desc_short = store_description[:200]
+            prompt_parts.append(
+                f"Business context: {desc_short}."
+            )
+
+        # Screenshot-aware instructions
+        if has_screenshot:
+            prompt_parts.append(
+                "A reference screenshot of the business website/store is provided. "
+                "Extract and incorporate the brand's logo, icons, and visual identity elements "
+                "(color palette, brand marks, emblems) from the screenshot into the scene naturally — "
+                "for example, show the logo on a building sign, uniform badge, vehicle decal, or display screen. "
+                "Do NOT include any headlines, paragraph text, buttons, or ad-copy text overlays. "
+                "The logo and brand marks should appear as part of the physical scene, not as flat overlays."
+            )
+        else:
+            prompt_parts.append(
+                "Do NOT include any text, logos, headlines, buttons, or text overlays. "
+                "Generate ONLY the photorealistic background scene."
+            )
+
+        prompt_parts.append(
+            "High-quality commercial photography, clean composition, professional lighting, 8K quality. "
+            "No AI-generated human faces."
+        )
+
+        return " ".join(prompt_parts)
+
+    def _generate_default_ad_copy(
+        self,
+        store_name: str,
+        store_description: str = None,
+        business_type: str = None,
+        products_or_services: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate default headline and bullet points from store data
+        when the caller doesn't provide them.
+        """
+        # Build headline from store name and business type
+        if business_type:
+            headline = f"{store_name} — Your Trusted {business_type.replace('_', ' ').title()} Partner"
+        else:
+            headline = f"Discover {store_name}"
+
+        # Build bullet points from products/services or description
+        bullets = []
+        if products_or_services:
+            for svc in products_or_services[:3]:
+                bullets.append(svc if len(svc) < 60 else svc[:57] + "...")
+        elif store_description:
+            # Extract short phrases from description
+            sentences = store_description.replace(". ", ".|").split("|")
+            for s in sentences[:3]:
+                s = s.strip().rstrip(".")
+                if s and len(s) > 5:
+                    bullets.append(s if len(s) < 60 else s[:57] + "...")
+
+        if not bullets:
+            bullets = ["Professional quality service", "Trusted by customers", "Contact us today"]
+
+        return {"headline": headline, "bullet_points": bullets}
+
+    async def generate_store_ad(
+        self,
+        store_name: str,
+        store_description: str,
+        business_type: str,
+        logo_url: str = None,
+        screenshot_url: str = None,
+        color_theme: str = None,
+        products_or_services: List[str] = None,
+        headline: str = None,
+        bullet_points: List[str] = None,
+        cta_text: str = "Learn More",
+        aspect_ratio: str = "1:1",
+        upload_to_cloud: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Generate a modern store ad image using a store's data.
+
+        Orchestration:
+        1. Call AdCreativeAgent for a rich, AI-crafted image prompt
+        2. Strip text-overlay directives (PIL composer handles text rendering)
+        3. Build reference images from screenshot_url
+        4. Generate base scene with Gemini using the AI-crafted prompt
+        5. Resolve headline/bullets (caller-provided > AI-generated > template fallback)
+        6. Compose final ad with AdImageComposer.compose_modern_ad_image()
+        7. Upload to Cloudinary if requested
+
+        Falls back to _build_scene_prompt() + _generate_default_ad_copy() if
+        AdCreativeAgent is unavailable.
+
+        Args:
+            store_name: Name of the store/business
+            store_description: Description of the business
+            business_type: Type of business (maps to INDUSTRY_TEMPLATES)
+            logo_url: URL to company logo (passed to PIL composer for overlay)
+            screenshot_url: URL to store website screenshot (used as Gemini scene reference for logo/brand extraction)
+            color_theme: Hex color for brand theming
+            products_or_services: List of products/services offered
+            headline: Ad headline (auto-generated if not provided)
+            bullet_points: Ad bullet points (auto-generated if not provided)
+            cta_text: Call-to-action button text
+            aspect_ratio: Image aspect ratio
+            upload_to_cloud: Whether to upload final image to Cloudinary
+
+        Returns:
+            Dict with image_base64, cloudinary_url, thumbnail_url, and metadata
+        """
+        from .gemini_image_generator import GeminiImageGenerator
+        from .ad_image_composer import AdImageComposer
+        from .ad_creative_agent import AdCreativeAgent
+
+        brand_color = color_theme or "#FFD700"
+        result_meta = {
+            "store_name": store_name,
+            "business_type": business_type,
+            "aspect_ratio": aspect_ratio,
+        }
+
+        # ------------------------------------------------------------------
+        # Step 1: Call AdCreativeAgent for AI-crafted prompt & copy
+        # ------------------------------------------------------------------
+        creative_result = None
+        try:
+            creative_agent = AdCreativeAgent()
+            target_audience = (
+                f"{business_type.replace('_', ' ').title()} customers"
+                if business_type else "General audience"
+            )
+            creative_result = await creative_agent.generate_ad_creative(
+                product_name=store_name,
+                product_description=store_description or f"{store_name} business",
+                target_audience=target_audience,
+                key_benefits=products_or_services[:3] if products_or_services else None,
+                call_to_action=cta_text,
+                brand_color=brand_color,
+            )
+            result_meta["creative_agent_used"] = True
+            result_meta["prompt_source"] = "ad_creative_agent"
+            if creative_result.get("ai_model"):
+                result_meta["creative_model"] = creative_result["ai_model"]
+            if creative_result.get("tokens_used"):
+                result_meta["creative_tokens"] = creative_result["tokens_used"]
+            logger.info("[MediaGeneratorAgent] AdCreativeAgent returned prompt successfully")
+        except Exception as e:
+            logger.warning(f"[MediaGeneratorAgent] AdCreativeAgent failed, falling back to template: {e}")
+            creative_result = None
+            result_meta["creative_agent_used"] = False
+            result_meta["prompt_source"] = "template"
+
+        # ------------------------------------------------------------------
+        # Step 2: Build scene prompt
+        # ------------------------------------------------------------------
+        if creative_result and creative_result.get("image_prompt"):
+            # Strip text-overlay directives — PIL composer handles text rendering
+            scene_prompt = self._strip_text_overlay_from_prompt(
+                creative_result["image_prompt"]
+            )
+
+            # Append screenshot reference instructions
+            if screenshot_url:
+                scene_prompt += (
+                    " A reference screenshot of the business website is attached. "
+                    "Use anything useful from the screenshot as reference — "
+                    "any images, colors, vehicles, uniforms, equipment, products, or "
+                    "any other visual assets you can see. Copy them as closely as "
+                    "possible into the generated image. Match the website's color "
+                    "scheme and overall aesthetic."
+                )
+        else:
+            # Fallback: use existing template-based prompt builder
+            scene_prompt = self._build_scene_prompt(
+                business_type=business_type,
+                products_or_services=products_or_services,
+                store_description=store_description,
+                has_screenshot=bool(screenshot_url)
+            )
+        result_meta["scene_prompt"] = scene_prompt
+
+        # ------------------------------------------------------------------
+        # Step 3: Build reference images from screenshot_url
+        # ------------------------------------------------------------------
+        reference_images = []
+        if screenshot_url:
+            reference_images.append({"url": screenshot_url, "type": "screenshot"})
+            result_meta["screenshot_used"] = True
+
+        # ------------------------------------------------------------------
+        # Step 4: Generate base scene image with Gemini
+        # ------------------------------------------------------------------
+        scene_image_b64 = None
+
+        try:
+            gemini = GeminiImageGenerator()
+            if gemini.client:
+                logger.info(f"[MediaGeneratorAgent] Generating store ad scene with Gemini (refs: {len(reference_images)})")
+                gemini_result = await gemini.generate_ad_image(
+                    prompt=scene_prompt,
+                    logo_url=None,  # Logo extracted from screenshot reference, not passed separately
+                    reference_images=reference_images if reference_images else None,
+                    aspect_ratio=aspect_ratio
+                )
+                if gemini_result.get("success") and gemini_result.get("image_base64"):
+                    scene_image_b64 = gemini_result["image_base64"]
+                    result_meta["scene_provider"] = "gemini"
+                    logger.info("[MediaGeneratorAgent] Gemini scene generation succeeded")
+        except Exception as e:
+            logger.warning(f"[MediaGeneratorAgent] Gemini scene generation failed: {e}")
+
+        # Fallback to multi-provider generate_image()
+        if not scene_image_b64:
+            logger.info("[MediaGeneratorAgent] Falling back to multi-provider for scene generation")
+            fallback_result = await self.generate_image(
+                prompt=scene_prompt,
+                style="professional",
+                aspect_ratio=aspect_ratio,
+                upload_to_cloud=False  # Don't upload raw scene, only final composite
+            )
+            if fallback_result.get("image_base64"):
+                scene_image_b64 = fallback_result["image_base64"]
+                result_meta["scene_provider"] = fallback_result.get("provider_used", "fallback")
+
+        if not scene_image_b64:
+            return {
+                "success": False,
+                "error": "Failed to generate scene image with all providers",
+                "image_base64": None,
+                "cloudinary_url": None,
+                "metadata": result_meta
+            }
+
+        # ------------------------------------------------------------------
+        # Step 5: Resolve headline & bullets
+        #   Priority: caller-provided > AI-generated > template fallback
+        #   Bullets always prefer products_or_services (concrete store data)
+        # ------------------------------------------------------------------
+        ai_headline = creative_result.get("headline") if creative_result else None
+        ai_ad_angle = creative_result.get("ad_angle") if creative_result else None
+
+        if not headline:
+            if ai_headline:
+                headline = ai_headline
+                result_meta["headline_source"] = "ad_creative_agent"
+            else:
+                default_copy = self._generate_default_ad_copy(
+                    store_name=store_name,
+                    store_description=store_description,
+                    business_type=business_type,
+                    products_or_services=products_or_services
+                )
+                headline = default_copy["headline"]
+                result_meta["headline_source"] = "template"
+            result_meta["headline_auto_generated"] = True
+        else:
+            result_meta["headline_source"] = "caller"
+
+        if not bullet_points:
+            # Prefer concrete store data for bullets
+            if products_or_services:
+                bullet_points = [
+                    svc if len(svc) < 60 else svc[:57] + "..."
+                    for svc in products_or_services[:3]
+                ]
+                result_meta["bullets_source"] = "products_or_services"
+            else:
+                default_copy = self._generate_default_ad_copy(
+                    store_name=store_name,
+                    store_description=store_description,
+                    business_type=business_type,
+                    products_or_services=products_or_services
+                )
+                bullet_points = default_copy["bullet_points"]
+                result_meta["bullets_source"] = "template"
+            result_meta["bullets_auto_generated"] = True
+        else:
+            result_meta["bullets_source"] = "caller"
+
+        result_meta["headline"] = headline
+        result_meta["bullet_points"] = bullet_points
+        if ai_ad_angle:
+            result_meta["ad_angle"] = ai_ad_angle
+
+        # ------------------------------------------------------------------
+        # Step 6: Compose final ad with modern layout
+        # ------------------------------------------------------------------
+        composer = AdImageComposer()
+        scene_bytes = base64.b64decode(scene_image_b64)
+
+        compose_result = composer.compose_modern_ad_image(
+            base_image=scene_bytes,
+            headline=headline,
+            bullet_points=bullet_points,
+            cta_text=cta_text,
+            brand_name=store_name,
+            brand_color=brand_color,
+            logo_url=logo_url
+        )
+
+        if not compose_result.get("success"):
+            return {
+                "success": False,
+                "error": f"Failed to compose ad image: {compose_result.get('error')}",
+                "image_base64": scene_image_b64,  # Return raw scene as fallback
+                "cloudinary_url": None,
+                "metadata": result_meta
+            }
+
+        final_image_b64 = compose_result["image_base64"]
+
+        # ------------------------------------------------------------------
+        # Step 7: Upload to Cloudinary if requested
+        # ------------------------------------------------------------------
+        cloudinary_url = None
+        thumbnail_url = None
+
+        if upload_to_cloud and final_image_b64:
+            logger.info("[MediaGeneratorAgent] Uploading store ad to Cloudinary...")
+            cloud_result = self.upload_to_cloudinary(
+                image_base64=final_image_b64,
+                folder="shopivell/generated/store-ads"
+            )
+            if cloud_result.get("uploaded"):
+                cloudinary_url = cloud_result.get("secure_url")
+                thumbnail_url = cloud_result.get("thumbnail_url")
+                logger.info(f"[MediaGeneratorAgent] Store ad uploaded: {cloudinary_url}")
+            else:
+                logger.warning(f"[MediaGeneratorAgent] Cloudinary upload failed: {cloud_result.get('error')}")
+
+        return {
+            "success": True,
+            "image_base64": final_image_b64,
+            "cloudinary_url": cloudinary_url,
+            "thumbnail_url": thumbnail_url,
+            "metadata": result_meta,
+            "error": None
+        }
 
     def list_industries(self) -> List[str]:
         """List all available industry templates."""
