@@ -2408,6 +2408,103 @@ STYLE REQUIREMENTS:
             logger.warning(f"[MediaGenerator] Failed to crop logo from screenshot: {e}")
             return None
 
+    async def _generate_with_dalle(
+        self,
+        prompt: str,
+        store_name: str = "Company",
+        what_they_do: str = "",
+        primary_color: str = "#1A233A",
+        accent_color: str = "#FFB800",
+        has_pil_logo: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generate an ad image using DALL-E 3 via OpenRouter as fallback.
+
+        DALL-E cannot use reference images, so we build a detailed text-only prompt.
+        """
+        openrouter_key = self.openrouter_api_key
+        if not openrouter_key:
+            return {"success": False, "image_base64": None, "error": "No OpenRouter API key"}
+
+        try:
+            from openai import OpenAI
+
+            # Build a detailed prompt since DALL-E can't see reference images
+            dalle_prompt = f"""Professional advertising image for {store_name}.
+{store_name} does: {what_they_do}
+
+SCENE: {prompt}
+
+STYLE REQUIREMENTS:
+- Photorealistic, high-quality commercial photography
+- Color scheme: primary {primary_color}, accent {accent_color}
+- Professional advertising look, suitable for social media ads
+- NO text, NO headlines, NO buttons, NO watermarks
+- {"NO standalone logos" if has_pil_logo else "Include subtle company branding"}
+- Clean composition with space for text overlay at the bottom
+- 1:1 square aspect ratio
+"""
+
+            # Try direct OpenAI API first (DALL-E requires native images endpoint)
+            openai_key = self.openai_api_key
+            if openai_key:
+                try:
+                    client = OpenAI(api_key=openai_key)
+                    logger.info("[MediaGenerator] Calling DALL-E 3 via OpenAI...")
+                    response = client.images.generate(
+                        model="dall-e-3",
+                        prompt=dalle_prompt[:4000],
+                        size="1024x1024",
+                        quality="standard",
+                        n=1,
+                        response_format="b64_json",
+                    )
+                    if response.data and response.data[0].b64_json:
+                        image_b64 = response.data[0].b64_json
+                        logger.info(f"[MediaGenerator] DALL-E 3 generated image ({len(image_b64):,} chars base64)")
+                        return {"success": True, "image_base64": image_b64, "model": "dall-e-3", "error": None}
+                except Exception as e:
+                    logger.warning(f"[MediaGenerator] DALL-E via OpenAI failed: {e}")
+
+            # Try OpenRouter with image-capable models (gpt-image-1)
+            if openrouter_key:
+                try:
+                    client = OpenAI(
+                        base_url="https://openrouter.ai/api/v1",
+                        api_key=openrouter_key,
+                        default_headers={
+                            "HTTP-Referer": "https://shopivell.com",
+                            "X-Title": "Shopivell Ad Generator",
+                        }
+                    )
+                    logger.info("[MediaGenerator] Calling gpt-image-1 via OpenRouter...")
+                    response = client.images.generate(
+                        model="openai/gpt-image-1",
+                        prompt=dalle_prompt[:4000],
+                        size="1024x1024",
+                        n=1,
+                    )
+                    if response.data:
+                        img_data = response.data[0]
+                        image_b64 = getattr(img_data, 'b64_json', None)
+                        if not image_b64 and hasattr(img_data, 'url') and img_data.url:
+                            # Download the image from URL
+                            import requests as req
+                            resp = req.get(img_data.url, timeout=30)
+                            resp.raise_for_status()
+                            image_b64 = base64.b64encode(resp.content).decode()
+                        if image_b64:
+                            logger.info(f"[MediaGenerator] gpt-image-1 via OpenRouter generated image")
+                            return {"success": True, "image_base64": image_b64, "model": "openai/gpt-image-1", "error": None}
+                except Exception as e:
+                    logger.warning(f"[MediaGenerator] OpenRouter image gen failed: {e}")
+
+            return {"success": False, "image_base64": None, "error": "All DALL-E providers failed"}
+
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] DALL-E generation failed: {e}")
+            return {"success": False, "image_base64": None, "error": str(e)}
+
     async def generate_campaign_ad(
         self,
         store_name: str,
@@ -2526,13 +2623,31 @@ STYLE REQUIREMENTS:
             except Exception as e:
                 logger.warning(f"[MediaGenerator] Full screenshot fallback failed: {e}")
 
+        # Step 4c: DALL-E fallback via OpenRouter when Gemini quota is exhausted
+        if not scene_b64:
+            try:
+                logger.info("[MediaGenerator] Trying DALL-E fallback via OpenRouter...")
+                dalle_result = await self._generate_with_dalle(
+                    prompt=scene_prompt,
+                    store_name=store_name,
+                    what_they_do=store_description,
+                    primary_color=primary_color,
+                    accent_color=brand_color,
+                    has_pil_logo=has_pil_logo,
+                )
+                if dalle_result.get("success"):
+                    scene_b64 = dalle_result["image_base64"]
+                    logger.info(f"[MediaGenerator] Scene generated with DALL-E fallback")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] DALL-E fallback failed: {e}")
+
         if not scene_b64:
             return {
                 "success": False,
                 "image_base64": None,
                 "cloudinary_url": None,
                 "thumbnail_url": None,
-                "error": "Failed to generate scene image"
+                "error": "Failed to generate scene image (all providers exhausted)"
             }
 
         # Step 5: Resolve logo for PIL overlay
