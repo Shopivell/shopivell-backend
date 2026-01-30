@@ -405,11 +405,46 @@ self.gemini_generator = GeminiImageGenerator()  # Primary image generator with r
 
 ---
 
-## WHAT'S NOT YET IMPLEMENTED
+## RECENTLY COMPLETED (Jan 30, 2026)
 
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| Batch generation | MEDIUM | Generate all 5 ad set images in parallel |
+### Media Generator Pipeline Improvements
+
+**Test Script:** `test_2adsets_securesights.py` (usage: `python test_2adsets_securesights.py [website_url]`)
+
+| Feature | Status | Details |
+|---------|--------|---------|
+| Screenshot cropping | DONE | Full-page screenshots split into header (500px) + 3 content sections (1500px each) so Gemini can see fine details (logos, uniforms, etc.) |
+| Logo extraction from HTML | DONE | BeautifulSoup scraping with priority: header/nav "logo" imgs > logo-class links > logo-class imgs > first header img > favicon fallback |
+| Lazy-loading handling | DONE | Prefers `data-src`/`data-lazy-src` over `src`, skips `data:` URIs, filters loader/spinner/placeholder filenames |
+| PIL logo overlay | DONE | Real logo from website overlaid by PIL at proportional size (~8% height, ~20% width) instead of Gemini-generated distorted logos |
+| Cropped logo fallback | DONE | If no logo URL found in HTML, crops top-left 350x100px of screenshot as logo |
+| Conditional logo instructions | DONE | If PIL logo available: tell Gemini "no standalone logos". If not: tell Gemini "include logo from screenshot" |
+| Industry-aware ad angles | DONE | "Product Showcase" and "Customer Experience" with dynamic descriptions using industry field (no more "Technology Showcase" for fashion stores) |
+| Modern ad composer | DONE | `compose_modern_ad_image()` in `ad_image_composer.py` - gradient overlay, word-wrapped headline, bullet points, rounded CTA button |
+| OpenRouter for AdCreativeAgent | DONE | Routes Claude (`anthropic/claude-sonnet-4`) and GPT-4o (`openai/gpt-4o`) through single OpenRouter API key. No more separate Anthropic/OpenAI keys needed |
+| Store ad API endpoint | DONE | `POST /generate-store-ad` in `router.py` for store-based ad generation |
+
+**Tested Websites:**
+| Website | Logo Found | Results |
+|---------|-----------|---------|
+| safeguard.co.zw | `SAFEGUARD-LOGO-1-1-1.png` (header img with "logo" attr) | Uniforms, vehicles, yellow brand color correct |
+| fawcetts.co.zw | Found via header/nav | Uniforms improved with cropped sections |
+| edgarsstores.co.zw | `logo-retina.png` (header img) | Fashion store, red accent, proper ad angles |
+| webzim.co.zw | `webzim-6.png` (first img in header - Priority 4) | Green accent, server rooms, logo overlay correct |
+| zimswitch.co.zw | Favicon fallback (SVG-only logo) | Small but correct logo |
+
+---
+
+## NEXT STEPS
+
+| Step | Priority | Description |
+|------|----------|-------------|
+| Port pipeline to production agents | HIGH | Move screenshot cropping, logo extraction, and industry-aware angles from `test_2adsets_securesights.py` into `media_generator_agent.py` and `gemini_image_generator.py` |
+| Update Cloudinary API secret | HIGH | Current secret is stale - uploads fail. User must update manually in `.env` and Render |
+| Deploy to Render | HIGH | Push updated code to production server |
+| Start Redis locally | MEDIUM | Currently disabled (`localhost:6379` refused) - caching not working |
+| SVG logo rendering | LOW | PIL can't render SVG logos - currently falls back to favicon. Could use `cairosvg` for SVG-to-PNG conversion |
+| Batch generation | MEDIUM | Generate all ad set images in parallel |
 | Retry logic | MEDIUM | Handle API failures gracefully |
 | Aspect ratio options | LOW | 1:1, 16:9, 9:16 for different placements |
 | Multiple image variants | LOW | A/B testing with different images |
@@ -447,9 +482,14 @@ Output: generated_images/safeguard_co_zw_ad.png
 | File | Purpose |
 |------|---------|
 | `modules/stores/scraping_service.py` | Website scraping, Vision AI analysis |
-| `modules/agents/ad_creative_agent.py` | Ad copy and image prompt generation |
+| `modules/agents/ad_creative_agent.py` | Ad copy and image prompt generation (via OpenRouter) |
 | `modules/agents/gemini_image_generator.py` | Gemini image generation with references |
+| `modules/agents/ad_image_composer.py` | PIL-based ad composition (text overlays, logo, CTA button) |
+| `modules/agents/media_generator_agent.py` | Full media generation pipeline |
+| `modules/agents/router.py` | API endpoints (includes `/generate-store-ad`) |
+| `modules/openrouter/service.py` | OpenRouter API client |
+| `modules/openrouter/langchain_adapter.py` | LangChain-compatible OpenRouter adapter |
 | `modules/campaigns/service.py` | Campaign creation, ad set generation |
-| `modules/campaigns/router.py` | API endpoints |
-| `test_gemini_image_gen.py` | E2E test script |
+| `modules/campaigns/router.py` | Campaign API endpoints |
+| `test_2adsets_securesights.py` | Full pipeline test (any website URL) |
 | `docs/AD_CREATIVE_SYSTEM.md` | System documentation |
