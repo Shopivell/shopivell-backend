@@ -40,9 +40,18 @@ class AdImageComposer:
     def _find_font_path(self):
         """Find a usable font file path"""
         font_paths = [
+            # Liberation (installed in Docker via fonts-liberation)
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            # DejaVu (common on Linux)
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            # Noto (common fallback)
+            "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+            # Windows
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/arial.ttf",
+            # macOS
             "/System/Library/Fonts/Helvetica.ttc",
         ]
         for path in font_paths:

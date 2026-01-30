@@ -445,24 +445,15 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
 def capture_homepage_screenshot_sync(url: str, full_page: bool = False) -> Dict[str, Any]:
     """
     Synchronous wrapper for capture_homepage_screenshot.
+    Always uses a new thread to avoid event loop conflicts with FastAPI/nest_asyncio.
     """
-    try:
-        # Try to get existing event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If loop is running (e.g., in FastAPI), create a new thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    capture_homepage_screenshot(url, full_page)
-                )
-                return future.result(timeout=60)
-        else:
-            return loop.run_until_complete(capture_homepage_screenshot(url, full_page))
-    except RuntimeError:
-        # No event loop exists
-        return asyncio.run(capture_homepage_screenshot(url, full_page))
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(
+            asyncio.run,
+            capture_homepage_screenshot(url, full_page)
+        )
+        return future.result(timeout=90)
 
 
 async def capture_website_screenshots(url: str, full_page: bool = False) -> Dict[str, Any]:

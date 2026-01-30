@@ -342,6 +342,7 @@ SCENE TO GENERATE:
 
 RULES:
 - NO text overlays, NO headlines, NO buttons, NO bullet text
+- NO human faces or people - show equipment, vehicles, buildings, and products instead
 - ONLY generate the photorealistic scene
 """
 
