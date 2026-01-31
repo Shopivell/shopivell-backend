@@ -2393,14 +2393,61 @@ STYLE REQUIREMENTS:
             return []
 
     def _crop_logo_from_screenshot(self, screenshot_bytes: bytes) -> Optional[bytes]:
-        """Crop the top-left corner of the screenshot where the logo typically sits."""
+        """Crop the logo area from the top-left of the screenshot.
+
+        Uses a tighter crop (200x80) and trims whitespace/background to isolate
+        just the logo rather than capturing the entire header bar.
+        """
         try:
-            from PIL import Image as PILImage
+            from PIL import Image as PILImage, ImageStat
             from io import BytesIO
 
             img = PILImage.open(BytesIO(screenshot_bytes))
             w, h = img.size
-            logo_crop = img.crop((0, 0, min(350, w), min(100, h)))
+            # Tighter crop - logos are typically in the top-left ~200x80 area
+            crop_w = min(250, w)
+            crop_h = min(90, h)
+            logo_crop = img.crop((0, 0, crop_w, crop_h))
+
+            # Try to auto-trim background edges for a cleaner logo
+            try:
+                # Convert to RGBA if not already
+                logo_rgba = logo_crop.convert("RGBA")
+                # Sample background color from the top-left corner pixel
+                bg_pixel = logo_rgba.getpixel((0, 0))[:3]
+
+                # Find bounding box of non-background content
+                pixels = logo_rgba.load()
+                min_x, min_y = crop_w, crop_h
+                max_x, max_y = 0, 0
+                threshold = 30  # Color distance threshold
+
+                for y in range(crop_h):
+                    for x in range(crop_w):
+                        r, g, b, a = pixels[x, y]
+                        # Check if pixel differs significantly from background
+                        dist = abs(r - bg_pixel[0]) + abs(g - bg_pixel[1]) + abs(b - bg_pixel[2])
+                        if dist > threshold:
+                            min_x = min(min_x, x)
+                            min_y = min(min_y, y)
+                            max_x = max(max_x, x)
+                            max_y = max(max_y, y)
+
+                # Only use trimmed version if we found meaningful content
+                content_w = max_x - min_x
+                content_h = max_y - min_y
+                if content_w > 30 and content_h > 15:
+                    # Add small padding
+                    pad = 5
+                    min_x = max(0, min_x - pad)
+                    min_y = max(0, min_y - pad)
+                    max_x = min(crop_w, max_x + pad)
+                    max_y = min(crop_h, max_y + pad)
+                    logo_crop = logo_crop.crop((min_x, min_y, max_x, max_y))
+                    logger.info(f"[MediaGenerator] Trimmed logo crop to {logo_crop.size[0]}x{logo_crop.size[1]}")
+            except Exception as trim_err:
+                logger.debug(f"[MediaGenerator] Logo trim failed, using raw crop: {trim_err}")
+
             buf = BytesIO()
             logo_crop.save(buf, format="PNG")
             return buf.getvalue()
@@ -2438,7 +2485,9 @@ STYLE REQUIREMENTS:
 
 YOUR TASK: Generate a professional advertising image for {store_name}.
 
-Study each attached image carefully. Use any useful assets you find - uniforms, vehicles, equipment, products, colors, branding - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+Study each attached image carefully. Use any useful VISUAL assets you find - uniforms, vehicles, equipment, products, colors, branding VISUALS - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+
+CRITICAL: Only copy VISUAL elements (uniforms, vehicles, equipment, colors, physical objects). Do NOT copy any TEXT you see in the screenshots - no company names, no slogans, no product names, no headings, no labels, no watermarks. Text will be added separately.
 
 """
             if has_pil_logo:
@@ -2453,9 +2502,10 @@ SCENE TO GENERATE:
 {prompt}
 
 RULES:
-- NO text overlays, NO headlines, NO buttons, NO bullet text
+- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no signs with text. The image must contain ZERO readable text.
+- Do NOT reproduce any text you see in the screenshot reference images. Only copy visual/physical elements.
 - People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
-- ONLY generate the photorealistic scene
+- ONLY generate the photorealistic scene with NO text whatsoever
 """
         else:
             # Text-only fallback prompt (no reference images available)
@@ -2469,7 +2519,7 @@ STYLE REQUIREMENTS:
 - Color scheme: primary {primary_color}, accent {accent_color}
 - Professional advertising look, suitable for social media ads
 - People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
-- NO text, NO headlines, NO buttons, NO watermarks
+- ABSOLUTELY NO TEXT of any kind. No headlines, no labels, no company names, no slogans, no buttons, no watermarks, no signs with text. ZERO readable text.
 - {"NO standalone logos" if has_pil_logo else "Include subtle company branding"}
 - Clean composition with space for text overlay at the bottom
 - 1:1 square aspect ratio

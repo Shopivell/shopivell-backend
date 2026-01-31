@@ -326,7 +326,9 @@ IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
 
 YOUR TASK: Generate a professional advertising image for {company_name}.
 
-Study each attached image carefully. Use any useful assets you find - uniforms, vehicles, equipment, products, colors, branding - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+Study each attached image carefully. Use any useful VISUAL assets you find - uniforms, vehicles, equipment, products, colors, branding VISUALS - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
+
+CRITICAL: Only copy VISUAL elements (uniforms, vehicles, equipment, colors, physical objects). Do NOT copy any TEXT you see in the screenshots - no company names, no slogans, no product names, no headings, no labels, no watermarks. Text will be added separately.
 
 """
         if has_pil_logo:
@@ -341,9 +343,10 @@ SCENE TO GENERATE:
 {prompt}
 
 RULES:
-- NO text overlays, NO headlines, NO buttons, NO bullet text
+- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no signs with text. The image must contain ZERO readable text.
+- Do NOT reproduce any text you see in the screenshot reference images. Only copy visual/physical elements.
 - People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
-- ONLY generate the photorealistic scene
+- ONLY generate the photorealistic scene with NO text whatsoever
 """
 
         # Build content parts: text prompt + cropped section images

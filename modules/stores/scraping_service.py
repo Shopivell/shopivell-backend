@@ -1583,13 +1583,43 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
             images_data["og_image"] = og_url
             print(f"[Images] Found OG image: {og_url}")
 
-        # 2. Find favicon
+        # 2. Find favicon (prefer largest available)
         favicon = soup.find('link', rel=lambda x: x and 'icon' in x.lower() if x else False)
         if favicon and favicon.get('href'):
             fav_url = favicon['href']
             if not fav_url.startswith('http'):
                 fav_url = urljoin(base_url, fav_url)
             images_data["favicon_url"] = fav_url
+
+        # 2b. Find apple-touch-icon or high-res icons (great logo fallback, typically 180x180+)
+        hi_res_icon_url = None
+        icon_links = soup.find_all('link', rel=lambda x: x and ('apple-touch-icon' in ' '.join(x).lower() if isinstance(x, list) else 'apple-touch-icon' in x.lower()) if x else False)
+        if not icon_links:
+            # Also check for large icon sizes
+            icon_links = soup.find_all('link', rel=lambda x: x and ('icon' in ' '.join(x).lower() if isinstance(x, list) else 'icon' in x.lower()) if x else False)
+        # Pick the largest icon
+        best_size = 0
+        for link in icon_links:
+            href = link.get('href')
+            if not href:
+                continue
+            sizes = link.get('sizes', '')
+            if sizes and 'x' in sizes.lower():
+                try:
+                    w = int(sizes.lower().split('x')[0])
+                    if w > best_size:
+                        best_size = w
+                        hi_res_icon_url = href
+                except (ValueError, IndexError):
+                    pass
+            elif not hi_res_icon_url and 'apple-touch-icon' in str(link.get('rel', '')).lower():
+                # apple-touch-icon without sizes is typically 180x180
+                hi_res_icon_url = href
+                best_size = 180
+        if hi_res_icon_url and not hi_res_icon_url.startswith('http'):
+            hi_res_icon_url = urljoin(base_url, hi_res_icon_url)
+        if hi_res_icon_url:
+            print(f"[Images] Found high-res icon ({best_size}px): {hi_res_icon_url}")
 
         # 3. Find logo - look for common patterns
         logo_selectors = [
@@ -1636,6 +1666,33 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
                             break
             except Exception:
                 continue
+
+        # 3b. If no <img> logo found, use apple-touch-icon / high-res icon as logo
+        if not images_data["logo_url"] and hi_res_icon_url:
+            images_data["logo_url"] = hi_res_icon_url
+            print(f"[Images] Using high-res icon as logo fallback: {hi_res_icon_url}")
+
+        # 3c. If still no logo, try well-known icon paths
+        if not images_data["logo_url"]:
+            parsed = urlparse(base_url)
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            well_known_paths = [
+                "/apple-touch-icon.png",
+                "/apple-touch-icon-precomposed.png",
+                "/favicon-192x192.png",
+                "/android-chrome-192x192.png",
+                "/android-chrome-512x512.png",
+            ]
+            for path in well_known_paths:
+                try:
+                    test_url = origin + path
+                    resp = requests.head(test_url, headers=headers, timeout=5, allow_redirects=True)
+                    if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                        images_data["logo_url"] = test_url
+                        print(f"[Images] Found logo at well-known path: {test_url}")
+                        break
+                except Exception:
+                    continue
 
         # 4. Collect other significant images (for product/brand understanding)
         all_images = soup.find_all('img')
