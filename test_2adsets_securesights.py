@@ -450,6 +450,11 @@ async def generate_scene(label, scene_prompt, homepage_b64, brand, has_logo=Fals
     accent = brand.get("accent_color", "#FFB800")
     what = brand.get("what_they_do", "business services")
 
+    uniforms = brand.get("uniforms_visible", "")
+    vehicles = brand.get("vehicles_visible", "")
+    equipment = brand.get("equipment_visible", "")
+    imagery = brand.get("imagery_on_site", "")
+
     enhanced = f"""I am attaching CROPPED SECTIONS of {company}'s website homepage so you can see the details clearly.
 
 {company} does: {what}
@@ -459,6 +464,12 @@ YOUR TASK: Generate a professional advertising image for {company}.
 Study each attached image carefully. Use any useful VISUAL assets you find - uniforms, vehicles, equipment, products, colors, branding VISUALS - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
 
 CRITICAL: Only copy VISUAL elements (uniforms, vehicles, equipment, colors, physical objects). Do NOT copy any TEXT you see in the screenshots - no company names, no slogans, no product names, no headings, no labels, no watermarks. Text will be added separately.
+
+EXACT VISUAL DETAILS TO REPRODUCE:
+- UNIFORMS: {uniforms if uniforms else 'Study the screenshots carefully for any staff uniforms and copy them exactly.'}
+- VEHICLES: {vehicles if vehicles else 'Study the screenshots carefully for any branded vehicles and copy them exactly.'}
+- EQUIPMENT: {equipment if equipment else 'Study the screenshots for any equipment and copy it exactly.'}
+- IMAGERY ON SITE: {imagery if imagery else 'Use all visual elements from the screenshots.'}
 
 """
     if has_logo:
@@ -554,7 +565,7 @@ RULES:
             })
         content_parts.append({"type": "text", "text": enhanced[:4000]})
 
-        for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.5-flash-image-preview"]:
+        for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.0-flash-exp:free"]:
             try:
                 print(f"  Trying {model_id} via OpenRouter...")
                 resp = requests.post(

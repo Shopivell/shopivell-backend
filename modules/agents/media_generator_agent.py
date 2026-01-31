@@ -2478,6 +2478,10 @@ STYLE REQUIREMENTS:
         accent_color: str = "#FFB800",
         has_pil_logo: bool = False,
         screenshot_sections: List[Dict] = None,
+        uniforms_description: str = "",
+        vehicles_description: str = "",
+        equipment_description: str = "",
+        imagery_description: str = "",
     ) -> Dict[str, Any]:
         """
         Generate an ad image using Nano Banana Pro (Gemini 3 Pro) via OpenRouter
@@ -2502,6 +2506,12 @@ YOUR TASK: Generate a professional advertising image for {store_name}.
 Study each attached image carefully. Use any useful VISUAL assets you find - uniforms, vehicles, equipment, products, colors, branding VISUALS - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
 
 CRITICAL: Only copy VISUAL elements (uniforms, vehicles, equipment, colors, physical objects). Do NOT copy any TEXT you see in the screenshots - no company names, no slogans, no product names, no headings, no labels, no watermarks. Text will be added separately.
+
+EXACT VISUAL DETAILS TO REPRODUCE:
+- UNIFORMS: {uniforms_description if uniforms_description else 'Study the screenshots carefully for any staff uniforms and copy them exactly - same colors, same style, same patches, same belts, same boots.'}
+- VEHICLES: {vehicles_description if vehicles_description else 'Study the screenshots carefully for any branded vehicles and copy them exactly - same body color, same branding placement, same vehicle type.'}
+- EQUIPMENT: {equipment_description if equipment_description else 'Study the screenshots for any equipment and copy it exactly.'}
+- IMAGERY: {imagery_description if imagery_description else 'Use all visual elements from the screenshots.'}
 
 """
             if has_pil_logo:
@@ -2690,6 +2700,10 @@ STYLE REQUIREMENTS:
         bullet_points: List[str] = None,
         cta_text: str = "Learn More",
         upload_to_cloud: bool = True,
+        uniforms_description: str = "",
+        vehicles_description: str = "",
+        equipment_description: str = "",
+        imagery_description: str = "",
     ) -> Dict[str, Any]:
         """
         Generate a campaign ad image using cropped screenshot sections.
@@ -2771,6 +2785,57 @@ STYLE REQUIREMENTS:
                 logo_url = None  # Clear the tiny favicon URL so composer uses the temp file
                 logger.info("[MediaGenerator] Using cropped screenshot logo as fallback")
 
+        # Step 3b: Quick visual analysis if no descriptions provided
+        if sections and not uniforms_description and not vehicles_description:
+            try:
+                logger.info("[MediaGenerator] Running quick visual analysis on screenshot sections...")
+                # Use first 2 sections (header + hero) for analysis
+                analysis_parts = []
+                for s in sections[:2]:
+                    s_b64 = base64.b64encode(s["bytes"]).decode()
+                    raw = s["bytes"]
+                    mime = "image/jpeg" if raw[:2] == b'\xff\xd8' else "image/png"
+                    analysis_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{s_b64}"}
+                    })
+                analysis_parts.append({
+                    "type": "text",
+                    "text": f"""Analyze these website screenshots for {store_name}. Return ONLY valid JSON with these fields:
+{{"uniforms": "describe any staff uniforms: exact shirt color, trouser color, hat color, any patches, belts, boots, reflective strips. Say 'none visible' if none.",
+"vehicles": "describe any branded vehicles: vehicle type, body color, branding text/logos visible, any stripes or markings. Say 'none visible' if none.",
+"equipment": "describe any equipment: cameras, alarms, tools, devices, barriers. Say 'none visible' if none.",
+"imagery": "briefly describe the key visual elements on the page"}}"""
+                })
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.openrouter_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": "google/gemini-2.5-flash",
+                            "messages": [{"role": "user", "content": analysis_parts}],
+                        },
+                    )
+                    resp.raise_for_status()
+                    analysis_text = resp.json()["choices"][0]["message"]["content"]
+                    # Parse JSON from response
+                    import json as _json
+                    js = analysis_text.find('{')
+                    je = analysis_text.rfind('}') + 1
+                    if js >= 0:
+                        analysis = _json.loads(analysis_text[js:je])
+                        uniforms_description = analysis.get("uniforms", "")
+                        vehicles_description = analysis.get("vehicles", "")
+                        equipment_description = analysis.get("equipment", "")
+                        imagery_description = analysis.get("imagery", "")
+                        logger.info(f"[MediaGenerator] Visual analysis: uniforms='{uniforms_description[:80]}', vehicles='{vehicles_description[:80]}'")
+            except Exception as e:
+                logger.warning(f"[MediaGenerator] Quick visual analysis failed (non-critical): {e}")
+
         # Step 4: Generate scene with Gemini using cropped sections
         scene_b64 = None
 
@@ -2784,6 +2849,10 @@ STYLE REQUIREMENTS:
                     accent_color=brand_color,
                     what_they_do=store_description,
                     has_pil_logo=has_pil_logo,
+                    uniforms_description=uniforms_description,
+                    vehicles_description=vehicles_description,
+                    equipment_description=equipment_description,
+                    imagery_description=imagery_description,
                 )
                 if result.get("success"):
                     scene_b64 = result["image_base64"]
@@ -2817,6 +2886,10 @@ STYLE REQUIREMENTS:
                     accent_color=brand_color,
                     has_pil_logo=has_pil_logo,
                     screenshot_sections=sections,
+                    uniforms_description=uniforms_description,
+                    vehicles_description=vehicles_description,
+                    equipment_description=equipment_description,
+                    imagery_description=imagery_description,
                 )
                 if or_result.get("success"):
                     scene_b64 = or_result["image_base64"]

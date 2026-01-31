@@ -297,6 +297,10 @@ CRITICAL RULE: ABSOLUTELY NO TEXT of any kind in the generated image. No headlin
         accent_color: str = "#FFB800",
         what_they_do: str = "",
         has_pil_logo: bool = False,
+        uniforms_description: str = "",
+        vehicles_description: str = "",
+        equipment_description: str = "",
+        imagery_description: str = "",
     ) -> Dict[str, Any]:
         """
         Generate ad image using cropped screenshot sections as multi-image references.
@@ -313,6 +317,10 @@ CRITICAL RULE: ABSOLUTELY NO TEXT of any kind in the generated image. No headlin
             accent_color: Brand accent color hex
             what_they_do: Business description
             has_pil_logo: If True, instruct Gemini not to add standalone logos
+            uniforms_description: Text description of staff uniforms from brand analysis
+            vehicles_description: Text description of branded vehicles from brand analysis
+            equipment_description: Text description of equipment from brand analysis
+            imagery_description: Text description of all imagery on the website
 
         Returns:
             Dict with 'success', 'image_base64', 'model', 'error'
@@ -330,6 +338,12 @@ YOUR TASK: Generate a professional advertising image for {company_name}.
 Study each attached image carefully. Use any useful VISUAL assets you find - uniforms, vehicles, equipment, products, colors, branding VISUALS - and copy them EXACTLY as they appear into the generated image. Same colors, same style, same details.
 
 CRITICAL: Only copy VISUAL elements (uniforms, vehicles, equipment, colors, physical objects). Do NOT copy any TEXT you see in the screenshots - no company names, no slogans, no product names, no headings, no labels, no watermarks. Text will be added separately.
+
+EXACT VISUAL DETAILS TO REPRODUCE:
+- UNIFORMS: {uniforms_description if uniforms_description else 'Study the screenshots carefully for any staff uniforms and copy them exactly - same colors, same style, same patches, same belts, same boots.'}
+- VEHICLES: {vehicles_description if vehicles_description else 'Study the screenshots carefully for any branded vehicles and copy them exactly - same body color, same branding placement, same vehicle type.'}
+- EQUIPMENT: {equipment_description if equipment_description else 'Study the screenshots for any equipment and copy it exactly.'}
+- IMAGERY: {imagery_description if imagery_description else 'Use all visual elements from the screenshots.'}
 
 """
         if has_pil_logo:
