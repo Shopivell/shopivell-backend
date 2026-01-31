@@ -158,11 +158,11 @@ class AdImageComposer:
         logo_url: str = None
     ) -> Dict[str, Any]:
         """
-        Compose a modern full-bleed ad image with professional text overlay.
+        Compose a modern full-bleed ad image with gradient overlay.
 
-        Layout: full-bleed scene, strong left-side dark panel for text,
-        brand name top-left, large headline, bullet points with check icons,
-        bold CTA button at bottom-right.
+        Layout: full-bleed scene background, dark gradient overlay at top,
+        brand name top-left, large headline, bullet points, rounded CTA button
+        at bottom-right.
         """
         try:
             # Load base image as RGBA, full-bleed background
@@ -180,122 +180,93 @@ class AdImageComposer:
             brand_rgb = self._hex_to_rgb(brand_color) if brand_color else DEFAULT_BRAND_COLOR
             cta_text_color = self._get_contrast_color(brand_rgb)
 
-            # === LEFT PANEL: Dark gradient for text readability ===
-            # Strong dark panel on the left ~50% of image, fading to transparent on right
-            panel_width = int(width * 0.55)
-            for x in range(panel_width):
-                if x < int(panel_width * 0.75):
-                    # Solid dark area (left 75% of panel)
-                    alpha = 190
-                else:
-                    # Fade out (right 25% of panel)
-                    fade_progress = (x - int(panel_width * 0.75)) / (panel_width * 0.25)
-                    alpha = int(190 * (1.0 - fade_progress))
-                draw.line([(x, 0), (x, height)], fill=(0, 0, 0, alpha))
+            # === DARK GRADIENT OVERLAY ===
+            # rgba(0,0,0,180) at top fading to rgba(0,0,0,0) at ~55% height
+            gradient_end = int(height * 0.55)
+            for y in range(gradient_end):
+                alpha = int(180 * (1.0 - y / gradient_end))
+                draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha))
 
-            # === BOTTOM GRADIENT for CTA button area ===
-            gradient_start = int(height * 0.75)
-            for y in range(gradient_start, height):
-                progress = (y - gradient_start) / (height - gradient_start)
-                alpha = int(160 * progress)
-                draw.line([(panel_width, y), (width, y)], fill=(0, 0, 0, alpha))
+            # Track text cursor position
+            text_x = int(width * 0.05)  # 5% left margin
+            current_y = int(height * 0.05)  # 5% top margin
 
-            # Layout margins
-            margin_x = int(width * 0.06)
-            margin_top = int(height * 0.06)
-
-            # === LOGO (top-left, only if high-quality) ===
-            current_y = margin_top
+            # === OPTIONAL LOGO (top-left) ===
+            logo_right_edge = text_x
             if logo_url:
                 logo = self._fetch_logo(logo_url)
                 if logo:
-                    # Skip tiny logos (< 64px) and oversized crops (> 300px wide = screenshot header)
-                    if (logo.width < 64 and logo.height < 64) or (logo.width > 250 and logo.height < logo.width * 0.4):
-                        logger.warning(f"[AdImageComposer] Logo unsuitable ({logo.width}x{logo.height}), using brand name only")
-                        logo = None
-
-                if logo:
-                    max_logo_h = max(int(height * 0.08), 60)
-                    max_logo_w = max(int(width * 0.18), 120)
-                    ratio = min(max_logo_w / logo.width, max_logo_h / logo.height, 1.5)
+                    # Scale logo proportionally to image size
+                    max_logo_h = max(int(height * 0.08), 55)
+                    max_logo_w = max(int(width * 0.20), 150)
+                    ratio = min(max_logo_w / logo.width, max_logo_h / logo.height)
+                    ratio = min(ratio, 2.0)
                     new_w = int(logo.width * ratio)
                     new_h = int(logo.height * ratio)
                     logo = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                    overlay.paste(logo, (margin_x, current_y), logo)
-                    current_y += new_h + int(height * 0.02)
+                    overlay.paste(logo, (text_x, current_y), logo)
+                    logo_right_edge = text_x + new_w + 15
 
-            # === BRAND NAME (uppercase, brand color, below logo) ===
+            # === BRAND NAME (small uppercase, top-left, brand color) ===
             if brand_name:
+                brand_name_upper = brand_name.upper()
+                brand_x = logo_right_edge
                 draw.text(
-                    (margin_x, current_y),
-                    brand_name.upper(),
-                    font=self.font_bold,
+                    (brand_x, current_y + 15),
+                    brand_name_upper,
+                    font=self.font_regular,
                     fill=brand_rgb + (255,)
                 )
-                _, brand_h = self._get_text_size(draw, brand_name.upper(), self.font_bold)
-                current_y += brand_h + int(height * 0.01)
 
-            # === ACCENT LINE (brand color bar) ===
-            line_y = current_y + int(height * 0.015)
-            draw.rectangle(
-                [(margin_x, line_y), (margin_x + int(width * 0.12), line_y + 4)],
-                fill=brand_rgb + (255,)
-            )
-            current_y = line_y + int(height * 0.04)
+            current_y = int(height * 0.15)  # Headline starts at ~15% from top
 
-            # === HEADLINE (large bold white, word-wrapped within panel) ===
-            max_text_width = int(panel_width * 0.80)
+            # === HEADLINE (large bold white, left-aligned, word-wrapped) ===
+            max_text_width = int(width * 0.85)
             headline_lines = self._wrap_text(headline.upper(), self.font_headline, max_text_width, draw)
 
-            for line in headline_lines[:3]:  # Max 3 lines
+            for line in headline_lines:
                 draw.text(
-                    (margin_x, current_y),
+                    (text_x, current_y),
                     line,
                     font=self.font_headline,
                     fill=(255, 255, 255, 255)
                 )
                 _, line_h = self._get_text_size(draw, line, self.font_headline)
-                current_y += line_h + int(height * 0.01)
+                current_y += line_h + 10
 
-            current_y += int(height * 0.03)
+            current_y += 20  # Spacing after headline
 
-            # === BULLET POINTS (with checkmark icons) ===
+            # === BULLET POINTS (white text with bullet prefix) ===
             if bullet_points:
-                for point in bullet_points[:4]:
-                    bullet_text = f"\u2713  {point}"
+                for point in bullet_points[:5]:  # Max 5 bullets
+                    bullet_text = f"\u2022  {point}"
                     draw.text(
-                        (margin_x + int(width * 0.01), current_y),
+                        (text_x + 10, current_y),
                         bullet_text,
                         font=self.font_regular,
-                        fill=(255, 255, 255, 240)
+                        fill=(255, 255, 255, 230)
                     )
                     _, point_h = self._get_text_size(draw, bullet_text, self.font_regular)
-                    current_y += point_h + int(height * 0.018)
+                    current_y += point_h + 12
 
-            # === CTA BUTTON (rounded pill, bottom-right, brand color) ===
+            # === CTA BUTTON (rounded rectangle, bottom-right, brand color fill) ===
             cta_upper = cta_text.upper()
             cta_w, cta_h = self._get_text_size(draw, cta_upper, self.font_bold)
-            btn_padding_x = int(width * 0.04)
-            btn_padding_y = int(height * 0.02)
+            btn_padding_x = 40
+            btn_padding_y = 18
             btn_width = cta_w + btn_padding_x * 2
             btn_height = cta_h + btn_padding_y * 2
 
-            btn_x = width - btn_width - int(width * 0.06)
-            btn_y = height - btn_height - int(height * 0.06)
+            btn_x = width - btn_width - int(width * 0.05)
+            btn_y = height - btn_height - int(height * 0.08)
 
-            # Button shadow
-            draw.rounded_rectangle(
-                [(btn_x + 2, btn_y + 2), (btn_x + btn_width + 2, btn_y + btn_height + 2)],
-                radius=btn_height // 2,
-                fill=(0, 0, 0, 100)
-            )
-            # Button fill
             draw.rounded_rectangle(
                 [(btn_x, btn_y), (btn_x + btn_width, btn_y + btn_height)],
                 radius=btn_height // 2,
                 fill=brand_rgb + (255,)
             )
-            # CTA text centered
+
+            # Center CTA text inside button
             cta_text_x = btn_x + (btn_width - cta_w) // 2
             cta_text_y = btn_y + (btn_height - cta_h) // 2
             draw.text(
