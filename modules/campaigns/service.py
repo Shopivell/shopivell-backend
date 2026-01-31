@@ -916,6 +916,20 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         vehicle_images = scraped_data.get("vehicle_images", [])
         equipment_images = scraped_data.get("equipment_images", [])
 
+        # Extract visual descriptions for accurate scene generation
+        # These may come from BrandDNA (dict) or VisionAI (string)
+        def _desc_to_str(val):
+            if isinstance(val, dict):
+                return "; ".join(f"{k}: {v}" for k, v in val.items() if v) if val else ""
+            return str(val) if val else ""
+
+        uniforms_desc = _desc_to_str(scraped_data.get("uniform_description"))
+        vehicles_desc = _desc_to_str(scraped_data.get("vehicle_description"))
+        # BrandDNA may also store imagery/equipment in visual_style
+        vs = scraped_data.get("visual_style", {})
+        equipment_desc = _desc_to_str(vs.get("equipment_details")) if isinstance(vs, dict) else ""
+        imagery_desc = _desc_to_str(vs.get("photography_style")) if isinstance(vs, dict) else ""
+
         if logo_url_to_use:
             logger.info(f"[CampaignService] Using SCRAPED logo URL: {logo_url_to_use[:80]}...")
         if color_theme_to_use:
@@ -924,6 +938,10 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             logger.info(f"[CampaignService] Found {len(uniform_images)} uniform reference images")
         if vehicle_images:
             logger.info(f"[CampaignService] Found {len(vehicle_images)} vehicle reference images")
+        if uniforms_desc:
+            logger.info(f"[CampaignService] Uniform description: {uniforms_desc[:80]}...")
+        if vehicles_desc:
+            logger.info(f"[CampaignService] Vehicle description: {vehicles_desc[:80]}...")
 
         # Map business type to industry template
         industry_mapping = {
@@ -1092,6 +1110,10 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                                     bullet_points=features[:3] if features else None,
                                     cta_text=campaign.conversion_button or "Learn More",
                                     upload_to_cloud=True,
+                                    uniforms_description=uniforms_desc,
+                                    vehicles_description=vehicles_desc,
+                                    equipment_description=equipment_desc,
+                                    imagery_description=imagery_desc,
                                 )
                             )
 

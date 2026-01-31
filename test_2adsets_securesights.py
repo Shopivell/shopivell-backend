@@ -565,7 +565,10 @@ RULES:
             })
         content_parts.append({"type": "text", "text": enhanced[:4000]})
 
-        for model_id in ["google/gemini-3-pro-image-preview", "google/gemini-2.0-flash-exp:free"]:
+        # Try gemini-3-pro up to 3 times (it sometimes returns no image intermittently)
+        import time
+        models_to_try = ["google/gemini-3-pro-image-preview"] * 3
+        for model_id in models_to_try:
             try:
                 print(f"  Trying {model_id} via OpenRouter...")
                 resp = requests.post(
@@ -602,9 +605,11 @@ RULES:
                     if "base64" in content[:100]:
                         print(f"  >> Got inline base64 content from {model_id}")
                     else:
-                        print(f"  No image from {model_id} via OpenRouter")
+                        print(f"  No image from {model_id} via OpenRouter, retrying in 3s...")
+                        time.sleep(3)
             except Exception as e:
                 print(f"  {model_id} via OpenRouter failed: {str(e)[:200]}")
+                time.sleep(2)
 
     return {"ok": False}
 
