@@ -354,7 +354,9 @@ RULES:
         content_parts = [enhanced]
         for section in screenshot_sections:
             try:
-                part = types.Part.from_bytes(data=section["bytes"], mime_type="image/png")
+                raw = section["bytes"]
+                mime = "image/jpeg" if raw[:2] == b'\xff\xd8' else "image/png"
+                part = types.Part.from_bytes(data=raw, mime_type=mime)
                 content_parts.append(part)
             except Exception as e:
                 logger.warning(f"[GeminiImageGenerator] Failed to create part for section {section.get('label')}: {e}")

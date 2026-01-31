@@ -2356,37 +2356,51 @@ STYLE REQUIREMENTS:
             logger.warning(f"[MediaGenerator] Failed to download image from {url}: {e}")
         return None
 
-    def _crop_screenshot_sections(self, screenshot_bytes: bytes) -> List[Dict[str, Any]]:
-        """Crop full-page screenshot into focused sections so Gemini can see details."""
+    def _crop_screenshot_sections(self, screenshot_bytes: bytes, max_width: int = 1024) -> List[Dict[str, Any]]:
+        """Crop full-page screenshot into focused sections and resize for API consumption.
+
+        Each section is resized to max_width (default 1024px) and saved as JPEG
+        to keep the base64 payload manageable for OpenRouter/Gemini APIs.
+        """
         try:
             from PIL import Image as PILImage
             from io import BytesIO
 
-            img = PILImage.open(BytesIO(screenshot_bytes))
+            img = PILImage.open(BytesIO(screenshot_bytes)).convert("RGB")
             w, h = img.size
             sections = []
 
-            # Section 1: Header/Logo area (top ~500px)
-            header_h = min(500, h)
-            header = img.crop((0, 0, w, header_h))
-            buf = BytesIO()
-            header.save(buf, format="PNG")
-            sections.append({"label": "HEADER (logo, navigation, branding)", "bytes": buf.getvalue()})
-
-            # Sections 2-4: Content sections (~1500px each)
-            section_h = 1500
-            y = header_h
-            idx = 2
-            while y < h and idx <= 4:
-                end_y = min(y + section_h, h)
-                section = img.crop((0, y, w, end_y))
+            def _save_section(crop, label):
+                """Resize section to max_width and save as JPEG for smaller payloads."""
+                cw, ch = crop.size
+                if cw > max_width:
+                    ratio = max_width / cw
+                    crop = crop.resize((max_width, int(ch * ratio)), PILImage.Resampling.LANCZOS)
                 buf = BytesIO()
-                section.save(buf, format="PNG")
-                sections.append({"label": f"CONTENT SECTION {idx-1} (services, images, assets)", "bytes": buf.getvalue()})
-                y = end_y
-                idx += 1
+                crop.save(buf, format="JPEG", quality=90)
+                sections.append({"label": label, "bytes": buf.getvalue()})
+                logger.info(f"[MediaGenerator] Section '{label}': {crop.size[0]}x{crop.size[1]} ({len(buf.getvalue()):,} bytes)")
 
-            logger.info(f"[MediaGenerator] Cropped screenshot ({w}x{h}) into {len(sections)} sections")
+            # Section 1: Header/Logo area (top ~500px) - has logo, nav, brand colors
+            header_h = min(500, h)
+            _save_section(img.crop((0, 0, w, header_h)), "HEADER (logo, navigation, branding)")
+
+            # Section 2: Hero area (500-1500px) - usually has main hero image, key visuals
+            hero_end = min(1500, h)
+            if hero_end > header_h + 100:
+                _save_section(img.crop((0, header_h, w, hero_end)), "HERO AREA (main visuals, key images)")
+
+            # Section 3: Mid content (1500-3500px) - services, products, uniforms, vehicles
+            mid_end = min(3500, h)
+            if mid_end > hero_end + 100:
+                _save_section(img.crop((0, hero_end, w, mid_end)), "SERVICES/PRODUCTS (uniforms, vehicles, equipment)")
+
+            # Section 4: Lower content (3500-5500px) - more assets, gallery
+            lower_end = min(5500, h)
+            if lower_end > mid_end + 100:
+                _save_section(img.crop((0, mid_end, w, lower_end)), "GALLERY/ASSETS (additional images)")
+
+            logger.info(f"[MediaGenerator] Cropped screenshot ({w}x{h}) into {len(sections)} sections (resized to {max_width}px wide)")
             return sections
         except Exception as e:
             logger.warning(f"[MediaGenerator] Failed to crop screenshot: {e}")
@@ -2528,15 +2542,18 @@ STYLE REQUIREMENTS:
         # Build multimodal content: text + section images as base64 data URLs
         content_parts = []
 
-        # Add each screenshot section as an image part
+        # Add each screenshot section as an image part (already resized to 1024px + JPEG)
         if screenshot_sections:
             for section in screenshot_sections:
                 try:
                     section_b64 = base64.b64encode(section["bytes"]).decode()
+                    # Detect mime type from bytes header
+                    raw = section["bytes"]
+                    mime = "image/jpeg" if raw[:2] == b'\xff\xd8' else "image/png"
                     content_parts.append({
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{section_b64}"
+                            "url": f"data:{mime};base64,{section_b64}"
                         }
                     })
                 except Exception as e:
