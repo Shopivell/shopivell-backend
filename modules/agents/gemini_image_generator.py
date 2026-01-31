@@ -342,7 +342,7 @@ SCENE TO GENERATE:
 
 RULES:
 - NO text overlays, NO headlines, NO buttons, NO bullet text
-- NO human faces or people - show equipment, vehicles, buildings, and products instead
+- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
 - ONLY generate the photorealistic scene
 """
 

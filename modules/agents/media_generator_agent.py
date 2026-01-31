@@ -2454,7 +2454,7 @@ SCENE TO GENERATE:
 
 RULES:
 - NO text overlays, NO headlines, NO buttons, NO bullet text
-- NO human faces or people - show equipment, vehicles, buildings, and products instead
+- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
 - ONLY generate the photorealistic scene
 """
         else:
@@ -2468,7 +2468,7 @@ STYLE REQUIREMENTS:
 - Photorealistic, high-quality commercial photography
 - Color scheme: primary {primary_color}, accent {accent_color}
 - Professional advertising look, suitable for social media ads
-- NO human faces or people - show equipment, vehicles, buildings, and products instead
+- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
 - NO text, NO headlines, NO buttons, NO watermarks
 - {"NO standalone logos" if has_pil_logo else "Include subtle company branding"}
 - Clean composition with space for text overlay at the bottom
