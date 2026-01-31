@@ -1648,6 +1648,24 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
             lambda: soup.find('svg', class_=lambda x: x and 'logo' in x.lower() if x else False),
         ]
 
+        def _get_best_img_src(img_tag):
+            """Get the real image URL from an img tag, handling lazy-loading.
+            Checks data-src, data-lazy-src, data-original, srcset before src.
+            Skips placeholder/loader images."""
+            skip_words = ['loader', 'spinner', 'placeholder', 'blank', 'spacer', 'pixel', 'loading']
+            for attr in ['data-src', 'data-lazy-src', 'data-original', 'srcset', 'src']:
+                val = img_tag.get(attr, '')
+                if not val:
+                    continue
+                if attr == 'srcset' and val:
+                    # Take the first (usually largest) URL from srcset
+                    val = val.split(',')[0].strip().split(' ')[0]
+                if val and not val.startswith('data:'):
+                    if any(s in val.lower() for s in skip_words):
+                        continue
+                    return val
+            return ''
+
         for selector in logo_selectors:
             try:
                 logo = selector()
@@ -1655,7 +1673,7 @@ def _extract_images_from_website(url: str) -> Dict[str, Any]:
                     if logo.name == 'svg':
                         # For SVG, we might need to handle differently
                         continue
-                    logo_url = logo.get('src') or logo.get('data-src')
+                    logo_url = _get_best_img_src(logo)
                     if logo_url:
                         if not logo_url.startswith('http'):
                             logo_url = urljoin(base_url, logo_url)
