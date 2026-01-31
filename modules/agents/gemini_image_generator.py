@@ -168,6 +168,7 @@ class GeminiImageGenerator:
 {prompt}
 
 IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
+CRITICAL RULE: ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no signs with text, no watermarks. The image must contain ZERO readable text. Only copy VISUAL elements from references (uniforms, vehicles, colors, equipment), never text.
 """
 
         # Add logo as reference
@@ -214,11 +215,11 @@ IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
 """
                     elif img_type == 'screenshot' or img_type == 'scene':
                         enhanced_prompt += """
-- WEBSITE REFERENCE: This is a screenshot of the company's website. Use anything useful from it as reference - any images, colors, vehicles, uniforms, equipment, products, or any other visual assets. Copy them as closely as possible. Match the color scheme and overall aesthetic.
+- WEBSITE REFERENCE: This is a screenshot of the company's website. Use VISUAL assets from it as reference - colors, vehicles, uniforms, equipment, products, or any other visual elements. Copy them as closely as possible. Match the color scheme and overall aesthetic. Do NOT copy any text from the screenshot.
 """
                     else:
                         enhanced_prompt += """
-- REFERENCE IMAGE: Use this image as a direct visual reference. Copy the visual elements, style, and assets shown in it.
+- REFERENCE IMAGE: Use this image as a direct visual reference. Copy the visual elements, style, and assets shown in it. Do NOT copy any text.
 """
                     logger.info(f"[GeminiImageGenerator] Added {img_type} reference: {img_url}")
 
