@@ -1,0 +1,379 @@
+import uuid
+import math
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, and_
+
+from database import get_db
+from modules.delivery.models import Delivery, DeliveryTracking, DeliveryZone, DeliveryStatus
+from modules.delivery.schemas import (
+    DeliveryCreate, DeliveryUpdate, DeliveryResponse, DeliveryListResponse,
+    DeliveryStatusUpdate,
+    DeliveryZoneCreate, DeliveryZoneUpdate, DeliveryZoneResponse,
+    DeliveryTrackingResponse,
+    CostEstimateRequest, CostEstimateResponse,
+    DeliveryAnalytics,
+)
+from modules.orders.models import CustomerOrder
+
+delivery_router = APIRouter(prefix="/api/delivery", tags=["Delivery"])
+
+
+# ──────────────────────────────── Delivery Zones ────────────────────────────────
+
+@delivery_router.post("/zones", response_model=DeliveryZoneResponse)
+def create_zone(zone: DeliveryZoneCreate, db: Session = Depends(get_db)):
+    db_zone = DeliveryZone(**zone.model_dump())
+    db.add(db_zone)
+    db.commit()
+    db.refresh(db_zone)
+    return db_zone
+
+
+@delivery_router.get("/zones/store/{store_id}", response_model=list[DeliveryZoneResponse])
+def list_zones(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    return db.query(DeliveryZone).filter(
+        DeliveryZone.store_id == store_id
+    ).order_by(DeliveryZone.min_distance_km).all()
+
+
+@delivery_router.put("/zones/{zone_id}", response_model=DeliveryZoneResponse)
+def update_zone(zone_id: uuid.UUID, payload: DeliveryZoneUpdate, db: Session = Depends(get_db)):
+    zone = db.query(DeliveryZone).filter(DeliveryZone.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Delivery zone not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(zone, k, v)
+    db.commit()
+    db.refresh(zone)
+    return zone
+
+
+@delivery_router.delete("/zones/{zone_id}")
+def delete_zone(zone_id: uuid.UUID, db: Session = Depends(get_db)):
+    zone = db.query(DeliveryZone).filter(DeliveryZone.id == zone_id).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Delivery zone not found")
+    db.delete(zone)
+    db.commit()
+    return {"detail": "Zone deleted"}
+
+
+# ──────────────────────────────── Cost Calculation ────────────────────────────────
+
+def _calculate_cost(distance_km: float, zone: DeliveryZone) -> dict:
+    """Calculate delivery cost based on distance and zone pricing."""
+    cost = zone.base_fee + (distance_km * zone.per_km_rate)
+    duration = distance_km * zone.estimated_time_per_km_min
+    return {
+        "distance_km": round(distance_km, 2),
+        "base_fee": zone.base_fee,
+        "per_km_rate": zone.per_km_rate,
+        "delivery_cost": round(cost, 2),
+        "estimated_duration_min": round(duration, 1),
+        "currency": zone.currency,
+        "zone_name": zone.name,
+    }
+
+
+@delivery_router.post("/estimate-cost", response_model=CostEstimateResponse)
+def estimate_cost(req: CostEstimateRequest, db: Session = Depends(get_db)):
+    """Estimate delivery cost for a given distance. Finds the matching zone automatically."""
+    if req.zone_id:
+        zone = db.query(DeliveryZone).filter(DeliveryZone.id == req.zone_id).first()
+        if not zone:
+            raise HTTPException(status_code=404, detail="Zone not found")
+    else:
+        zone = db.query(DeliveryZone).filter(
+            DeliveryZone.store_id == req.store_id,
+            DeliveryZone.is_active == True,
+            DeliveryZone.min_distance_km <= req.distance_km,
+            (DeliveryZone.max_distance_km >= req.distance_km) | (DeliveryZone.max_distance_km.is_(None)),
+        ).first()
+        if not zone:
+            # Fallback: use the zone with the highest max_distance
+            zone = db.query(DeliveryZone).filter(
+                DeliveryZone.store_id == req.store_id,
+                DeliveryZone.is_active == True,
+            ).order_by(DeliveryZone.max_distance_km.desc().nullslast()).first()
+        if not zone:
+            raise HTTPException(status_code=404, detail="No delivery zones configured for this store")
+
+    return _calculate_cost(req.distance_km, zone)
+
+
+# ──────────────────────────────── Deliveries CRUD ────────────────────────────────
+
+@delivery_router.post("", response_model=DeliveryResponse)
+def create_delivery(payload: DeliveryCreate, db: Session = Depends(get_db)):
+    data = payload.model_dump()
+
+    # Auto-calculate cost if distance and zone are provided
+    if payload.distance_km and payload.distance_km > 0:
+        zone = None
+        if payload.delivery_zone_id:
+            zone = db.query(DeliveryZone).filter(DeliveryZone.id == payload.delivery_zone_id).first()
+        else:
+            zone = db.query(DeliveryZone).filter(
+                DeliveryZone.store_id == payload.store_id,
+                DeliveryZone.is_active == True,
+                DeliveryZone.min_distance_km <= payload.distance_km,
+                (DeliveryZone.max_distance_km >= payload.distance_km) | (DeliveryZone.max_distance_km.is_(None)),
+            ).first()
+            if not zone:
+                zone = db.query(DeliveryZone).filter(
+                    DeliveryZone.store_id == payload.store_id,
+                    DeliveryZone.is_active == True,
+                ).order_by(DeliveryZone.max_distance_km.desc().nullslast()).first()
+
+        if zone:
+            cost_info = _calculate_cost(payload.distance_km, zone)
+            data["base_fee"] = cost_info["base_fee"]
+            data["per_km_rate"] = cost_info["per_km_rate"]
+            data["delivery_cost"] = cost_info["delivery_cost"]
+            data["estimated_duration_min"] = cost_info["estimated_duration_min"]
+            data["currency"] = cost_info["currency"]
+            if not data.get("delivery_zone_id"):
+                data["delivery_zone_id"] = zone.id
+
+    delivery = Delivery(**data)
+    db.add(delivery)
+    db.flush()
+
+    # Create initial tracking event
+    tracking = DeliveryTracking(
+        delivery_id=delivery.id,
+        status=DeliveryStatus.PENDING,
+        notes="Delivery created",
+    )
+    db.add(tracking)
+    db.commit()
+    db.refresh(delivery)
+
+    # Update the linked order's delivery_status
+    if delivery.order_id:
+        order = db.query(CustomerOrder).filter(CustomerOrder.id == delivery.order_id).first()
+        if order:
+            order.delivery_status = DeliveryStatus.PENDING.value
+            db.commit()
+
+    return delivery
+
+
+@delivery_router.get("/store/{store_id}", response_model=DeliveryListResponse)
+def list_deliveries(
+    store_id: uuid.UUID,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.store_id == store_id)
+
+    if status:
+        q = q.filter(Delivery.status == status)
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            (Delivery.customer_name.ilike(pattern)) |
+            (Delivery.tracking_number.ilike(pattern)) |
+            (Delivery.delivery_address.ilike(pattern))
+        )
+
+    total = q.count()
+    deliveries = q.order_by(Delivery.created_at.desc()).offset(skip).limit(limit).all()
+
+    return DeliveryListResponse(
+        deliveries=deliveries,
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@delivery_router.get("/{delivery_id}", response_model=DeliveryResponse)
+def get_delivery(delivery_id: uuid.UUID, db: Session = Depends(get_db)):
+    delivery = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+    return delivery
+
+
+@delivery_router.get("/track/{tracking_number}", response_model=DeliveryResponse)
+def track_delivery(tracking_number: str, db: Session = Depends(get_db)):
+    """Public tracking endpoint by tracking number."""
+    delivery = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.tracking_number == tracking_number).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+    return delivery
+
+
+@delivery_router.put("/{delivery_id}", response_model=DeliveryResponse)
+def update_delivery(delivery_id: uuid.UUID, payload: DeliveryUpdate, db: Session = Depends(get_db)):
+    delivery = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+
+    # Recalculate cost if distance changed
+    new_distance = update_data.get("distance_km")
+    new_zone_id = update_data.get("delivery_zone_id")
+
+    if new_distance is not None or new_zone_id is not None:
+        dist = new_distance if new_distance is not None else delivery.distance_km
+        z_id = new_zone_id if new_zone_id is not None else delivery.delivery_zone_id
+
+        if dist and dist > 0:
+            zone = None
+            if z_id:
+                zone = db.query(DeliveryZone).filter(DeliveryZone.id == z_id).first()
+            else:
+                zone = db.query(DeliveryZone).filter(
+                    DeliveryZone.store_id == delivery.store_id,
+                    DeliveryZone.is_active == True,
+                    DeliveryZone.min_distance_km <= dist,
+                    (DeliveryZone.max_distance_km >= dist) | (DeliveryZone.max_distance_km.is_(None)),
+                ).first()
+
+            if zone:
+                cost_info = _calculate_cost(dist, zone)
+                update_data["base_fee"] = cost_info["base_fee"]
+                update_data["per_km_rate"] = cost_info["per_km_rate"]
+                update_data["delivery_cost"] = cost_info["delivery_cost"]
+                update_data["estimated_duration_min"] = cost_info["estimated_duration_min"]
+
+    for k, v in update_data.items():
+        setattr(delivery, k, v)
+
+    db.commit()
+    db.refresh(delivery)
+    return delivery
+
+
+@delivery_router.delete("/{delivery_id}")
+def delete_delivery(delivery_id: uuid.UUID, db: Session = Depends(get_db)):
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+    db.delete(delivery)
+    db.commit()
+    return {"detail": "Delivery deleted"}
+
+
+# ──────────────────────────────── Status Updates & Tracking ────────────────────────────────
+
+@delivery_router.patch("/{delivery_id}/status", response_model=DeliveryResponse)
+def update_delivery_status(
+    delivery_id: uuid.UUID,
+    payload: DeliveryStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    delivery = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    now = datetime.utcnow()
+    delivery.status = payload.status
+
+    if payload.status == DeliveryStatus.PICKED_UP.value:
+        delivery.picked_up_at = now
+    elif payload.status == DeliveryStatus.DELIVERED.value:
+        delivery.delivered_at = now
+    elif payload.status == DeliveryStatus.FAILED.value:
+        delivery.failed_at = now
+        if payload.failure_reason:
+            delivery.failure_reason = payload.failure_reason
+
+    # Create tracking event
+    tracking = DeliveryTracking(
+        delivery_id=delivery.id,
+        status=payload.status,
+        location=payload.location,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        notes=payload.notes,
+    )
+    db.add(tracking)
+
+    # Sync status to the linked order
+    if delivery.order_id:
+        order = db.query(CustomerOrder).filter(CustomerOrder.id == delivery.order_id).first()
+        if order:
+            order.delivery_status = payload.status
+
+    db.commit()
+    db.refresh(delivery)
+    return delivery
+
+
+@delivery_router.get("/{delivery_id}/tracking", response_model=list[DeliveryTrackingResponse])
+def get_tracking_history(delivery_id: uuid.UUID, db: Session = Depends(get_db)):
+    events = db.query(DeliveryTracking).filter(
+        DeliveryTracking.delivery_id == delivery_id
+    ).order_by(DeliveryTracking.created_at.asc()).all()
+    return events
+
+
+# ──────────────────────────────── Analytics ────────────────────────────────
+
+@delivery_router.get("/analytics/store/{store_id}", response_model=DeliveryAnalytics)
+def get_delivery_analytics(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    base = db.query(Delivery).filter(Delivery.store_id == store_id)
+
+    total = base.count()
+    delivered = base.filter(Delivery.status == DeliveryStatus.DELIVERED).count()
+    in_transit = base.filter(Delivery.status.in_([
+        DeliveryStatus.IN_TRANSIT, DeliveryStatus.OUT_FOR_DELIVERY, DeliveryStatus.PICKED_UP,
+    ])).count()
+    pending = base.filter(Delivery.status.in_([DeliveryStatus.PENDING, DeliveryStatus.ASSIGNED])).count()
+    failed = base.filter(Delivery.status == DeliveryStatus.FAILED).count()
+
+    cost_agg = db.query(
+        func.coalesce(func.sum(Delivery.delivery_cost), 0),
+        func.coalesce(func.avg(Delivery.delivery_cost), 0),
+        func.coalesce(func.avg(Delivery.distance_km), 0),
+    ).filter(Delivery.store_id == store_id).first()
+
+    total_cost = float(cost_agg[0])
+    avg_cost = float(cost_agg[1])
+    avg_dist = float(cost_agg[2])
+
+    # Average delivery time for completed deliveries
+    completed = base.filter(
+        Delivery.delivered_at.isnot(None),
+        Delivery.created_at.isnot(None),
+    ).all()
+    avg_time = 0.0
+    if completed:
+        times = [(d.delivered_at - d.created_at).total_seconds() / 60 for d in completed]
+        avg_time = sum(times) / len(times)
+
+    success_rate = (delivered / total * 100) if total > 0 else 0.0
+
+    return DeliveryAnalytics(
+        total_deliveries=total,
+        delivered_count=delivered,
+        in_transit_count=in_transit,
+        pending_count=pending,
+        failed_count=failed,
+        total_delivery_cost=round(total_cost, 2),
+        avg_delivery_cost=round(avg_cost, 2),
+        avg_distance_km=round(avg_dist, 2),
+        avg_delivery_time_min=round(avg_time, 1),
+        delivery_success_rate=round(success_rate, 1),
+    )
