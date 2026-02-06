@@ -24,6 +24,67 @@ class DeliveryStatus(str, enum.Enum):
     RETURNED = "returned"
 
 
+class VehicleType(str, enum.Enum):
+    BICYCLE = "bicycle"
+    MOTORCYCLE = "motorcycle"
+    VAN = "van"
+    TRUCK = "truck"
+
+
+class VehicleStatus(str, enum.Enum):
+    AVAILABLE = "available"
+    IN_USE = "in_use"
+    MAINTENANCE = "maintenance"
+    RETIRED = "retired"
+
+
+class DriverStatus(str, enum.Enum):
+    AVAILABLE = "available"
+    ON_DELIVERY = "on_delivery"
+    OFF_DUTY = "off_duty"
+
+
+class Vehicle(Base):
+    """A vehicle available for deliveries."""
+    __tablename__ = "vehicles"
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+    registration_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    vehicle_type: Mapped[str] = mapped_column(SAEnum(VehicleType, name="vehicle_type_enum", create_constraint=False), default=VehicleType.MOTORCYCLE, nullable=False)
+    make: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    capacity_kg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(SAEnum(VehicleStatus, name="vehicle_status_enum", create_constraint=False), default=VehicleStatus.AVAILABLE, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    store = relationship("Store", backref="vehicles")
+    drivers: Mapped[List["Driver"]] = relationship("Driver", back_populates="vehicle")
+
+
+class Driver(Base):
+    """A driver who can be assigned to deliveries."""
+    __tablename__ = "drivers"
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    license_number: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    vehicle_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("vehicles.id"), nullable=True)
+    status: Mapped[str] = mapped_column(SAEnum(DriverStatus, name="driver_status_enum", create_constraint=False), default=DriverStatus.AVAILABLE, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    total_deliveries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    store = relationship("Store", backref="drivers")
+    vehicle: Mapped[Optional["Vehicle"]] = relationship("Vehicle", back_populates="drivers")
+
+
 class DeliveryZone(Base):
     """Defines delivery zones with per-kilometer pricing."""
     __tablename__ = "delivery_zones"
@@ -84,6 +145,8 @@ class Delivery(Base):
     # Delivery person
     delivery_person: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     delivery_person_phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    driver_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("drivers.id"), nullable=True)
+    vehicle_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("vehicles.id"), nullable=True)
 
     # Package info
     package_weight: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
@@ -105,6 +168,8 @@ class Delivery(Base):
     store = relationship("Store", backref="deliveries")
     order = relationship("CustomerOrder", backref="delivery")
     zone = relationship("DeliveryZone", backref="deliveries")
+    driver = relationship("Driver", backref="deliveries")
+    vehicle = relationship("Vehicle", backref="deliveries")
     tracking_events: Mapped[List["DeliveryTracking"]] = relationship("DeliveryTracking", back_populates="delivery", order_by="DeliveryTracking.created_at")
 
     __table_args__ = (

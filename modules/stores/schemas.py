@@ -23,6 +23,9 @@ class StoreBase(BaseModel):
     dine_in_enabled: bool = False
     delivery_fee: str = '0'
     free_delivery_minimum: bool = False
+    store_address: Optional[str] = None
+    store_city: Optional[str] = None
+    store_country: Optional[str] = None
     domain: Optional[str] = None
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None
@@ -53,6 +56,9 @@ class StoreUpdate(BaseModel):
     dine_in_enabled: Optional[bool] = None
     delivery_fee: Optional[str] = None
     free_delivery_minimum: Optional[bool] = None
+    store_address: Optional[str] = None
+    store_city: Optional[str] = None
+    store_country: Optional[str] = None
     domain: Optional[str] = None
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None

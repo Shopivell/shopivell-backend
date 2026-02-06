@@ -94,4 +94,16 @@ try:
 except ImportError:
     pass
 
+# Procurement
+try:
+    from modules.procurement.models import *
+except ImportError:
+    pass
+
+# Delivery
+try:
+    from modules.delivery.models import *
+except ImportError:
+    pass
+
 print("[Models] All models loaded successfully")

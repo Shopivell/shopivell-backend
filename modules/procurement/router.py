@@ -12,7 +12,7 @@ from modules.procurement.models import (
     POStatus, PaymentStatus, GoodsReceiptStatus
 )
 from modules.procurement.schemas import (
-    SupplierCreate, SupplierResponse,
+    SupplierCreate, SupplierUpdate, SupplierResponse,
     CatalogProductCreate, CatalogProductUpdate, CatalogProductResponse, CatalogProductListResponse,
     PurchaseOrderCreate, PurchaseOrderUpdate, PurchaseOrderResponse, PurchaseOrderListResponse,
     POStatusUpdate, GoodsReceiptCreate, GoodsReceiptResponse,
@@ -752,3 +752,34 @@ async def seed_default_supplier(db: Session = Depends(get_db)):
 async def list_suppliers(db: Session = Depends(get_db)):
     suppliers = db.query(Supplier).filter(Supplier.is_active == True).all()
     return suppliers
+
+
+@procurement_router.post("/suppliers", response_model=SupplierResponse, status_code=201)
+async def create_supplier(data: SupplierCreate, db: Session = Depends(get_db)):
+    supplier = Supplier(**data.model_dump())
+    db.add(supplier)
+    db.commit()
+    db.refresh(supplier)
+    return supplier
+
+
+@procurement_router.put("/suppliers/{supplier_id}", response_model=SupplierResponse)
+async def update_supplier(supplier_id: uuid.UUID, data: SupplierUpdate, db: Session = Depends(get_db)):
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    for k, v in data.model_dump(exclude_unset=True).items():
+        setattr(supplier, k, v)
+    db.commit()
+    db.refresh(supplier)
+    return supplier
+
+
+@procurement_router.delete("/suppliers/{supplier_id}")
+async def delete_supplier(supplier_id: uuid.UUID, db: Session = Depends(get_db)):
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    db.delete(supplier)
+    db.commit()
+    return {"detail": "Supplier deleted"}

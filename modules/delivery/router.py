@@ -8,14 +8,16 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_
 
 from database import get_db
-from modules.delivery.models import Delivery, DeliveryTracking, DeliveryZone, DeliveryStatus
+from modules.delivery.models import Delivery, DeliveryTracking, DeliveryZone, DeliveryStatus, Vehicle, Driver, VehicleStatus, DriverStatus
 from modules.delivery.schemas import (
     DeliveryCreate, DeliveryUpdate, DeliveryResponse, DeliveryListResponse,
-    DeliveryStatusUpdate,
+    DeliveryStatusUpdate, DeliveryAssign,
     DeliveryZoneCreate, DeliveryZoneUpdate, DeliveryZoneResponse,
     DeliveryTrackingResponse,
     CostEstimateRequest, CostEstimateResponse,
     DeliveryAnalytics,
+    VehicleCreate, VehicleUpdate, VehicleResponse,
+    DriverCreate, DriverUpdate, DriverResponse,
 )
 from modules.orders.models import CustomerOrder
 
@@ -377,3 +379,142 @@ def get_delivery_analytics(store_id: uuid.UUID, db: Session = Depends(get_db)):
         avg_delivery_time_min=round(avg_time, 1),
         delivery_success_rate=round(success_rate, 1),
     )
+
+
+# ──────────────────────────────── Vehicles CRUD ────────────────────────────────
+
+@delivery_router.post("/vehicles", response_model=VehicleResponse, status_code=201)
+def create_vehicle(payload: VehicleCreate, db: Session = Depends(get_db)):
+    vehicle = Vehicle(**payload.model_dump())
+    db.add(vehicle)
+    db.commit()
+    db.refresh(vehicle)
+    return vehicle
+
+
+@delivery_router.get("/vehicles/store/{store_id}", response_model=list[VehicleResponse])
+def list_vehicles(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    return db.query(Vehicle).filter(Vehicle.store_id == store_id).order_by(Vehicle.created_at.desc()).all()
+
+
+@delivery_router.get("/vehicles/{vehicle_id}", response_model=VehicleResponse)
+def get_vehicle(vehicle_id: uuid.UUID, db: Session = Depends(get_db)):
+    vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return vehicle
+
+
+@delivery_router.put("/vehicles/{vehicle_id}", response_model=VehicleResponse)
+def update_vehicle(vehicle_id: uuid.UUID, payload: VehicleUpdate, db: Session = Depends(get_db)):
+    vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(vehicle, k, v)
+    db.commit()
+    db.refresh(vehicle)
+    return vehicle
+
+
+@delivery_router.delete("/vehicles/{vehicle_id}")
+def delete_vehicle(vehicle_id: uuid.UUID, db: Session = Depends(get_db)):
+    vehicle = db.query(Vehicle).filter(Vehicle.id == vehicle_id).first()
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    db.delete(vehicle)
+    db.commit()
+    return {"detail": "Vehicle deleted"}
+
+
+# ──────────────────────────────── Drivers CRUD ────────────────────────────────
+
+@delivery_router.post("/drivers", response_model=DriverResponse, status_code=201)
+def create_driver(payload: DriverCreate, db: Session = Depends(get_db)):
+    driver = Driver(**payload.model_dump())
+    db.add(driver)
+    db.commit()
+    db.refresh(driver)
+    return driver
+
+
+@delivery_router.get("/drivers/store/{store_id}", response_model=list[DriverResponse])
+def list_drivers(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    return db.query(Driver).filter(Driver.store_id == store_id).order_by(Driver.created_at.desc()).all()
+
+
+@delivery_router.get("/drivers/{driver_id}", response_model=DriverResponse)
+def get_driver(driver_id: uuid.UUID, db: Session = Depends(get_db)):
+    driver = db.query(Driver).filter(Driver.id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    return driver
+
+
+@delivery_router.put("/drivers/{driver_id}", response_model=DriverResponse)
+def update_driver(driver_id: uuid.UUID, payload: DriverUpdate, db: Session = Depends(get_db)):
+    driver = db.query(Driver).filter(Driver.id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(driver, k, v)
+    db.commit()
+    db.refresh(driver)
+    return driver
+
+
+@delivery_router.delete("/drivers/{driver_id}")
+def delete_driver(driver_id: uuid.UUID, db: Session = Depends(get_db)):
+    driver = db.query(Driver).filter(Driver.id == driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+    db.delete(driver)
+    db.commit()
+    return {"detail": "Driver deleted"}
+
+
+# ──────────────────────────────── Assign Driver/Vehicle ────────────────────────────────
+
+@delivery_router.patch("/{delivery_id}/assign", response_model=DeliveryResponse)
+def assign_driver_vehicle(
+    delivery_id: uuid.UUID,
+    payload: DeliveryAssign,
+    db: Session = Depends(get_db),
+):
+    """Assign a driver and optionally a vehicle to a delivery."""
+    delivery = db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    driver = db.query(Driver).filter(Driver.id == payload.driver_id).first()
+    if not driver:
+        raise HTTPException(status_code=404, detail="Driver not found")
+
+    delivery.driver_id = driver.id
+    delivery.delivery_person = driver.name
+    delivery.delivery_person_phone = driver.phone
+
+    # Use the vehicle from payload, or fallback to driver's assigned vehicle
+    vid = payload.vehicle_id or driver.vehicle_id
+    if vid:
+        vehicle = db.query(Vehicle).filter(Vehicle.id == vid).first()
+        if vehicle:
+            delivery.vehicle_id = vehicle.id
+            vehicle.status = VehicleStatus.IN_USE
+
+    driver.status = DriverStatus.ON_DELIVERY
+    delivery.status = DeliveryStatus.ASSIGNED
+
+    # Create tracking event
+    tracking = DeliveryTracking(
+        delivery_id=delivery.id,
+        status=DeliveryStatus.ASSIGNED,
+        notes=f"Assigned to driver {driver.name}",
+    )
+    db.add(tracking)
+
+    db.commit()
+    db.refresh(delivery)
+    return delivery

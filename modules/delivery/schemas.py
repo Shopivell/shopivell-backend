@@ -4,6 +4,84 @@ from datetime import datetime
 import uuid
 
 
+# --- Vehicle ---
+
+class VehicleBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    registration_number: str
+    vehicle_type: str = "motorcycle"
+    make: Optional[str] = None
+    model: Optional[str] = None
+    capacity_kg: Optional[float] = None
+    status: str = "available"
+    is_active: bool = True
+
+
+class VehicleCreate(VehicleBase):
+    store_id: uuid.UUID
+
+
+class VehicleUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    registration_number: Optional[str] = None
+    vehicle_type: Optional[str] = None
+    make: Optional[str] = None
+    model: Optional[str] = None
+    capacity_kg: Optional[float] = None
+    status: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class VehicleResponse(VehicleBase):
+    id: uuid.UUID
+    store_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+# --- Driver ---
+
+class DriverBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    name: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    license_number: Optional[str] = None
+    vehicle_id: Optional[uuid.UUID] = None
+    status: str = "available"
+    is_active: bool = True
+
+
+class DriverCreate(DriverBase):
+    store_id: uuid.UUID
+
+
+class DriverUpdate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    license_number: Optional[str] = None
+    vehicle_id: Optional[uuid.UUID] = None
+    status: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class DriverResponse(DriverBase):
+    id: uuid.UUID
+    store_id: uuid.UUID
+    total_deliveries: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+# --- DeliveryAssign ---
+
+class DeliveryAssign(BaseModel):
+    driver_id: uuid.UUID
+    vehicle_id: Optional[uuid.UUID] = None
+
+
 # --- DeliveryZone ---
 
 class DeliveryZoneBase(BaseModel):
@@ -134,6 +212,8 @@ class DeliveryResponse(DeliveryBase):
     tracking_number: str
     status: str
     delivery_zone_id: Optional[uuid.UUID] = None
+    driver_id: Optional[uuid.UUID] = None
+    vehicle_id: Optional[uuid.UUID] = None
     base_fee: float = 0.0
     per_km_rate: float = 0.0
     delivery_cost: float = 0.0
