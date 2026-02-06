@@ -35,3 +35,9 @@ google-genai>=1.0.0
 Pillow>=10.0.0
 playwright>=1.40.0
 nest-asyncio>=1.5.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+opencv-python-headless>=4.8.0
+mediapipe>=0.10.9
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0

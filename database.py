@@ -81,6 +81,7 @@ def init_db():
     from modules.pos import models as pos_models
     from modules.accounting import models as accounting_models
     from modules.website_builder import models as website_builder_models
+    from modules.fashion import models as fashion_models
 
     Base.metadata.create_all(bind=engine)
 
