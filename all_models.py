@@ -106,4 +106,22 @@ try:
 except ImportError:
     pass
 
+# Reviews
+try:
+    from modules.reviews.models import *
+except ImportError:
+    pass
+
+# Coupons
+try:
+    from modules.coupons.models import *
+except ImportError:
+    pass
+
+# Returns
+try:
+    from modules.returns.models import *
+except ImportError:
+    pass
+
 print("[Models] All models loaded successfully")

@@ -16,6 +16,9 @@ from modules.admin.models import *  # Admin models (depends on User)
 from modules.procurement.models import *  # Procurement models (depends on Store, Product)
 from modules.delivery.models import *  # Delivery models (depends on Store, CustomerOrder)
 from modules.fashion.models import *  # Fashion try-on models (depends on User, Store)
+from modules.reviews.models import *  # Review models (depends on User, Store)
+from modules.coupons.models import *  # Coupon models (depends on User, Store)
+from modules.returns.models import *  # Return models (depends on User, Store)
 
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -50,6 +53,9 @@ from modules.pos.router import pos_router
 from modules.accounting.router import accounting_router
 from modules.website_builder.router import website_builder_router
 from modules.fashion.router import fashion_router
+from modules.reviews.router import review_router
+from modules.coupons.router import coupon_router
+from modules.returns.router import return_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -127,6 +133,9 @@ app.include_router(pos_router, prefix="/v1")
 app.include_router(accounting_router, prefix="/v1")
 app.include_router(website_builder_router, prefix="/v1")
 app.include_router(fashion_router, prefix="/v1")
+app.include_router(review_router, prefix="/v1")
+app.include_router(coupon_router, prefix="/v1")
+app.include_router(return_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")
