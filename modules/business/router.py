@@ -110,8 +110,11 @@ def get_facebook_user_pages(access_token: str):
             }
         )
         response.raise_for_status()
-        return response.json().get("data", [])
+        result = response.json()
+        print(f"[FB DEBUG] /me/accounts response: {json.dumps(result, indent=2)}")
+        return result.get("data", [])
     except Exception as e:
+        print(f"[FB DEBUG] /me/accounts error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to get Facebook pages: {str(e)}"
@@ -333,9 +336,23 @@ def connect_facebook_account(
                 pass
 
         if not pages_data:
+            # Check what permissions the token actually has
+            try:
+                perms_resp = requests.get(
+                    f"{FB_GRAPH_API_BASE}/me/permissions",
+                    params={"access_token": long_lived_token}
+                )
+                perms_data = perms_resp.json().get("data", [])
+                granted = [p["permission"] for p in perms_data if p.get("status") == "granted"]
+                declined = [p["permission"] for p in perms_data if p.get("status") == "declined"]
+                print(f"[FB DEBUG] Granted permissions: {granted}")
+                print(f"[FB DEBUG] Declined permissions: {declined}")
+            except Exception as perm_err:
+                print(f"[FB DEBUG] Could not check permissions: {perm_err}")
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No Facebook pages found for this account"
+                detail="No Facebook pages found. Make sure your Facebook account manages at least one Facebook Page."
             )
         
         connected_pages = []
