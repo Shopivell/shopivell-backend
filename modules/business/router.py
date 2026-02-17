@@ -99,6 +99,24 @@ def get_facebook_business_accounts(access_token: str):
             detail=f"Failed to get business accounts: {str(e)}"
         )
 
+def get_facebook_user_pages(access_token: str):
+    """Get Facebook pages directly via /me/accounts (only needs pages_show_list)"""
+    try:
+        response = requests.get(
+            f"{FB_GRAPH_API_BASE}/me/accounts",
+            params={
+                "access_token": access_token,
+                "fields": "id,name,category,category_list,about,cover,picture,website,phone,emails,location,access_token,tasks"
+            }
+        )
+        response.raise_for_status()
+        return response.json().get("data", [])
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to get Facebook pages: {str(e)}"
+        )
+
 def get_facebook_pages(access_token: str, business_account_id: str):
     """Get Facebook pages for a business account"""
     try:
@@ -112,7 +130,7 @@ def get_facebook_pages(access_token: str, business_account_id: str):
         )
         response.raise_for_status()
         business_info = response.json()
-        
+
         # Get pages owned by this business account
         pages_response = requests.get(
             f"{FB_GRAPH_API_BASE}/{business_account_id}/owned_pages",
@@ -123,7 +141,7 @@ def get_facebook_pages(access_token: str, business_account_id: str):
         )
         pages_response.raise_for_status()
         pages_data = pages_response.json().get("data", [])
-        
+
         return business_info, pages_data
     except Exception as e:
         raise HTTPException(
@@ -258,28 +276,31 @@ def connect_facebook_account(
         # Calculate expiration date
         expires_at = datetime.utcnow() + timedelta(seconds=expires_in) if expires_in else None
         
-        # Get business accounts
-        business_accounts = get_facebook_business_accounts(long_lived_token)
-        
-        if not business_accounts:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No business accounts found for this Facebook account"
-            )
-        
-        # For now, use the first business account
-        # In production, you might want to let users select which account to use
-        first_business = business_accounts[0]
-        business_account_id = first_business.get("id")
-        business_name = first_business.get("name", "My Business")
-        
+        # Try to get business accounts first, fall back to direct page access
+        business_account_id = None
+        business_name = "My Business"
+
+        try:
+            business_accounts = get_facebook_business_accounts(long_lived_token)
+            if business_accounts:
+                first_business = business_accounts[0]
+                business_account_id = first_business.get("id")
+                business_name = first_business.get("name", "My Business")
+        except Exception:
+            # business_management permission not available, skip
+            pass
+
+        if not business_account_id:
+            # Use user ID as business account identifier
+            business_account_id = user_id
+            business_name = user_info.get("name", "My Business")
+
         # Check if business account already exists
         existing_business = db.query(FacebookBusinessAccount).filter(
             FacebookBusinessAccount.business_account_id == business_account_id
         ).first()
-        
+
         if existing_business:
-            # Update existing business account
             existing_business.access_token = long_lived_token
             existing_business.business_name = business_name
             existing_business.user_id = user_id
@@ -288,7 +309,6 @@ def connect_facebook_account(
             existing_business.updated_at = datetime.utcnow()
             business_account = existing_business
         else:
-            # Create new business account
             business_account = FacebookBusinessAccount(
                 business_account_id=business_account_id,
                 business_name=business_name,
@@ -300,12 +320,23 @@ def connect_facebook_account(
             db.add(business_account)
             db.commit()
             db.refresh(business_account)
-        
-        # Get pages for this business account
-        business_info, pages_data = get_facebook_pages(
-            long_lived_token,
-            business_account_id
-        )
+
+        # Get pages directly via /me/accounts (works without business_management)
+        pages_data = get_facebook_user_pages(long_lived_token)
+
+        if not pages_data:
+            # Fall back to business account pages if available
+            try:
+                if business_account_id != user_id:
+                    _, pages_data = get_facebook_pages(long_lived_token, business_account_id)
+            except Exception:
+                pass
+
+        if not pages_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Facebook pages found for this account"
+            )
         
         connected_pages = []
         
