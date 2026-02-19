@@ -143,19 +143,21 @@ def get_whatsapp_client(whatsapp_account_id: uuid.UUID, db: Session):
             detail="WhatsApp account is not enabled"
         )
     
-    # Try to use permanent access token, fall back to business account token
+    # Try to use permanent access token, fall back to business account token, then env var
     access_token = whatsapp_account.permanent_access_token
     if not access_token:
         business_account = whatsapp_account.business_account
         if business_account:
             access_token = business_account.access_token
-    
+    if not access_token:
+        access_token = os.getenv("WHATSAPP_PERMANENT_TOKEN")
+
     if not access_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No access token available for WhatsApp account"
         )
-    
+
     return whatsapp_account, access_token
 
 def send_whatsapp_message_request(
@@ -935,6 +937,10 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
             if fb_account:
                 access_token = fb_account.access_token
                 logger.info(f"Access token from direct query: {'SET' if access_token else 'NONE'}")
+    if not access_token:
+        access_token = os.getenv("WHATSAPP_PERMANENT_TOKEN")
+        if access_token:
+            logger.info("Access token from WHATSAPP_PERMANENT_TOKEN env var")
 
     # Initialize the store router
     router = StoreRouter(whatsapp_account_id=whatsapp_account.id, db=db)
@@ -2922,6 +2928,8 @@ def debug_test_autorespond(
             business_account = whatsapp_account.business_account
             if business_account:
                 access_token = business_account.access_token
+        if not access_token:
+            access_token = os.getenv("WHATSAPP_PERMANENT_TOKEN")
 
         if not access_token:
             return {"error": "No access token available", "permanent_token": whatsapp_account.permanent_access_token is not None}
