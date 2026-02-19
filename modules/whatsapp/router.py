@@ -511,6 +511,22 @@ def update_whatsapp_account(
             detail=f"Failed to update WhatsApp account: {str(e)}"
         )
 
+@whatsapp_router.delete("/accounts/{account_id}")
+def delete_whatsapp_account(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a WhatsApp account and its messages"""
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WhatsApp account not found")
+
+    # Delete associated messages
+    db.query(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_account_id == account_id).delete()
+    db.delete(account)
+    db.commit()
+    return {"detail": "Account deleted"}
+
 # WhatsApp Messaging Endpoints
 
 @whatsapp_router.post("/accounts/{account_id}/send-template", response_model=WhatsAppMessageSendResponse)
