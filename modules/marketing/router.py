@@ -442,6 +442,62 @@ def fetch_ads_library(
 
 
 
+def sync_ad_accounts_from_token(access_token: str, business_account_id, db: Session):
+    """Sync Meta ad accounts using an access token (callable from other modules)"""
+    try:
+        ad_accounts_data = get_meta_ad_accounts(access_token)
+        total_synced = 0
+
+        for account_data in ad_accounts_data:
+            account_id = account_data.get("id")
+            existing_account = db.query(MetaAdAccount).filter(
+                MetaAdAccount.ad_account_id == account_id
+            ).first()
+
+            if existing_account:
+                existing_account.access_token = access_token
+                existing_account.account_name = account_data.get("name")
+                existing_account.account_status = account_data.get("account_status")
+                existing_account.is_connected = True
+                existing_account.last_synced_at = datetime.utcnow()
+                existing_account.updated_at = datetime.utcnow()
+            else:
+                business_info = account_data.get("business", {})
+                try:
+                    user_response = requests.get(
+                        f"{FB_GRAPH_API_BASE}/me",
+                        params={"access_token": access_token}
+                    )
+                    user_id = user_response.json().get("id", "unknown")
+                except Exception:
+                    user_id = "unknown"
+
+                ad_account = MetaAdAccount(
+                    ad_account_id=account_id,
+                    account_name=account_data.get("name"),
+                    account_status=account_data.get("account_status"),
+                    currency=account_data.get("currency"),
+                    timezone_name=account_data.get("timezone_name"),
+                    business_id=business_info.get("id"),
+                    business_name=business_info.get("name"),
+                    access_token=access_token,
+                    user_id=user_id,
+                    business_account_id=business_account_id,
+                    is_connected=True,
+                    last_synced_at=datetime.utcnow()
+                )
+                db.add(ad_account)
+
+            total_synced += 1
+
+        db.commit()
+        print(f"[OK] Synced {total_synced} ad accounts")
+        return total_synced
+    except Exception as e:
+        print(f"[WARN] Ad account sync failed: {e}")
+        return 0
+
+
 # Ad Account Routes
 @marketing_router.post("/business/{business_account_id}/sync-ad-accounts", response_model=SuccessMessage)
 def sync_ad_accounts_from_business(

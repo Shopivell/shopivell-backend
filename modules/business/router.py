@@ -41,7 +41,8 @@ FACEBOOK_OAUTH_SCOPE = (
     "public_profile,"
     "pages_show_list,"
     "pages_read_engagement,"
-    "pages_manage_posts"
+    "pages_manage_posts,"
+    "ads_management"
 )
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:
@@ -413,11 +414,19 @@ def connect_facebook_account(
             connected_pages.append(page)
         
         db.commit()
-        
+
         # Refresh all pages
         for page in connected_pages:
             db.refresh(page)
-        
+
+        # Auto-sync ad accounts after connecting
+        try:
+            from modules.marketing.router import sync_ad_accounts_from_token
+            sync_ad_accounts_from_token(long_lived_token, business_account.id, db)
+            print(f"[OK] Auto-synced ad accounts for business {business_account.id}")
+        except Exception as sync_err:
+            print(f"[WARN] Ad account auto-sync failed (non-blocking): {sync_err}")
+
         return FacebookOAuthResponse(
             success=True,
             message=f"Successfully connected {len(connected_pages)} Facebook pages",
