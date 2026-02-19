@@ -25,6 +25,8 @@ class WhatsAppAccountCreate(WhatsAppAccountBase):
     webhook_verify_token: Optional[str] = None
 
 class WhatsAppAccountUpdate(BaseModel):
+    waba_id: Optional[str] = None
+    phone_number_id: Optional[str] = None
     display_name: Optional[str] = None
     webhook_url: Optional[str] = None
     webhook_verify_token: Optional[str] = None
