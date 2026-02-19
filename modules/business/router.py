@@ -390,6 +390,7 @@ def connect_facebook_account(
                 "location": location.get("name") if location else None,
                 "tasks": ",".join(page_data.get("tasks", [])) if page_data.get("tasks") else None,
                 "is_connected": True,
+                "is_active": True,
                 "last_synced_at": datetime.utcnow()
             }
             
