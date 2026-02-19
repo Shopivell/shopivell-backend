@@ -677,9 +677,10 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
             user_status=user_status,
             redirect_to=redirect_to,  # NEW: Tell frontend where to go
             access_token=access_token,
+            refresh_token=refresh_token,
             token_type="bearer"
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
