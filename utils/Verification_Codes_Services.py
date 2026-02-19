@@ -1,6 +1,8 @@
 # Utils/Verification_Codes_Service.py
 import smtplib
 import os
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from twilio.rest import Client
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -57,46 +59,41 @@ class VerificationCodeService:
     def send_email(cls, to_email: str, subject: str, body: str) -> bool:
         """Send email with verification code using SSL on port 465"""
         cls._load_config()
-        
-        try:
-            if cls._email_enabled:
-                print(f"📧 Attempting to send REAL email to: {to_email}")
-                print(f"   Using server: {cls.smtp_server}:{cls.smtp_port}")
-                
-                # Use SMTP_SSL for port 465 (SSL connection)
-                with smtplib.SMTP_SSL(cls.smtp_server, cls.smtp_port, timeout=10) as s:
-                    s.login(cls.email_username, cls.email_password)
-                    
-                    # Create proper email message with UTF-8 encoding
-                    message = f"Subject: {subject}\n\n{body}"
-                    
-                    # Encode the message to handle special characters
-                    s.sendmail(cls.email_username, to_email, message.encode('utf-8'))
-                    
-                print(f"✅ REAL Email sent successfully to: {to_email}")
-                return True
-            else:
-                # Fallback: log to console
-                print(f"📧 Email (SIMULATED) to: {to_email}")
-                print(f"   Subject: {subject}")
-                print(f"   Body: {body}")
-                return True
-                
-        except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ SMTP Authentication failed: {e}")
-            print(f"📧 Email (AUTH FAILED - SIMULATED) to: {to_email}")
-            return True  # Allow dev login
-        except smtplib.SMTPConnectError as e:
-            print(f"❌ SMTP Connection failed: {e}")
-            print(f"📧 Email (CONNECTION FAILED - SIMULATED) to: {to_email}")
-            return True  # Allow dev login
-        except Exception as e:
-            print(f"❌ Failed to send email to {to_email}: {e}")
-            # Fallback to console logging
-            print(f"📧 Email (FAILED - SIMULATED) to: {to_email}")
+
+        if not cls._email_enabled:
+            print(f"📧 Email (SIMULATED - not configured) to: {to_email}")
             print(f"   Subject: {subject}")
             print(f"   Body: {body}")
-            return True  # Allow dev login
+            return False
+
+        try:
+            print(f"📧 Attempting to send email to: {to_email}")
+            print(f"   Using server: {cls.smtp_server}:{cls.smtp_port}")
+
+            # Build proper MIME email
+            msg = MIMEMultipart()
+            msg['From'] = cls.email_username
+            msg['To'] = to_email
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+            # Use SMTP_SSL for port 465 (SSL connection)
+            with smtplib.SMTP_SSL(cls.smtp_server, cls.smtp_port, timeout=15) as s:
+                s.login(cls.email_username, cls.email_password)
+                s.sendmail(cls.email_username, to_email, msg.as_string())
+
+            print(f"✅ Email sent successfully to: {to_email}")
+            return True
+
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"❌ SMTP Authentication failed: {e}")
+            return False
+        except smtplib.SMTPConnectError as e:
+            print(f"❌ SMTP Connection failed: {e}")
+            return False
+        except Exception as e:
+            print(f"❌ Failed to send email to {to_email}: {e}")
+            return False
 
     @classmethod
     def send_sms(cls, to_number: str, body: str) -> bool:
@@ -217,34 +214,32 @@ class VerificationCodeService:
         delivery_method: str = "email"  # "email" or "sms"
     ) -> bool:
         """Send verification code via email or SMS"""
-        try:
-            # Create verification code
-            verification_code = cls.create_verification_code(
-                db=db,
-                email=email,
-                code_type=code_type
-            )
-            
-            # Find user for phone number if SMS
-            user = db.execute(
-                select(User).where(User.email == email)
-            ).scalar_one_or_none()
-            
-            if not user:
-                return True  # Allow dev login
+        # Create verification code
+        verification_code = cls.create_verification_code(
+            db=db,
+            email=email,
+            code_type=code_type
+        )
 
-            expiration_time = verification_code.expires_at.strftime("%H:%M")
-            
-            if delivery_method == "sms" and user.phone_number:
-                # Send via SMS
-                body = f"Shopivell: Your {code_type.replace('_', ' ')} code is {verification_code.code}. Expires at {expiration_time}."
-                return cls.send_sms(user.phone_number, body)
-            
-            else:
-                # Send via Email (default) - USING ASCII-ONLY CHARACTERS
-                subject = f"Verification Code - Shopivell"
-                body = f"""
-Hello {user.name},
+        # Find user for phone number if SMS
+        user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+
+        if not user:
+            raise ValueError("User not found")
+
+        expiration_time = verification_code.expires_at.strftime("%H:%M")
+
+        if delivery_method == "sms" and user.phone_number:
+            # Send via SMS
+            body = f"Shopivell: Your {code_type.replace('_', ' ')} code is {verification_code.code}. Expires at {expiration_time}."
+            return cls.send_sms(user.phone_number, body)
+
+        else:
+            # Send via Email
+            subject = "Verification Code - Shopivell"
+            body = f"""Hello {user.name or 'there'},
 
 Your {code_type.replace('_', ' ').title()} verification code is:
 
@@ -255,13 +250,8 @@ This code will expire at {expiration_time} (30 minutes from now).
 If you didn't request this, please ignore this message.
 
 Best regards,
-Shopivell Team
-                """
-                return cls.send_email(email, subject, body.strip())
-                
-        except Exception as e:
-            print(f"Failed to send verification code: {e}")
-            return True  # Allow dev login
+Shopivell Team"""
+            return cls.send_email(email, subject, body)
 
     @classmethod
     def send_password_reset_code(
@@ -271,35 +261,33 @@ Shopivell Team
         delivery_method: str = "email"
     ) -> bool:
         """Send password reset verification code"""
-        try:
-            # Create verification code
-            verification_code = cls.create_verification_code(
-                db=db,
-                email=email,
-                code_type="password_reset"
-            )
-            
-            # Find user
-            user = db.execute(
-                select(User).where(User.email == email)
-            ).scalar_one_or_none()
-            
-            if not user:
-                # For security, return True even if user doesn't exist
-                return True
+        # Create verification code
+        verification_code = cls.create_verification_code(
+            db=db,
+            email=email,
+            code_type="password_reset"
+        )
 
-            expiration_time = verification_code.expires_at.strftime("%H:%M")
-            
-            if delivery_method == "sms" and user.phone_number:
-                # Send via SMS
-                body = f"Shopivell Password Reset: Use code {verification_code.code} to reset your password. Expires {expiration_time}."
-                return cls.send_sms(user.phone_number, body)
-            
-            else:
-                # Send via Email - USING ASCII-ONLY CHARACTERS
-                subject = "Password Reset Code - Shopivell"
-                body = f"""
-Hello {user.name},
+        # Find user
+        user = db.execute(
+            select(User).where(User.email == email)
+        ).scalar_one_or_none()
+
+        if not user:
+            # For security, return True even if user doesn't exist
+            return True
+
+        expiration_time = verification_code.expires_at.strftime("%H:%M")
+
+        if delivery_method == "sms" and user.phone_number:
+            # Send via SMS
+            body = f"Shopivell Password Reset: Use code {verification_code.code} to reset your password. Expires {expiration_time}."
+            return cls.send_sms(user.phone_number, body)
+
+        else:
+            # Send via Email
+            subject = "Password Reset Code - Shopivell"
+            body = f"""Hello {user.name or 'there'},
 
 You requested to reset your password. Use this verification code:
 
@@ -310,10 +298,5 @@ This code expires at {expiration_time} (30 minutes from now).
 If you didn't request this reset, please ignore this email.
 
 Best regards,
-Shopivell Team
-                """
-                return cls.send_email(email, subject, body.strip())
-                
-        except Exception as e:
-            print(f"Failed to send password reset code: {e}")
-            return True  # Allow dev login
+Shopivell Team"""
+            return cls.send_email(email, subject, body)
