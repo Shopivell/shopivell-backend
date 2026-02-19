@@ -40,7 +40,8 @@ FACEBOOK_REDIRECT_URI = os.getenv(
 FACEBOOK_OAUTH_SCOPE = (
     "public_profile,"
     "pages_show_list,"
-    "pages_read_engagement"
+    "pages_read_engagement,"
+    "pages_manage_posts"
 )
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:
