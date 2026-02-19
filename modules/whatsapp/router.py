@@ -516,16 +516,31 @@ def delete_whatsapp_account(
     account_id: uuid.UUID,
     db: Session = Depends(get_db)
 ):
-    """Delete a WhatsApp account and its messages"""
+    """Delete a WhatsApp account and all related data"""
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WhatsApp account not found")
 
-    # Delete associated messages
-    db.query(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_account_id == account_id).delete()
-    db.delete(account)
-    db.commit()
-    return {"detail": "Account deleted"}
+    try:
+        # Delete related records with FK constraints
+        db.query(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_account_id == account_id).delete()
+        db.query(WhatsAppLead).filter(WhatsAppLead.whatsapp_account_id == account_id).delete()
+
+        conversations = db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).all()
+        conv_ids = [c.id for c in conversations]
+        if conv_ids:
+            db.query(WhatsAppConversationMessage).filter(WhatsAppConversationMessage.conversation_id.in_(conv_ids)).delete(synchronize_session=False)
+            db.query(CRMTask).filter(CRMTask.conversation_id.in_(conv_ids)).update({"conversation_id": None}, synchronize_session=False)
+            db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).delete()
+
+        db.query(AdCampaign).filter(AdCampaign.whatsapp_account_id == account_id).delete()
+
+        db.delete(account)
+        db.commit()
+        return {"detail": "Account deleted"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")
 
 # WhatsApp Messaging Endpoints
 
