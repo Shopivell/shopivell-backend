@@ -16,7 +16,7 @@ import logging
 from sqlalchemy import text
 from database import get_db
 from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer, MultiTenantSalesBot
-from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation
+from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation, WhatsAppConversationMessage, CRMTask
 from .store_router import StoreRouter
 from .profile_service import get_customer_name_from_contacts, generate_avatar_url, should_update_profile_picture
 from .schemas import (
