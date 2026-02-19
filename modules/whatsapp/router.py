@@ -522,17 +522,21 @@ def delete_whatsapp_account(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WhatsApp account not found")
 
     try:
-        # Delete related records with FK constraints
+        # Delete related records - order matters for FK constraints
+        # 1. Nullify CRM task references to leads and conversations
+        lead_ids = [l.id for l in db.query(WhatsAppLead).filter(WhatsAppLead.whatsapp_account_id == account_id).all()]
+        conv_ids = [c.id for c in db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).all()]
+
+        if lead_ids:
+            db.query(CRMTask).filter(CRMTask.lead_id.in_(lead_ids)).update({"lead_id": None}, synchronize_session=False)
+        if conv_ids:
+            db.query(CRMTask).filter(CRMTask.conversation_id.in_(conv_ids)).update({"conversation_id": None}, synchronize_session=False)
+            db.query(WhatsAppConversationMessage).filter(WhatsAppConversationMessage.conversation_id.in_(conv_ids)).delete(synchronize_session=False)
+
+        # 2. Delete child records
         db.query(WhatsAppMessage).filter(WhatsAppMessage.whatsapp_account_id == account_id).delete()
         db.query(WhatsAppLead).filter(WhatsAppLead.whatsapp_account_id == account_id).delete()
-
-        conversations = db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).all()
-        conv_ids = [c.id for c in conversations]
-        if conv_ids:
-            db.query(WhatsAppConversationMessage).filter(WhatsAppConversationMessage.conversation_id.in_(conv_ids)).delete(synchronize_session=False)
-            db.query(CRMTask).filter(CRMTask.conversation_id.in_(conv_ids)).update({"conversation_id": None}, synchronize_session=False)
-            db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).delete()
-
+        db.query(WhatsAppConversation).filter(WhatsAppConversation.whatsapp_account_id == account_id).delete()
         db.query(AdCampaign).filter(AdCampaign.whatsapp_account_id == account_id).delete()
 
         db.delete(account)
