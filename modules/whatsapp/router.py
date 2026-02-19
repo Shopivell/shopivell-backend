@@ -290,19 +290,20 @@ def create_whatsapp_account(
     
     try:
         # 4. Create WhatsApp account
-        # We use business_account.access_token instead of account_data.permanent_access_token
+        # Auto-generate webhook verify token if not provided
+        import secrets
+        verify_token = account_data.webhook_verify_token or secrets.token_urlsafe(32)
+        webhook_url = account_data.webhook_url or "https://shopivell-backend.onrender.com/v1/api/whatsapp/webhook"
+
         whatsapp_account = WhatsAppAccount(
             business_account_id=account_data.business_account_id,
             waba_id=account_data.waba_id,
             phone_number_id=account_data.phone_number_id,
             phone_number=account_data.phone_number,
             display_name=account_data.display_name,
-            
-            # CHANGED: Use the token from the Business Model
-            permanent_access_token=business_account.access_token, 
-            
-            webhook_url=account_data.webhook_url,
-            webhook_verify_token=account_data.webhook_verify_token,
+            permanent_access_token=business_account.access_token,
+            webhook_url=webhook_url,
+            webhook_verify_token=verify_token,
             is_enabled=True
         )
         
