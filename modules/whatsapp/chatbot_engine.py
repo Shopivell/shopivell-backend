@@ -11,6 +11,7 @@ A RAG-based sales assistant that:
 
 import os
 import json
+import time
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -299,6 +300,7 @@ Remember: It's better to say you don't have the information than to make somethi
             self.crm_service.add_conversation_message(
                 conversation=conversation, role="user", content=user_message
             )
+            time.sleep(3)  # Delay to look natural in recording
             self.crm_service.add_conversation_message(
                 conversation=conversation, role="assistant", content=demo_response,
                 confidence_score=0.95, fallback_triggered=False
