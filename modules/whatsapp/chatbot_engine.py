@@ -11,7 +11,6 @@ A RAG-based sales assistant that:
 
 import os
 import json
-import time
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -180,76 +179,6 @@ Remember: It's better to say you don't have the information than to make somethi
             logger.error(f"Error retrieving context: {e}")
             return None, 0, []
 
-    def _get_demo_response(self, message: str) -> Optional[str]:
-        """
-        DEMO: Hardcoded responses for Meta App Review screen recording.
-        Remove this method after review is approved.
-        """
-        msg = message.lower().strip()
-
-        # Greeting
-        if any(w in msg for w in ["hi", "hello", "hey", "good morning", "good afternoon"]):
-            return (
-                "Hello! Welcome to our store. How can I help you today?\n\n"
-                "You can ask me about:\n"
-                "- Our products and services\n"
-                "- Pricing information\n"
-                "- Delivery options\n"
-                "- How to place an order"
-            )
-
-        # Products
-        if any(w in msg for w in ["product", "sell", "offer", "what do you", "catalog", "catalogue", "available"]):
-            return (
-                "We offer a wide range of products for your business needs! Here are our main categories:\n\n"
-                "1. Business Essentials - Office supplies, stationery, and equipment\n"
-                "2. Technology - Laptops, printers, and accessories\n"
-                "3. Custom Branding - Branded merchandise, packaging, and signage\n\n"
-                "Would you like more details on any of these categories?"
-            )
-
-        # Pricing
-        if any(w in msg for w in ["price", "cost", "how much", "pricing", "rate", "fee", "charge"]):
-            return (
-                "Our pricing varies depending on the product and quantity. Here are some starting prices:\n\n"
-                "- Business Essentials: from $5.00\n"
-                "- Technology: from $150.00\n"
-                "- Custom Branding: from $25.00 (minimum order applies)\n\n"
-                "For a detailed quote, please let me know which products you're interested in and the quantity you need."
-            )
-
-        # Delivery
-        if any(w in msg for w in ["deliver", "shipping", "ship", "dispatch", "courier", "collect"]):
-            return (
-                "Yes, we offer delivery! Here are our options:\n\n"
-                "- Standard Delivery: 3-5 business days (free for orders over $50)\n"
-                "- Express Delivery: 1-2 business days ($10 flat rate)\n"
-                "- Collection: Available from our warehouse, Mon-Fri 8am-5pm\n\n"
-                "We deliver nationwide. Would you like to place an order?"
-            )
-
-        # Ordering
-        if any(w in msg for w in ["order", "buy", "purchase", "place an order", "checkout"]):
-            return (
-                "Placing an order is easy! Here's how:\n\n"
-                "1. Browse our catalog and choose your products\n"
-                "2. Send us your product list and quantities right here on WhatsApp\n"
-                "3. We'll confirm availability and send you a quote\n"
-                "4. Confirm your order and choose your delivery option\n"
-                "5. Make payment via bank transfer or card\n\n"
-                "Ready to get started? Just tell me what you need!"
-            )
-
-        # Thanks
-        if any(w in msg for w in ["thank", "thanks", "cheers", "appreciate"]):
-            return (
-                "You're welcome! If you have any other questions, feel free to ask anytime.\n\n"
-                "We're here to help Monday to Friday, 8am - 5pm. Have a great day!"
-            )
-
-        # Fallback — return None so the normal flow handles it
-        return None
-
     def _check_handoff_keywords(self, message: str) -> bool:
         """Check if message contains handoff trigger keywords"""
         if not self.config or not self.config.handoff_keywords:
@@ -293,21 +222,6 @@ Remember: It's better to say you don't have the information than to make somethi
         """
         # Get or create conversation
         conversation = self.crm_service.get_or_create_conversation(phone_number)
-
-        # === DEMO HARDCODED RESPONSES (remove after Meta App Review) ===
-        demo_response = self._get_demo_response(user_message)
-        if demo_response:
-            self.crm_service.add_conversation_message(
-                conversation=conversation, role="user", content=user_message
-            )
-            time.sleep(3)  # Delay to look natural in recording
-            self.crm_service.add_conversation_message(
-                conversation=conversation, role="assistant", content=demo_response,
-                confidence_score=0.95, fallback_triggered=False
-            )
-            logger.info(f"[DEMO] Hardcoded response for: {user_message[:50]}")
-            return demo_response
-        # === END DEMO ===
 
         # Check for handoff keywords first
         if self._check_handoff_keywords(user_message):
