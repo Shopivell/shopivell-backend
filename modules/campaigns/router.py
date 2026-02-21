@@ -142,6 +142,78 @@ def create_campaign_from_store(
     )
 
 
+@campaign_router.post("/manual")
+def create_manual_campaign(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a campaign manually without AI scraping.
+    Returns a draft campaign with one empty ad set and ad content.
+    """
+    store_id = request.get("store_id")
+    name = request.get("name", "My Campaign")
+    goal = request.get("goal", "sales")
+    daily_budget = request.get("daily_budget", 50.0)
+
+    if not store_id:
+        raise HTTPException(status_code=400, detail="store_id is required")
+
+    campaign = Campaign(
+        id=uuid.uuid4(),
+        store_id=store_id,
+        name=name,
+        source_type="manual",
+        goal=goal,
+        daily_budget=daily_budget,
+        status=CampaignStatus.READY,
+        countries=[],
+        cities=[],
+        age_range={"min": 18, "max": 65},
+        gender="all",
+        interests=[],
+        platforms=["facebook"],
+        generated_headlines=[],
+        generated_descriptions=[],
+        platform_campaign_ids={},
+    )
+    db.add(campaign)
+    db.flush()
+
+    ad_set = AdSet(
+        id=uuid.uuid4(),
+        campaign_id=campaign.id,
+        name="Ad Set 1",
+        title="Ad Set 1",
+        audience_tags=[],
+        hashtags=[],
+        is_selected=True,
+        is_active=True,
+    )
+    db.add(ad_set)
+    db.flush()
+
+    ad_content = AdContent(
+        id=uuid.uuid4(),
+        ad_set_id=ad_set.id,
+        headline="",
+        primary_text="",
+        description="",
+        call_to_action="LEARN_MORE",
+        is_primary=True,
+        is_active=True,
+    )
+    db.add(ad_content)
+    db.commit()
+    db.refresh(campaign)
+
+    return {
+        "campaign_id": str(campaign.id),
+        "status": campaign.status.value,
+        "message": "Manual campaign created successfully"
+    }
+
+
 @campaign_router.get("/scrape-stream")
 async def scrape_url_stream(
     url: str,
