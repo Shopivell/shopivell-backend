@@ -33,7 +33,7 @@ embedded_signup_router = APIRouter(
 # Environment
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-META_APP_ID = os.getenv("META_APP_ID", "")
+META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FACEBOOK_APP_ID", "")
 META_CONFIG_ID = os.getenv("META_WHATSAPP_CONFIG_ID", "")
 
 
@@ -278,29 +278,48 @@ async def sdk_callback(
     """
     Callback for Facebook JS SDK Embedded Signup.
 
-    The frontend sends the response from FB.login() here.
+    The frontend sends the code from FB.login() here (response_type: 'code').
+    The backend exchanges the code for a System User access token, then
+    uses the session info (waba_id, phone_number_id) from the Embedded Signup
+    MessageEvent to complete the connection.
+
     Expected body: {
-        accessToken: string,
-        data_access_expiration_time: number,
-        expiresIn: number,
-        code: string (optional, for system user token exchange)
+        code: string (authorization code from FB.login),
+        waba_id: string (optional, from MessageEvent),
+        phone_number_id: string (optional, from MessageEvent)
     }
     """
     if not current_user.store_id or str(current_user.store_id) != str(store_id):
         raise HTTPException(status_code=403, detail="Not authorized for this store")
 
     body = await request.json()
-    access_token = body.get("accessToken")
+    code = body.get("code")
+    access_token = body.get("accessToken")  # Legacy support
     waba_id = body.get("waba_id")
     phone_number_id = body.get("phone_number_id")
 
-    if not access_token:
-        raise HTTPException(status_code=400, detail="Missing accessToken")
-
     service = EmbeddedSignupService(store_id, db)
 
-    # If WABA and phone number provided, complete the signup
+    # If we got a code, exchange it for a token (new Embedded Signup v3 flow)
+    if code and not access_token:
+        exchanged_token, error = await service.exchange_code_for_token(
+            code=code,
+            redirect_uri=""  # Not needed for JS SDK code exchange
+        )
+        if error:
+            raise HTTPException(status_code=400, detail=f"Token exchange failed: {error}")
+        access_token = exchanged_token
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing code or accessToken")
+
+    # If WABA and phone number provided (from Embedded Signup MessageEvent), complete directly
     if waba_id and phone_number_id:
+        # Register the phone number first
+        reg_success, reg_error = await service.register_phone_number(access_token, phone_number_id)
+        if reg_error:
+            logger.warning(f"Phone registration failed (may already be registered): {reg_error}")
+
         # Get phone number details
         phone_numbers, error = await service.get_waba_phone_numbers(access_token, waba_id)
         if error:
@@ -333,7 +352,6 @@ async def sdk_callback(
             db.refresh(existing)
             account = existing
         else:
-            # Need to get or create FB business account
             from modules.business.models import FacebookBusinessAccount
             from modules.stores.models import Store
             import secrets
@@ -380,23 +398,25 @@ async def sdk_callback(
             if profile_error:
                 logger.warning(f"Business profile update failed (non-fatal): {profile_error}")
 
-        return WhatsAppAccountResponse(
-            id=account.id,
-            phone_number=account.phone_number,
-            display_name=account.display_name,
-            verified_name=account.verified_name,
-            quality_rating=account.quality_rating,
-            is_enabled=account.is_enabled,
-            is_default=account.is_default,
-            created_at=account.created_at
-        )
+        return {
+            "message": f"Successfully connected {account.phone_number}",
+            "account": WhatsAppAccountResponse(
+                id=account.id,
+                phone_number=account.phone_number,
+                display_name=account.display_name,
+                verified_name=account.verified_name,
+                quality_rating=account.quality_rating,
+                is_enabled=account.is_enabled,
+                is_default=account.is_default,
+                created_at=account.created_at
+            )
+        }
 
-    # If no WABA/phone, just return available WABAs for user to select
+    # If no WABA/phone, return available WABAs for user to select
     wabas, error = await service.get_user_whatsapp_business_accounts(access_token)
     if error:
         raise HTTPException(status_code=400, detail=f"Failed to get WABAs: {error}")
 
-    # Get phone numbers for each WABA
     result = []
     for waba in wabas:
         phone_numbers, _ = await service.get_waba_phone_numbers(access_token, waba["id"])
@@ -408,7 +428,7 @@ async def sdk_callback(
             "phone_numbers": phone_numbers or []
         })
 
-    return {"wabas": result, "access_token": access_token}
+    return {"wabas": result}
 
 
 # ============================================================================
@@ -424,7 +444,7 @@ async def get_connection_info():
     return {
         "app_id": META_APP_ID,
         "config_id": META_CONFIG_ID,
-        "api_version": "v21.0",
+        "api_version": "v25.0",
         "scopes": [
             "whatsapp_business_management",
             "whatsapp_business_messaging",

@@ -110,16 +110,16 @@ BUSINESS_TYPE_TO_VERTICAL = {
     "other": "OTHER",
 }
 
-# Meta App credentials
-META_APP_ID = os.getenv("META_APP_ID", "")
-META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+# Meta App credentials (fall back to FACEBOOK_* if META_* not set)
+META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FACEBOOK_APP_ID", "")
+META_APP_SECRET = os.getenv("META_APP_SECRET", "") or os.getenv("FACEBOOK_APP_SECRET", "")
 META_CONFIG_ID = os.getenv("META_WHATSAPP_CONFIG_ID", "")  # WhatsApp Embedded Signup config ID
 
 # OAuth URLs
-META_OAUTH_URL = "https://www.facebook.com/v21.0/dialog/oauth"
-META_TOKEN_URL = "https://graph.facebook.com/v21.0/oauth/access_token"
-META_DEBUG_TOKEN_URL = "https://graph.facebook.com/v21.0/debug_token"
-META_GRAPH_URL = "https://graph.facebook.com/v21.0"
+META_OAUTH_URL = "https://www.facebook.com/v25.0/dialog/oauth"
+META_TOKEN_URL = "https://graph.facebook.com/v25.0/oauth/access_token"
+META_DEBUG_TOKEN_URL = "https://graph.facebook.com/v25.0/debug_token"
+META_GRAPH_URL = "https://graph.facebook.com/v25.0"
 
 
 class EmbeddedSignupService:
@@ -164,24 +164,25 @@ class EmbeddedSignupService:
     async def exchange_code_for_token(
         self,
         code: str,
-        redirect_uri: str
+        redirect_uri: str = ""
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Exchange authorization code for access token.
+        For JS SDK Embedded Signup (response_type: 'code'), redirect_uri is not needed.
         Returns: (access_token, error_message)
         """
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    META_TOKEN_URL,
-                    params={
-                        "client_id": META_APP_ID,
-                        "client_secret": META_APP_SECRET,
-                        "redirect_uri": redirect_uri,
-                        "code": code,
-                    }
-                )
+                params = {
+                    "client_id": META_APP_ID,
+                    "client_secret": META_APP_SECRET,
+                    "code": code,
+                }
+                # Only include redirect_uri if provided (not needed for JS SDK flow)
+                if redirect_uri:
+                    params["redirect_uri"] = redirect_uri
 
+                response = await client.get(META_TOKEN_URL, params=params)
                 data = response.json()
 
                 if "error" in data:
