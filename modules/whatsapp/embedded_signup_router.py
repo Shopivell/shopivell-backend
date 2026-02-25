@@ -307,6 +307,27 @@ async def sdk_callback(
             redirect_uri=""  # Not needed for JS SDK code exchange
         )
         if error:
+            # If code was already used, check if the account was already connected
+            if "has been used" in str(error) and phone_number_id:
+                existing = db.query(WhatsAppAccount).filter(
+                    WhatsAppAccount.phone_number_id == phone_number_id,
+                    WhatsAppAccount.store_id == store_id
+                ).first()
+                if existing:
+                    logger.info(f"Code already used but account {phone_number_id} already connected")
+                    return {
+                        "message": f"Successfully connected {existing.phone_number}",
+                        "account": WhatsAppAccountResponse(
+                            id=existing.id,
+                            phone_number=existing.phone_number,
+                            display_name=existing.display_name,
+                            verified_name=existing.verified_name,
+                            quality_rating=existing.quality_rating,
+                            is_enabled=existing.is_enabled,
+                            is_default=existing.is_default,
+                            created_at=existing.created_at
+                        )
+                    }
             raise HTTPException(status_code=400, detail=f"Token exchange failed: {error}")
         access_token = exchanged_token
 
