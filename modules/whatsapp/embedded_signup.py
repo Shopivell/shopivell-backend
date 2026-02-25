@@ -172,7 +172,7 @@ class EmbeddedSignupService:
         Returns: (access_token, error_message)
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 params = {
                     "client_id": META_APP_ID,
                     "client_secret": META_APP_SECRET,
@@ -206,7 +206,7 @@ class EmbeddedSignupService:
         Returns: (list of WABAs, error_message)
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 # First get the user's business accounts
                 response = await client.get(
                     f"{META_GRAPH_URL}/me/businesses",
@@ -246,7 +246,7 @@ class EmbeddedSignupService:
         Returns: (list of phone numbers, error_message)
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
                     f"{META_GRAPH_URL}/{waba_id}/phone_numbers",
                     params={
@@ -278,7 +278,7 @@ class EmbeddedSignupService:
         This completes the phone number setup after user verification.
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{META_GRAPH_URL}/{phone_number_id}/register",
                     params={"access_token": access_token},
@@ -309,7 +309,7 @@ class EmbeddedSignupService:
         Subscribe the WABA to webhook events.
         """
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{META_GRAPH_URL}/{waba_id}/subscribed_apps",
                     params={"access_token": access_token}
@@ -413,7 +413,7 @@ class EmbeddedSignupService:
 
             logger.info(f"Updating WhatsApp Business Profile for phone {phone_number_id}: {payload}")
 
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     f"{META_GRAPH_URL}/{phone_number_id}/whatsapp_business_profile",
                     params={"access_token": access_token},
