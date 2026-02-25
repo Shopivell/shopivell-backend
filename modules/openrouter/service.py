@@ -172,7 +172,27 @@ class OpenRouterClient:
                 )
                 response.raise_for_status()
                 result = response.json()
-                logger.info(f"[OpenRouter] Response received, tokens used: {result.get('usage', {})}")
+                usage = result.get('usage', {})
+                logger.info(f"[OpenRouter] Response received, tokens used: {usage}")
+
+                # Fire-and-forget usage tracking
+                try:
+                    from modules.openrouter.context import ai_context
+                    from modules.openrouter.ai_usage_service import track_usage
+                    ctx = ai_context.get()
+                    track_usage(
+                        model=model,
+                        prompt_tokens=usage.get('prompt_tokens', 0),
+                        completion_tokens=usage.get('completion_tokens', 0),
+                        total_tokens=usage.get('total_tokens', 0),
+                        agent_name=ctx.agent_name,
+                        store_id=ctx.store_id,
+                        user_id=ctx.user_id,
+                        campaign_id=ctx.campaign_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[OpenRouter] Usage tracking failed: {e}")
+
                 return result
             except httpx.HTTPStatusError as e:
                 logger.error(f"[OpenRouter] HTTP error: {e.response.status_code} - {e.response.text}")
@@ -264,7 +284,29 @@ class OpenRouterClient:
                     }
                 )
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+
+                # Fire-and-forget usage tracking
+                try:
+                    usage = result.get('usage', {})
+                    from modules.openrouter.context import ai_context
+                    from modules.openrouter.ai_usage_service import track_usage
+                    ctx = ai_context.get()
+                    track_usage(
+                        model=model,
+                        prompt_tokens=usage.get('prompt_tokens', 0),
+                        completion_tokens=usage.get('completion_tokens', 0),
+                        total_tokens=usage.get('total_tokens', 0),
+                        agent_name=ctx.agent_name,
+                        store_id=ctx.store_id,
+                        user_id=ctx.user_id,
+                        campaign_id=ctx.campaign_id,
+                        endpoint="images/generations",
+                    )
+                except Exception as e:
+                    logger.warning(f"[OpenRouter] Image usage tracking failed: {e}")
+
+                return result
             except httpx.HTTPStatusError as e:
                 logger.error(f"[OpenRouter] Image generation HTTP error: {e.response.status_code}")
                 raise

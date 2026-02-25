@@ -167,7 +167,34 @@ class ChatOpenRouter(BaseChatModel):
                 content = data['choices'][0]['message']['content']
                 generation = ChatGeneration(message=AIMessage(content=content))
 
-                return ChatResult(generations=[generation])
+                # Extract usage data from OpenRouter response
+                usage = data.get('usage', {})
+                llm_output = {
+                    "model": self.model,
+                    "prompt_tokens": usage.get('prompt_tokens', 0),
+                    "completion_tokens": usage.get('completion_tokens', 0),
+                    "total_tokens": usage.get('total_tokens', 0),
+                }
+
+                # Fire-and-forget usage tracking
+                try:
+                    from modules.openrouter.context import ai_context
+                    from modules.openrouter.ai_usage_service import track_usage
+                    ctx = ai_context.get()
+                    track_usage(
+                        model=self.model,
+                        prompt_tokens=llm_output["prompt_tokens"],
+                        completion_tokens=llm_output["completion_tokens"],
+                        total_tokens=llm_output["total_tokens"],
+                        agent_name=ctx.agent_name,
+                        store_id=ctx.store_id,
+                        user_id=ctx.user_id,
+                        campaign_id=ctx.campaign_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ChatOpenRouter] Usage tracking failed: {e}")
+
+                return ChatResult(generations=[generation], llm_output=llm_output)
 
             except httpx.HTTPStatusError as e:
                 logger.error(f"[ChatOpenRouter] HTTP error: {e.response.status_code} - {e.response.text}")
@@ -210,9 +237,36 @@ class ChatOpenRouter(BaseChatModel):
                 content = data['choices'][0]['message']['content']
                 generation = ChatGeneration(message=AIMessage(content=content))
 
-                logger.info(f"[ChatOpenRouter] Generated response, model: {self.model}")
+                # Extract usage data from OpenRouter response
+                usage = data.get('usage', {})
+                llm_output = {
+                    "model": self.model,
+                    "prompt_tokens": usage.get('prompt_tokens', 0),
+                    "completion_tokens": usage.get('completion_tokens', 0),
+                    "total_tokens": usage.get('total_tokens', 0),
+                }
 
-                return ChatResult(generations=[generation])
+                logger.info(f"[ChatOpenRouter] Generated response, model: {self.model}, tokens: {llm_output['total_tokens']}")
+
+                # Fire-and-forget usage tracking
+                try:
+                    from modules.openrouter.context import ai_context
+                    from modules.openrouter.ai_usage_service import track_usage
+                    ctx = ai_context.get()
+                    track_usage(
+                        model=self.model,
+                        prompt_tokens=llm_output["prompt_tokens"],
+                        completion_tokens=llm_output["completion_tokens"],
+                        total_tokens=llm_output["total_tokens"],
+                        agent_name=ctx.agent_name,
+                        store_id=ctx.store_id,
+                        user_id=ctx.user_id,
+                        campaign_id=ctx.campaign_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[ChatOpenRouter] Usage tracking failed: {e}")
+
+                return ChatResult(generations=[generation], llm_output=llm_output)
 
             except httpx.HTTPStatusError as e:
                 logger.error(f"[ChatOpenRouter] HTTP error: {e.response.status_code} - {e.response.text}")

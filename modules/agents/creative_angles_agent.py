@@ -155,8 +155,10 @@ Recommendations: {research.recommendations or 'Not available'}
             }
 
             # Run the LLM chain
+            from modules.openrouter.context import set_ai_context
             chain = self.prompt | self.llm | StrOutputParser()
-            angles_text = await chain.ainvoke(campaign_data)
+            with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_angles"):
+                angles_text = await chain.ainvoke(campaign_data)
 
             # Parse angles
             angles = self._parse_angles_response(angles_text)

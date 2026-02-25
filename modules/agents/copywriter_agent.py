@@ -207,8 +207,10 @@ Return ONLY valid JSON.
             "available_ctas": ", ".join(META_CTAS)
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.main_prompt | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="copywriter"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:
@@ -267,8 +269,10 @@ Return ONLY valid JSON.
             "emotion": angle.emotion_target or "Engaging"
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.short_form_prompt | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="copywriter"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:

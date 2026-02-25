@@ -579,18 +579,24 @@ class PaymentService:
                 "monthly_bandwidth": "1GB",
                 "storage": "100MB",
                 "api_calls": 1000,
+                "ai_calls": 50,
+                "ai_tokens": 100_000,
                 "support_response_time": "48h"
             },
             SubscriptionPlan.PREMIUM: {
                 "monthly_bandwidth": "10GB",
                 "storage": "1GB",
                 "api_calls": 10000,
+                "ai_calls": 500,
+                "ai_tokens": 1_000_000,
                 "support_response_time": "24h"
             },
             SubscriptionPlan.BUSINESS: {
                 "monthly_bandwidth": "100GB",
                 "storage": "10GB",
                 "api_calls": 100000,
+                "ai_calls": 5000,
+                "ai_tokens": 10_000_000,
                 "support_response_time": "4h"
             }
         }

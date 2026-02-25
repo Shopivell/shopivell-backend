@@ -727,11 +727,13 @@ Return ONLY valid JSON, no other text.
 """)
 
         try:
+            from modules.openrouter.context import set_ai_context
             chain = extraction_prompt | self.llm | StrOutputParser()
-            result = await chain.ainvoke({
-                "url": url,
-                "content": content[:8000]  # Limit content for extraction
-            })
+            with set_ai_context(agent_name="market_research"):
+                result = await chain.ainvoke({
+                    "url": url,
+                    "content": content[:8000]  # Limit content for extraction
+                })
 
             # Parse the JSON response
             # Clean up the response - remove markdown code blocks if present
@@ -1145,8 +1147,10 @@ Format your response with clear section headers.
         }
 
         # Run the LLM chain
+        from modules.openrouter.context import set_ai_context
         chain = prompt | self.llm | StrOutputParser()
-        research_text = await chain.ainvoke(campaign_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="market_research"):
+            research_text = await chain.ainvoke(campaign_data)
 
         # Parse the response
         sections = self._parse_research_response(research_text)

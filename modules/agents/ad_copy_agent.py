@@ -715,10 +715,12 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         }
 
         # Run the LLM chain
+        from modules.openrouter.context import set_ai_context
         chain = self.research_based_prompt | self.llm | StrOutputParser()
 
         try:
-            response = await chain.ainvoke(prompt_data)
+            with set_ai_context(agent_name="ad_copy"):
+                response = await chain.ainvoke(prompt_data)
             cleaned_json = self._clean_json_response(response)
             ad_data = json.loads(cleaned_json)
 
@@ -812,10 +814,12 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             'statistics': self._extract_statistics_string(extracted.get('statistics', []))
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.b2b_prompt | self.llm | StrOutputParser()
 
         try:
-            response = await chain.ainvoke(prompt_data)
+            with set_ai_context(agent_name="ad_copy"):
+                response = await chain.ainvoke(prompt_data)
             cleaned_json = self._clean_json_response(response)
             ad_data = json.loads(cleaned_json)
             ad_data['generated_from'] = 'b2b_research'
@@ -863,10 +867,12 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             'statistics': self._extract_statistics_string(extracted.get('statistics', []))
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.b2c_prompt | self.llm | StrOutputParser()
 
         try:
-            response = await chain.ainvoke(prompt_data)
+            with set_ai_context(agent_name="ad_copy"):
+                response = await chain.ainvoke(prompt_data)
             cleaned_json = self._clean_json_response(response)
             ad_data = json.loads(cleaned_json)
             ad_data['generated_from'] = 'b2c_research'
@@ -1119,8 +1125,10 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             "visual_direction": angle.visual_direction or ""
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.prompt | self.llm | StrOutputParser()
-        ad_json = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="ad_copy"):
+            ad_json = await chain.ainvoke(prompt_data)
         cleaned_json = self._clean_json_response(ad_json)
 
         try:

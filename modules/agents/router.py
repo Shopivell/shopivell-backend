@@ -22,6 +22,7 @@ from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
 from .media_generator_agent import MediaGeneratorAgent
 from modules.stores.models import Store
+from modules.openrouter.ai_usage_service import require_ai_quota
 from .vision_compliance_service import vision_compliance_service
 from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType
 from .scheduler import rules_scheduler, start_rules_scheduler, stop_rules_scheduler
@@ -191,6 +192,10 @@ async def generate_market_research(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Campaign not found"
         )
+
+    # Check AI quota before proceeding
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
 
     try:
         logger.info(f"Generating market research for campaign: {campaign.name}")
@@ -457,6 +462,10 @@ async def generate_creative_angles(
             detail="Campaign not found"
         )
 
+    # Check AI quota before proceeding
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
+
     try:
         logger.info(f"Generating {num_angles} creative angles for campaign: {campaign.name}")
 
@@ -557,6 +566,10 @@ async def generate_ad_copies(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Campaign not found"
         )
+
+    # Check AI quota before proceeding
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
 
     try:
         agent = AdCopyAgent()
@@ -697,6 +710,10 @@ async def run_campaign_pipeline(
             detail="Campaign not found"
         )
 
+    # Check AI quota before proceeding (pipeline uses multiple agents)
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
+
     try:
         results = {}
         print(f"DEBUG: Starting pipeline for campaign {campaign.name}")
@@ -784,6 +801,10 @@ async def optimize_campaign(
             detail="Campaign not found"
         )
 
+    # Check AI quota before proceeding
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
+
     try:
         # Get performance metrics from database
         metrics = db.query(PerformanceMetrics).filter(
@@ -857,6 +878,10 @@ async def get_campaign_summary(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Campaign not found"
         )
+
+    # Check AI quota before proceeding
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
 
     try:
         metrics = db.query(PerformanceMetrics).filter(
@@ -1238,6 +1263,9 @@ async def generate_store_ad(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Store with id {store_id} not found"
         )
+
+    # Check AI quota before proceeding
+    require_ai_quota(store_id, db)
 
     try:
         agent = MediaGeneratorAgent()

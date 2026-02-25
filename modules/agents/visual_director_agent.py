@@ -211,8 +211,10 @@ Return ONLY valid JSON, no markdown.
             "primary_text": ad_copy.primary_text if ad_copy else "No primary text yet"
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.image_prompt_template | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="visual_director"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:
@@ -251,8 +253,10 @@ Return ONLY valid JSON, no markdown.
             "video_length": video_length
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.video_concept_template | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="visual_director"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:

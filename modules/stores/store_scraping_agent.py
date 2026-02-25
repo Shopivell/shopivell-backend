@@ -704,12 +704,14 @@ If no information can be extracted, return an empty array: []
         # Step 3: AI EXTRACTION - Extract store info using AI
         logger.info("[StoreScrapingAgent] Extracting store information with AI...")
         try:
+            from modules.openrouter.context import set_ai_context
             store_chain = self.store_info_prompt | self.llm | StrOutputParser()
-            store_response = await store_chain.ainvoke({
-                "url": url,
-                "domain": domain,
-                "content": content[:20000]
-            })
+            with set_ai_context(agent_name="store_scraping"):
+                store_response = await store_chain.ainvoke({
+                    "url": url,
+                    "domain": domain,
+                    "content": content[:20000]
+                })
 
             store_response = self._clean_json_response(store_response)
             store_data = json.loads(store_response)
@@ -744,12 +746,14 @@ If no information can be extracted, return an empty array: []
         # Step 5: Extract FAQs using AI
         logger.info("[StoreScrapingAgent] Extracting FAQs with AI...")
         try:
+            from modules.openrouter.context import set_ai_context
             faq_chain = self.faq_prompt | self.llm | StrOutputParser()
-            faq_response = await faq_chain.ainvoke({
-                "url": url,
-                "domain": domain,
-                "content": content[:15000]
-            })
+            with set_ai_context(agent_name="store_scraping"):
+                faq_response = await faq_chain.ainvoke({
+                    "url": url,
+                    "domain": domain,
+                    "content": content[:15000]
+                })
 
             faq_response = self._clean_json_response(faq_response)
             faqs = json.loads(faq_response)

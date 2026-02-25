@@ -376,8 +376,10 @@ Return ONLY valid JSON, no markdown.
 
         logger.info(f"[CreativeStrategistAgent] Generating Meta audience for: {company}")
 
+        from modules.openrouter.context import set_ai_context
         chain = self.meta_audience_prompt | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(agent_name="creative_strategist"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:
@@ -434,8 +436,10 @@ Recommendations: {research.recommendations or 'Not available'}
             "market_research": market_research
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = self.audience_analysis_prompt | self.llm | StrOutputParser()
-        response = await chain.ainvoke(prompt_data)
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_strategist"):
+            response = await chain.ainvoke(prompt_data)
 
         cleaned = self._clean_json_response(response)
         try:
@@ -483,8 +487,10 @@ Recommendations: {research.recommendations or 'Not available'}
                 "num_hooks": num_hooks
             }
 
+            from modules.openrouter.context import set_ai_context
             chain = self.hook_generation_prompt | self.llm | StrOutputParser()
-            response = await chain.ainvoke(prompt_data)
+            with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_strategist"):
+                response = await chain.ainvoke(prompt_data)
 
             cleaned = self._clean_json_response(response)
             try:
@@ -661,8 +667,10 @@ async def generate_audience_from_url(url: str, include_hooks: bool = False, num_
             "num_hooks": num_hooks
         }
 
+        from modules.openrouter.context import set_ai_context
         chain = agent.hook_generation_prompt | agent.llm | StrOutputParser()
-        hook_response = await chain.ainvoke(hook_prompt_data)
+        with set_ai_context(agent_name="creative_strategist"):
+            hook_response = await chain.ainvoke(hook_prompt_data)
 
         cleaned = agent._clean_json_response(hook_response)
         try:

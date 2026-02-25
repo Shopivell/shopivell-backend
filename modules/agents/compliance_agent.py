@@ -262,7 +262,9 @@ Respond with JSON only:
         ]
 
         try:
-            response = await self.llm.ainvoke(messages)
+            from modules.openrouter.context import set_ai_context
+            with set_ai_context(agent_name="compliance"):
+                response = await self.llm.ainvoke(messages)
             response_text = response.content.strip()
 
             # Clean JSON if wrapped in markdown

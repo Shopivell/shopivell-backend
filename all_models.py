@@ -88,6 +88,12 @@ try:
 except ImportError:
     pass
 
+# AI Usage Tracking
+try:
+    from modules.openrouter.models import *
+except ImportError:
+    pass
+
 # Notifications
 try:
     from modules.notifications.models import *

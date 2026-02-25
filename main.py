@@ -19,6 +19,7 @@ from modules.fashion.models import *  # Fashion try-on models (depends on User, 
 from modules.reviews.models import *  # Review models (depends on User, Store)
 from modules.coupons.models import *  # Coupon models (depends on User, Store)
 from modules.returns.models import *  # Return models (depends on User, Store)
+from modules.openrouter.models import *  # AI usage tracking models
 
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -56,6 +57,7 @@ from modules.fashion.router import fashion_router
 from modules.reviews.router import review_router
 from modules.coupons.router import coupon_router
 from modules.returns.router import return_router
+from modules.openrouter.router import ai_usage_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -136,6 +138,7 @@ app.include_router(fashion_router, prefix="/v1")
 app.include_router(review_router, prefix="/v1")
 app.include_router(coupon_router, prefix="/v1")
 app.include_router(return_router, prefix="/v1")
+app.include_router(ai_usage_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")

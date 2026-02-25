@@ -182,13 +182,15 @@ ROAS: {perf.get('roas', 0):.0f}%
 """
 
         # Run the optimization analysis
+        from modules.openrouter.context import set_ai_context
         chain = self.optimization_prompt | self.llm | StrOutputParser()
-        analysis = await chain.ainvoke({
-            "campaign_name": campaign.name,
-            "objective": campaign.objective,
-            "budget": campaign.budget or 0,
-            "performance_data": perf_text
-        })
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="monitor_optimizer"):
+            analysis = await chain.ainvoke({
+                "campaign_name": campaign.name,
+                "objective": campaign.objective,
+                "budget": campaign.budget or 0,
+                "performance_data": perf_text
+            })
 
         # Parse recommendations
         recommendations = self._parse_recommendations(analysis)
@@ -233,18 +235,20 @@ ROAS: {perf.get('roas', 0):.0f}%
         overall_roas = (sum(m.roas or 0 for m in metrics) / len(metrics)) if metrics else 0
 
         # Generate summary
+        from modules.openrouter.context import set_ai_context
         chain = self.summary_prompt | self.llm | StrOutputParser()
-        summary_text = await chain.ainvoke({
-            "campaign_name": campaign.name,
-            "objective": campaign.objective,
-            "total_impressions": total_impressions,
-            "total_clicks": total_clicks,
-            "avg_ctr": avg_ctr,
-            "avg_cpc": avg_cpc,
-            "total_conversions": total_conversions,
-            "total_spend": total_spend,
-            "overall_roas": overall_roas
-        })
+        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="monitor_optimizer"):
+            summary_text = await chain.ainvoke({
+                "campaign_name": campaign.name,
+                "objective": campaign.objective,
+                "total_impressions": total_impressions,
+                "total_clicks": total_clicks,
+                "avg_ctr": avg_ctr,
+                "avg_cpc": avg_cpc,
+                "total_conversions": total_conversions,
+                "total_spend": total_spend,
+                "overall_roas": overall_roas
+            })
 
         summary_data = self._parse_summary(summary_text)
 

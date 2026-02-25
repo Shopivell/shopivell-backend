@@ -262,6 +262,25 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         output_tokens = response.usage.completion_tokens if response.usage else 0
         print(f"[AdCreativeAgent] {model_name} tokens used - Input: {input_tokens}, Output: {output_tokens}, Total: {input_tokens + output_tokens}")
 
+        # Track usage for billing
+        try:
+            from modules.openrouter.context import ai_context
+            from modules.openrouter.ai_usage_service import track_usage
+            ctx = ai_context.get()
+            track_usage(
+                model=model_name,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                agent_name=ctx.agent_name if ctx else "ad_creative",
+                store_id=ctx.store_id if ctx else None,
+                user_id=ctx.user_id if ctx else None,
+                campaign_id=ctx.campaign_id if ctx else None,
+                endpoint="chat/completions"
+            )
+        except Exception as e:
+            logger.warning(f"[AdCreativeAgent] Usage tracking failed: {e}")
+
         # Parse response
         result = self._parse_creative_response(response_text)
 
