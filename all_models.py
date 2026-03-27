@@ -130,4 +130,10 @@ try:
 except ImportError:
     pass
 
+# Analytics
+try:
+    from modules.analytics.models import *
+except ImportError:
+    pass
+
 print("[Models] All models loaded successfully")

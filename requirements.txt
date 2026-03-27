@@ -21,6 +21,7 @@ pgvector
 stripe
 paypalrestsdk
 cloudinary
+minio>=7.2.0
 tavily-python
 requests
 httpx>=0.25.0

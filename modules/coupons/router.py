@@ -67,6 +67,24 @@ def calculate_discount(coupon: Coupon, order_amount: float) -> float:
     return 0
 
 
+def validate_coupon_logic_public(coupon: Coupon, order_amount: float) -> tuple[bool, str]:
+    """Validate coupon without user context (for public order form)."""
+    if not coupon:
+        return False, "Coupon not found"
+    if not coupon.is_active:
+        return False, "Coupon is inactive"
+    now = datetime.utcnow()
+    if coupon.starts_at and now < coupon.starts_at:
+        return False, "Coupon is not yet active"
+    if coupon.expires_at and now > coupon.expires_at:
+        return False, "Coupon has expired"
+    if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
+        return False, "Coupon usage limit reached"
+    if coupon.min_order_amount and order_amount < coupon.min_order_amount:
+        return False, f"Minimum order amount is {coupon.min_order_amount}"
+    return True, "Coupon is valid"
+
+
 def validate_coupon_logic(coupon: Coupon, order_amount: float, user_id: UUID, db: Session) -> tuple[bool, str]:
     """Validate if a coupon can be used. Returns (is_valid, message)."""
     if not coupon:
@@ -349,4 +367,31 @@ async def admin_get_all_coupons(
         page=page,
         page_size=page_size,
         total_pages=total_pages
+    )
+
+
+# ============ Public Endpoints (no auth) ============
+
+@coupon_router.post("/public/validate", response_model=CouponValidateResponse)
+async def validate_coupon_public(
+    request: CouponValidateRequest,
+    db: Session = Depends(get_db),
+):
+    """Validate a coupon code for the public order form (no auth required)."""
+    coupon = db.query(Coupon).filter(
+        Coupon.code == request.code.upper(),
+        Coupon.store_id == request.store_id
+    ).first()
+
+    is_valid, message = validate_coupon_logic_public(coupon, request.order_amount)
+
+    discount = 0
+    if is_valid and coupon:
+        discount = calculate_discount(coupon, request.order_amount)
+        message = f"Coupon applied! You save ${discount:.2f}"
+
+    return CouponValidateResponse(
+        valid=is_valid,
+        discount_amount=discount,
+        message=message
     )

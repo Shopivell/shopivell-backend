@@ -1,13 +1,12 @@
 # modules/stores/models.py
 from typing import Optional, List, Dict, Any
 from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Text, JSON, Enum as SQLEnum, Integer
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID, Vector
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import uuid
 from database import Base
 import enum
-from pgvector.sqlalchemy import Vector
 
 # NO import from users module!
 
@@ -40,12 +39,15 @@ class Store(Base):
     color_theme: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     screenshot_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Homepage screenshot for campaigns
+    facebook_pixel_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # Meta/Facebook Pixel ID
+    banner_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Store banner/cover image
 
     # Store Details for AI Bot Context
     store_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Detailed description
     store_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Physical address
     store_city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     store_country: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    country_code: Mapped[Optional[str]] = mapped_column(String(5), nullable=True)  # ISO code: ZW, ZA, US
     store_category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # e.g., "Electronics", "Fashion"
     operating_hours: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # {"mon": "9am-5pm", ...}
     currency: Mapped[str] = mapped_column(String(10), default="USD")

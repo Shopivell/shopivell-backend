@@ -60,6 +60,9 @@ from .schemas import (
     FeedbackListItem,
     FeedbackListResponse,
     RespondToFeedbackRequest,
+    UpdateStoreStatusRequest,
+    CreateAgencyRequest,
+    UpdateUserStatusRequest,
 )
 
 admin_router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -970,12 +973,11 @@ async def create_store(
 @admin_router.put("/stores/{store_id}/status")
 async def update_store_status(
     store_id: uuid.UUID,
-    request: "UpdateStoreStatusRequest",
+    request: UpdateStoreStatusRequest,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """Update store status (activate/suspend)."""
-    from .schemas import UpdateStoreStatusRequest
 
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
@@ -1012,12 +1014,11 @@ async def delete_store(
 
 @admin_router.post("/agencies")
 async def create_agency(
-    request: "CreateAgencyRequest",
+    request: CreateAgencyRequest,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """Create a new agency."""
-    from .schemas import CreateAgencyRequest
 
     # Find owner
     owner = db.query(User).filter(User.email == request.owner_email).first()
@@ -1069,12 +1070,11 @@ async def delete_agency(
 @admin_router.put("/users/{user_id}/status")
 async def update_user_status(
     user_id: uuid.UUID,
-    request: "UpdateUserStatusRequest",
+    request: UpdateUserStatusRequest,
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """Update user active status."""
-    from .schemas import UpdateUserStatusRequest
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:

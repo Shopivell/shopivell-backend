@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from sqlalchemy import String, Float, DateTime, ForeignKey, Text, Integer, Boolean, Index, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSON
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base

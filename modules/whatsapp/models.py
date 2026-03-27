@@ -1,8 +1,8 @@
 # models.py
 
 # ✅ CORRECT: This is the SQLAlchemy column type
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, Column, Float, String, Text, Boolean, DateTime, ForeignKey, UUID, JSON
+from db_compat import Vector, ARRAY, UUID
+from sqlalchemy import Column, Float, String, Text, Boolean, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
@@ -223,6 +223,10 @@ class WhatsAppConversation(Base):
     # Status
     status = Column(String(50), default="active")  # active, handoff, closed
 
+    # Order flow state machine
+    order_flow_active = Column(Boolean, default=False)
+    order_flow_state = Column(JSON, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -402,4 +406,23 @@ class FAQ(Base):
 
     def to_knowledge_content(self):
         """Format FAQ for knowledge base embedding."""
-        return f"Question: {self.question}\n\nAnswer: {self.answer}" 
+        return f"Question: {self.question}\n\nAnswer: {self.answer}"
+
+
+class WhatsAppFlow(Base):
+    """Tracks WhatsApp Flows created for each store."""
+    __tablename__ = "whatsapp_flows"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=False, index=True)
+    waba_id = Column(String(255), nullable=False)
+    flow_id = Column(String(255), nullable=False, unique=True)
+    flow_name = Column(String(255), nullable=False)
+    status = Column(String(50), default="draft")  # draft, published, deprecated
+    version = Column(Float, default=1)
+    endpoint_uri = Column(Text, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    store = relationship("Store", backref="whatsapp_flows")

@@ -36,6 +36,7 @@ class ProductBase(BaseModel):
     image_path: Optional[str] = None
 
 class ProductCreate(ProductBase):
+    store_id: uuid.UUID
     collections: List[uuid.UUID] = []
 
 class ProductUpdate(BaseModel):

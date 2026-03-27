@@ -1,7 +1,7 @@
 # modules/payment/models.py - DIRECT FIX
 from typing import Optional, List, Dict, Any
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text, JSON, Enum as SQLEnum, Integer, Float, Numeric
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import uuid

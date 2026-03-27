@@ -1,6 +1,6 @@
 # modules/assets/models.py
 from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, ForeignKey, Enum as SQLAlchemyEnum, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from db_compat import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid

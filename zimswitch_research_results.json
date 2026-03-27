@@ -1,0 +1,167 @@
+{
+  "url": "https://zimswitch.co.zw/",
+  "research_summary": {
+    "company_name": "Zimswitch",
+    "tagline": "With You Wherever Life Takes You",
+    "industry": "Financial Services",
+    "geographic_coverage": "Zimbabwe",
+    "pages_scraped": 5,
+    "competitors_found": 0,
+    "trends_found": 0,
+    "audience_insights_found": 0
+  },
+  "extracted_data": {
+    "company_info": {
+      "name": "Zimswitch",
+      "tagline": "With You Wherever Life Takes You",
+      "industry": "Financial Services",
+      "geographic_coverage": "Zimbabwe"
+    },
+    "navigation_structure": [
+      {
+        "section": "Home",
+        "items": [
+          "ZEEPAY",
+          "Zimswitch Online",
+          "POS",
+          "ZIPIT",
+          "ATM"
+        ]
+      },
+      {
+        "section": "Solutions",
+        "items": [
+          "Zimswitch Online",
+          "ZIPIT"
+        ]
+      },
+      {
+        "section": "Contact Us",
+        "items": [
+          "Visit us",
+          "Call us"
+        ]
+      },
+      {
+        "section": "Training Services",
+        "items": []
+      }
+    ],
+    "services_products": [
+      {
+        "name": "ZEEPAY",
+        "description": "Bulk Payments Made Easy. ZEEPAY is an Electronic Funds Transfer (EFT) solution.",
+        "category": "Payment Solution"
+      },
+      {
+        "name": "Zimswitch Online",
+        "description": "An eCommerce Solution that provides customers with a secure payment option to pay for goods and services online.",
+        "category": "eCommerce Solution"
+      },
+      {
+        "name": "ZIPIT",
+        "description": "Experience seamless money transfers with ZIPIT. Fund your wallet from banks or send payments to merchants instantly.",
+        "category": "Money Transfer"
+      }
+    ],
+    "value_propositions": [
+      "Empowering every transaction and connecting every possibility",
+      "Delivering trusted, seamless payment solutions",
+      "Supporting businesses with efficient operations"
+    ],
+    "target_audiences": [
+      "Consumers",
+      "Businesses",
+      "Banks and fintechs",
+      "Regulators and partners"
+    ],
+    "partners_members": [],
+    "leadership": [
+      {
+        "name": "Not available",
+        "title": "Chief Executive Officer",
+        "quote": "Wherever life leads, We move with you, empowering every transaction connecting every possibility, and ensuring your payments are always secure and within reach."
+      }
+    ],
+    "key_features": [
+      "Secure and seamless payments",
+      "Interoperable infrastructure",
+      "Connected financial ecosystem"
+    ],
+    "certifications_awards": [],
+    "call_to_actions": [
+      "Sign up for ZEEPAY",
+      "Sign up for Zimswitch Online",
+      "Find a Zimswitch Enabled ATM",
+      "Find Merchants Accepting Zimswitch Online"
+    ],
+    "pricing_info": "Not available",
+    "contact_info": {
+      "emails": [
+        "info@zimswitch.co.zw"
+      ],
+      "phones": [
+        "+263-242-746620",
+        "+263-242-776742"
+      ],
+      "social_media": {
+        "facebook": [
+          "https://www.facebook.com/ZimswitchTech"
+        ],
+        "twitter": [
+          "https://x.com/ZimswitchTech"
+        ],
+        "linkedin": [
+          "https://www.linkedin.com/company/zimswitchtech"
+        ],
+        "youtube": [
+          "https://www.youtube.com/iframe_api",
+          "https://www.youtube.com/embed"
+        ]
+      }
+    },
+    "statistics": []
+  },
+  "market_data": {
+    "competitors": [],
+    "industry_trends": [],
+    "audience_insights": []
+  },
+  "raw_content": {
+    "main_page": "# Home - ZIMSWITCH\n\nDescription: Zimswitch is the sole National Electronic Funds Switch and clearing house for Zimbabwe (designated by Reserve Bank of Zimbabwe).\n\n# WithYou,WhereverLife Takes You\n\n# With You Wherever Life takes You\n\n# Switching you on to financial flexibility\n\n### ZEEPAY\n\n### Zimswitch Online\n\n### POS\n\n### ZIPIT\n\n### ATM\n\n# Customer-Centric & Purpose-Driven\n\n## 0k+\n\n# Video Hub\n\n# Our Members & Partners\n\nChief Executive Officer\n\nWherever life leads, We move with you, empowering every transaction connecting every\npossibility, and ensuring your payments are always secure and within reach.\n\nWe are committed to supporting your business every step of the way, delivering trusted,\nseamless payment solutions that strengthen your operations, enhance customer\nexperiences, and help you serve with confidence.\n\nBulk Payments Made Easy. ZEEPAY is an Electronic Funds Transfer (EFT) solution...\n\nSimplify your Online payments What is Zimswitch Online? Zimswitch Online is an...\n\nSwipe to Pay Simple , Fast Secure -Just Swipe and Go. Make...\n\nZIPIT Send Transfer funds from bank to wallet, across banks, across wallets,...\n\nUnlock your cash freedom! Withdraw USD cash seamlessly from anywhere & anytime...\n\nA CONNECTED ECOSYSTEM\n\nWe operate at the heart of a connected financial ecosystem. We empower consumers\n with secure, seamless payments; enabling businesses to operate with efficiency and\n confidence; supporting banks and fintechs with trusted, interoperable infrastructure; and\n working alongside regulators and partners to strengthen Zimbabwe’s digital economy.\n Together, we create a connected ecosystem where every stakeholder can thrive.\n\nZimswitchis the sole National Electronic Funds Switch and clearing house for Zimbabwe (designated by Reserve Bank of Zimbabwe).\n\nStay current with news, notices, and events.\n\nOur strength lies in collaboration — connecting members and partners across industries\n to deliver fast, reliable, and inclusive payment solutions for everyone.\n\n\nNavigation: Sign up for ZEEPAY, Sign up for Zimswitch Online, Find a Zimswitch Enabled ATM, Find Merchants Accepting Zimswitch Online, View More, FAQs",
+    "scraped_pages": [
+      {
+        "url": "https://zimswitch.co.zw",
+        "excerpt": "# Home - ZIMSWITCH\n\nDescription: Zimswitch is the sole National Electronic Funds Switch and clearing house for Zimbabwe (designated by Reserve Bank of Zimbabwe).\n\n# WithYou,WhereverLife Takes You\n\n# With You Wherever Life takes You\n\n# Switching you on to financial flexibility\n\n### ZEEPAY\n\n### Zimswitch Online\n\n### POS\n\n### ZIPIT\n\n### ATM\n\n# Customer-Centric & Purpose-Driven\n\n## 0k+\n\n# Video Hub\n\n# Our Members & Partners\n\nChief Executive Officer\n\nWherever life leads, We move with you, empowering "
+      },
+      {
+        "url": "https://zimswitch.co.zw/solutions/zimswitch-online",
+        "excerpt": "# Zimswitch Online - ZIMSWITCH\n\nDescription: Zimswitch Online is an eCommerce Solution that provides customers with a secure payment option to pay for goods and services online.\n\n# Zimswitch Online\n\n## Simplify your Online payments\n\n### What is Zimswitch Online?\n\n### Who Can use Zimswitch Online?\n\n### What are the benefits of using Zimswitch Online?\n\n### How do I enrol and access the system?\n\n### List of Active Merchants\n\n### Recurring Payments\n\nZimswitch Online is an eCommerce Solution that pro"
+      },
+      {
+        "url": "https://zimswitch.co.zw/solutions/zipit",
+        "excerpt": "# ZIPIT - ZIMSWITCH\n\nDescription: Experience seamless money transfers with ZIPIT. Fund your wallet from banks or send payments to merchants instantly.\n\n# ZIPIT\n\n### ZIPIT Send\n\n### ZIPIT Smart\n\n### ZIPIT Pay\n\n### Benefits Of Using ZIPIT\n\n### Who can use ZIPIT?\n\n### How do you access ZIPIT?\n\nAny mobile registered user with a bank account or any mobile wallet  is able to enjoy the real convenience of sending money through ZIPIT.\n\n• Transfer funds from bank to wallet, across banks, across wallets, "
+      },
+      {
+        "url": "https://zimswitch.co.zw/contact-us",
+        "excerpt": "# Contact Us - ZIMSWITCH\n\nDescription: Need help? Our Contact Us page provides all the information you need to connect with us effectively.\n\n# Contact Us\n\n## Get in touch and learn more about us\n\n### Visit us\n\n### Call us\n\nZimswitch Technologies\n\n3 Mulberry Close, Newlands,Harare, Zimbabwe\n\nZimswitch Technologies"
+      },
+      {
+        "url": "https://zimswitch.co.zw/training-services",
+        "excerpt": "# Training Services - ZIMSWITCH\n\nDescription: Explore our Training Services designed to empower financial institutions and merchants for success in the digital economy.\n\n# Training Services\n\nWe believe that innovation in payments technology is only as strong as the people behind it. That’s why we proudly offer specialized training services to our valued stakeholders ;including member financial institutions, merchants, and partners equipping them with the skills to thrive in today’s digital econo"
+      }
+    ]
+  },
+  "website_data": {
+    "success": true,
+    "source": "beautifulsoup",
+    "error": null,
+    "content_length": 2152,
+    "screenshot_url": null
+  },
+  "multi_page_data": {
+    "source": "beautifulsoup",
+    "success_count": 5,
+    "total_content_length": 6320
+  }
+}

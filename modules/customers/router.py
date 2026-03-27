@@ -285,6 +285,20 @@ def get_customers(
         total_pages=(total_count + limit - 1) // limit
     )
 
+@customer_router.get("/drafts/latest")
+def get_latest_draft_customer(
+    db: Session = Depends(get_db)
+):
+    """Get the most recently updated draft customer"""
+    draft = db.query(Customer).filter(
+        Customer.status == "draft"
+    ).order_by(Customer.updated_at.desc()).first()
+
+    if not draft:
+        return None
+
+    return draft
+
 @customer_router.get("/{customer_id}", response_model=CustomerResponse)
 def get_customer(customer_id: uuid.UUID, db: Session = Depends(get_db)):
     """Get a specific customer by ID"""

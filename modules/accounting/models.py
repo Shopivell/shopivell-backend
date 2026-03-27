@@ -1,7 +1,7 @@
 # modules/accounting/models.py
 from typing import Optional, List, Dict, Any
 from sqlalchemy import String, Float, DateTime, ForeignKey, Text, Integer, Boolean, JSON, Enum as SQLEnum, Numeric, Date, UniqueConstraint, CheckConstraint
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime, date
 import uuid

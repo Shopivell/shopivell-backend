@@ -2158,32 +2158,9 @@ def sync_insights(
     )
 
 def sync_insights_background(db: Session, days: int, account_id: Optional[uuid.UUID] = None):
-    """Background task to sync insights"""
-    try:
-        # Get date range
-        end_date = datetime.utcnow().date()
-        start_date = end_date - timedelta(days=days)
-        
-        # Build query for ads
-        query = db.query(MetaAd).join(MetaAdAccount).filter(
-            MetaAd.is_active == True,
-            MetaAd.status == "ACTIVE",
-            MetaAdAccount.is_connected == True
-        )
-        
-        if account_id:
-            query = query.filter(MetaAdAccount.id == account_id)
-        
-        ads = query.all()
-        
-        for ad in ads:
-            try:
-                sync_ad_insights(ad, start_date, end_date, db)
-            except Exception as e:
-                print(f"Failed to sync insights for ad {ad.id}: {str(e)}")
-                continue
-    except Exception as e:
-        print(f"Background insights sync failed: {str(e)}")
+    """Background task to sync insights — delegates to insights_service."""
+    from .insights_service import sync_insights_background as _sync
+    _sync(db, days, account_id)
 
 def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
     """Sync insights for a specific ad"""
@@ -3506,4 +3483,83 @@ def get_best_ad_template(
             "Use similar visual style and messaging tone for new ads"
         ]
     }
+
+
+# ==================== Custom & Lookalike Audiences ====================
+
+@marketing_router.post("/custom-audiences/upload")
+def upload_custom_audience(
+    ad_account_id: uuid.UUID,
+    name: str,
+    description: str = "Custom audience from customer data",
+    phone_numbers: List[str] = [],
+    db: Session = Depends(get_db)
+):
+    """
+    Create a Custom Audience from phone numbers.
+
+    Phone numbers are hashed with SHA256 before uploading to Meta.
+    """
+    ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == ad_account_id).first()
+    if not ad_account:
+        raise HTTPException(status_code=404, detail="Ad account not found")
+
+    if not phone_numbers:
+        raise HTTPException(status_code=400, detail="No phone numbers provided")
+
+    from .meta_targeting_service import MetaTargetingService
+    service = MetaTargetingService(access_token=ad_account.access_token)
+
+    result = service.create_custom_audience(
+        ad_account_id=ad_account.ad_account_id,
+        name=name,
+        description=description,
+        phone_numbers=phone_numbers
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to create custom audience"))
+
+    return result
+
+
+@marketing_router.post("/lookalike-audiences/create")
+def create_lookalike_audience(
+    ad_account_id: uuid.UUID,
+    source_audience_id: str,
+    name: str,
+    country: str = "ZW",
+    ratio: float = 0.01,
+    description: str = "",
+    db: Session = Depends(get_db)
+):
+    """
+    Create a Lookalike Audience from a source Custom Audience.
+
+    Args:
+        ratio: 0.01-0.20 (1%-20% of country population). Lower = more similar.
+    """
+    ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == ad_account_id).first()
+    if not ad_account:
+        raise HTTPException(status_code=404, detail="Ad account not found")
+
+    if ratio < 0.01 or ratio > 0.20:
+        raise HTTPException(status_code=400, detail="Ratio must be between 0.01 and 0.20")
+
+    from .meta_targeting_service import MetaTargetingService
+    service = MetaTargetingService(access_token=ad_account.access_token)
+
+    result = service.create_lookalike_audience(
+        ad_account_id=ad_account.ad_account_id,
+        source_audience_id=source_audience_id,
+        name=name,
+        country=country,
+        ratio=ratio,
+        description=description
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to create lookalike audience"))
+
+    return result
 

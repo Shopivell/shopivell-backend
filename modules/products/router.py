@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import uuid
 import shutil
+import csv
+import io
 from pathlib import Path
 
 from database import get_db
@@ -464,6 +466,255 @@ async def get_products(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching products: {str(e)}"
         )
+
+# =============================================================================
+# PRODUCT IMPORT / EXPORT (must be before /{product_id} to avoid route conflict)
+# =============================================================================
+
+@products_router.get("/template/download")
+async def download_product_template():
+    """Download Excel template for product import"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Products"
+
+    headers = [
+        "title", "description", "category", "price", "sku", "barcode",
+        "quantity", "weight", "weight_unit", "status", "vendor", "tags", "type", "image_url"
+    ]
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="374151", end_color="374151", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+        ws.column_dimensions[cell.column_letter].width = max(15, len(header) + 5)
+
+    sample_data = [
+        "Sample Product", "A great product description", "Clothing", 29.99,
+        "SKU-001", "123456789", 100, 0.5, "kg", "Active", "BrandName",
+        "summer, new", "Physical", ""
+    ]
+
+    for col, value in enumerate(sample_data, 1):
+        cell = ws.cell(row=2, column=col, value=value)
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+    instructions_ws = wb.create_sheet(title="Instructions")
+    instructions = [
+        ("Column", "Description", "Required", "Example"),
+        ("title", "Product name", "Yes", "Blue T-Shirt"),
+        ("description", "Product description", "No", "Cotton t-shirt"),
+        ("category", "Product category", "No", "Clothing"),
+        ("price", "Product price", "Yes", "29.99"),
+        ("sku", "Stock keeping unit code", "No", "BTS-001"),
+        ("barcode", "Product barcode", "No", "123456789"),
+        ("quantity", "Stock quantity", "No", "100"),
+        ("weight", "Product weight", "No", "0.5"),
+        ("weight_unit", "Weight unit (kg/lb/g/oz)", "No", "kg"),
+        ("status", "Product status (Active/Draft/Archived)", "No", "Active"),
+        ("vendor", "Vendor or brand name", "No", "Nike"),
+        ("tags", "Comma-separated tags", "No", "summer, sale"),
+        ("type", "Product type", "No", "Physical"),
+        ("image_url", "URL to product image", "No", "https://example.com/image.jpg"),
+    ]
+
+    for col, value in enumerate(instructions[0], 1):
+        cell = instructions_ws.cell(row=1, column=col, value=value)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    for row_idx, row_data in enumerate(instructions[1:], 2):
+        for col_idx, value in enumerate(row_data, 1):
+            cell = instructions_ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            if col_idx == 3 and value == "Yes":
+                cell.fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+
+    instructions_ws.column_dimensions['A'].width = 15
+    instructions_ws.column_dimensions['B'].width = 40
+    instructions_ws.column_dimensions['C'].width = 10
+    instructions_ws.column_dimensions['D'].width = 25
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=product_import_template.xlsx"}
+    )
+
+
+@products_router.post("/bulk-upload")
+async def bulk_upload_products(
+    file: UploadFile = File(...),
+    store_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Bulk upload products from CSV or Excel file"""
+    filename = file.filename.lower()
+
+    if not (filename.endswith('.csv') or filename.endswith('.xlsx') or filename.endswith('.xls')):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only CSV and Excel (.xlsx, .xls) files are supported"
+        )
+
+    content = await file.read()
+    created_products = []
+    failed_products = []
+    rows_to_process = []
+
+    if filename.endswith('.csv'):
+        csv_content = io.StringIO(content.decode('utf-8'))
+        csv_reader = csv.DictReader(csv_content)
+        for row_num, row in enumerate(csv_reader, start=2):
+            rows_to_process.append((row_num, row))
+    else:
+        try:
+            from openpyxl import load_workbook
+            excel_content = io.BytesIO(content)
+            workbook = load_workbook(excel_content, read_only=True)
+            ws = workbook.active
+
+            headers = []
+            for cell in ws[1]:
+                headers.append(cell.value.lower().strip() if cell.value else '')
+
+            for row_num, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                if not any(row):
+                    continue
+                row_dict = {}
+                for col_idx, value in enumerate(row):
+                    if col_idx < len(headers) and headers[col_idx]:
+                        row_dict[headers[col_idx]] = str(value) if value is not None else None
+                if row_dict.get('title') == 'Sample Product':
+                    continue
+                rows_to_process.append((row_num, row_dict))
+
+            workbook.close()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Error parsing Excel file: {str(e)}"
+            )
+
+    for row_num, row in rows_to_process:
+        try:
+            title = (row.get('title') or '').strip()
+            price_str = (row.get('price') or '').strip()
+
+            if not title or not price_str:
+                failed_products.append({
+                    "row": row_num,
+                    "title": title or 'N/A',
+                    "error": "Missing required fields (title, price)"
+                })
+                continue
+
+            try:
+                price = float(price_str)
+            except ValueError:
+                failed_products.append({
+                    "row": row_num,
+                    "title": title,
+                    "error": f"Invalid price: {price_str}"
+                })
+                continue
+
+            quantity = 0
+            if row.get('quantity'):
+                try:
+                    quantity = int(float(row['quantity']))
+                except (ValueError, TypeError):
+                    pass
+
+            weight = 0.0
+            if row.get('weight'):
+                try:
+                    weight = float(row['weight'])
+                except (ValueError, TypeError):
+                    pass
+
+            product = Product(
+                store_id=store_id,
+                title=title,
+                description=row.get('description'),
+                category=row.get('category'),
+                price=price,
+                sku=row.get('sku') or 'No SKU',
+                barcode=row.get('barcode'),
+                quantity=quantity,
+                available=quantity,
+                on_hand=quantity,
+                weight=weight,
+                weight_unit=row.get('weight_unit') or 'kg',
+                status=row.get('status') or 'Active',
+                vendor=row.get('vendor'),
+                tags=row.get('tags'),
+                type=row.get('type'),
+                image_url=row.get('image_url'),
+            )
+            db.add(product)
+            created_products.append(product)
+
+        except Exception as e:
+            failed_products.append({
+                "row": row_num,
+                "title": row.get('title', 'N/A'),
+                "error": str(e)
+            })
+
+    db.commit()
+    for product in created_products:
+        db.refresh(product)
+
+    return {
+        "created_count": len(created_products),
+        "failed_count": len(failed_products),
+        "failed_products": failed_products,
+    }
+
+# =============================================================================
+# PRODUCT DRAFTS
+# =============================================================================
+
+@products_router.get("/drafts/latest")
+async def get_latest_draft(
+    store_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db)
+):
+    """Get the most recently updated draft product for a store"""
+    draft = db.query(Product).filter(
+        Product.store_id == store_id,
+        Product.status == "Draft"
+    ).order_by(Product.updated_at.desc()).first()
+
+    if not draft:
+        return None
+
+    return draft
+
+# =============================================================================
+# PRODUCT CRUD
+# =============================================================================
 
 # GET single product by ID
 @products_router.get("/{product_id}", response_model=ProductResponse)
@@ -1000,3 +1251,7 @@ async def get_collection_products(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching collection products: {str(e)}"
         )
+
+
+
+

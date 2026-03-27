@@ -267,29 +267,48 @@ Be thorough and PRECISE about visual details - especially logos, uniforms, vehic
             img.save(buf, format="JPEG", quality=85)
             resized_b64 = base64.b64encode(buf.getvalue()).decode()
 
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openrouter_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "google/gemini-2.5-flash",
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{resized_b64}"}},
-                            {"type": "text", "text": prompt},
-                        ]
-                    }],
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"]
-            print("  >> Used OpenRouter (Gemini Flash)")
-        else:
-            raise RuntimeError("No Gemini API key or OpenRouter key available for analysis")
+            # Try multiple models - cheapest/free first
+            analysis_models = [
+                "google/gemini-2.5-flash",
+                "google/gemini-3-flash-preview",
+                "meta-llama/llama-4-maverick",
+            ]
+            for amodel in analysis_models:
+                try:
+                    print(f"  Trying {amodel} via OpenRouter for analysis...")
+                    resp = requests.post(
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {openrouter_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": amodel,
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{resized_b64}"}},
+                                    {"type": "text", "text": prompt},
+                                ]
+                            }],
+                        },
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                    text = resp.json()["choices"][0]["message"]["content"]
+                    print(f"  >> Used OpenRouter ({amodel})")
+                    break
+                except requests.exceptions.HTTPError as he:
+                    if he.response.status_code == 402:
+                        print(f"  {amodel}: 402 Payment Required (credits exhausted)")
+                        continue
+                    print(f"  {amodel}: {he}")
+                    continue
+                except Exception as ae:
+                    print(f"  {amodel}: {str(ae)[:150]}")
+                    continue
+        if not text:
+            raise RuntimeError("No Gemini API key or OpenRouter credits available for analysis")
 
     print(f"  Analysis:\n  {text[:2000]}")
 
@@ -390,8 +409,20 @@ def strip_text(prompt):
     c = re.sub(r"LOGO:\s*[^.]*\.\s*", "", c, flags=re.IGNORECASE)
     c = re.sub(r"Ensure\s+all\s+text\s+(overlays?\s+)?[^.]*\.\s*", "", c, flags=re.IGNORECASE)
     c = re.sub(r"Subject\s+positioned\s+center-right\.?\s*", "", c, flags=re.IGNORECASE)
+    # Strip in-scene quoted text (sign text, screen text, vehicle text)
+    c = re.sub(r"""(?:reading|showing|displaying|saying|with text|that reads|that says|stating)\s*[:.]?\s*["'][^"']*["']""", "", c, flags=re.IGNORECASE)
+    c = re.sub(r"""["'][A-Z][^"']{2,}["']""", "", c)
+    c = re.sub(r"""'[A-Z][^']{2,}'""", "", c)
+    c = re.sub(r"with\s+[\"'][^\"']+[\"']\s+(?:clearly\s+)?visible[^.]*", "", c, flags=re.IGNORECASE)
+    # Strip background people (they get distorted faces)
+    c = re.sub(r",?\s*(?:with\s+)?(?:uniformed\s+)?(?:security\s+)?(?:personnel|officers?|guards?|staff)\s+(?:visible\s+)?(?:in\s+the\s+background)?[.,]?\s*", ". ", c, flags=re.IGNORECASE)
+    c = re.sub(r",?\s*(?:with\s+)?(?:\w+\s+){0,3}(?:people|persons?|figures?|workers?|family\s+members?|members?)\s+(?:is\s+|are\s+)?(?:visible\s+)?(?:in\s+the\s+background)?[.,]?\s*", ". ", c, flags=re.IGNORECASE)
+    c = re.sub(r"[A-Z][^.]*(?:visible|seen|standing)\s+in\s+the\s+background[^.]*\.\s*", "", c, flags=re.IGNORECASE)
+    # Remove leftover "to allow space for bullet points"
+    c = re.sub(r"to\s+allow\s+space\s+for\s+(?:bullet\s+points?|text\s+overlay)\.?\s*", "", c, flags=re.IGNORECASE)
+    c = re.sub(r"\.\s*\.", ".", c)
     c = re.sub(r"\s{2,}", " ", c).strip()
-    c += " Do NOT include any text, headlines, buttons, or overlays. Generate ONLY the photorealistic scene."
+    c += " Do NOT include any text, words, letters, numbers, signs with text, labels, headlines, buttons, or text overlays of any kind. Do NOT place any small people or faces in the background. Generate ONLY the photorealistic scene."
     return c
 
 
@@ -485,9 +516,11 @@ SCENE TO GENERATE:
 {scene_prompt}
 
 RULES:
-- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no signs with text. The image must contain ZERO readable text.
-- Do NOT reproduce any text you see in the screenshot reference images. Only copy visual/physical elements.
-- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
+- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no review cards, no testimonials, no sign text, no screen text, no vehicle text. The image must contain ZERO readable characters.
+- If the scene mentions text on signs, screens, tablets, or vehicles - DO NOT render that text. Leave those surfaces blank, blurred, or use abstract colored shapes instead.
+- Do NOT reproduce any text you see in the screenshot reference images. Only copy PHYSICAL/VISUAL elements (colors, shapes, uniforms, vehicles, equipment).
+- NEVER place small people or faces in the background - they will appear distorted. Only 1-3 main foreground subjects with clear, large faces are allowed.
+- No background figures, no crowd scenes, no distant personnel. Keep the background clean with buildings, vehicles, or equipment only.
 - ONLY generate the photorealistic scene with NO text whatsoever
 """
 
@@ -542,12 +575,13 @@ RULES:
     except Exception as e:
         print(f"  Gemini direct unavailable: {str(e)[:150]}")
 
-    # Attempt 2: OpenRouter fallback (Nano Banana Pro)
+    # Attempt 2: OpenRouter fallback (multiple models, cheapest first)
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
-        print("  Trying OpenRouter (Nano Banana Pro) fallback...")
+        print("  Trying OpenRouter fallback...")
         from PIL import Image as PILImg
         from io import BytesIO
+        import time
 
         # Resize sections to 1024px wide JPEG for smaller payloads
         content_parts = []
@@ -565,9 +599,13 @@ RULES:
             })
         content_parts.append({"type": "text", "text": enhanced[:4000]})
 
-        # Try gemini-3-pro up to 3 times (it sometimes returns no image intermittently)
-        import time
-        models_to_try = ["google/gemini-3-pro-image-preview"] * 3
+        # Try multiple models - cheapest first, then more expensive
+        models_to_try = [
+            "google/gemini-2.5-flash-image",        # $0.0000025/tok - cheapest
+            "openai/gpt-5-image-mini",               # $0.000002/tok
+            "google/gemini-3-pro-image-preview",     # $0.000012/tok
+            "google/gemini-3-pro-image-preview",     # retry
+        ]
         for model_id in models_to_try:
             try:
                 print(f"  Trying {model_id} via OpenRouter...")
@@ -600,16 +638,39 @@ RULES:
                         save(f"{label}_scene.png", raw)
                         return {"ok": True, "b64": b64_data, "bytes": raw, "model": model_id}
                 else:
-                    # Check for inline base64 in content
                     content = msg.get("content", "")
                     if "base64" in content[:100]:
                         print(f"  >> Got inline base64 content from {model_id}")
                     else:
-                        print(f"  No image from {model_id} via OpenRouter, retrying in 3s...")
-                        time.sleep(3)
+                        print(f"  No image from {model_id} via OpenRouter, trying next...")
+                        time.sleep(2)
             except Exception as e:
-                print(f"  {model_id} via OpenRouter failed: {str(e)[:200]}")
+                err = str(e)[:200]
+                print(f"  {model_id} via OpenRouter failed: {err}")
+                if "402" in err or "Payment" in err:
+                    print("  >> OpenRouter credits exhausted, skipping remaining models")
+                    break
                 time.sleep(2)
+
+    # Attempt 3: Pollinations.ai free fallback (no reference images, text-only prompt)
+    print("  Trying Pollinations.ai free fallback (no reference images)...")
+    try:
+        import urllib.parse
+        # Keep prompt short for URL encoding (Pollinations uses GET)
+        poll_prompt = scene_prompt[:300].replace("\n", " ")
+        encoded = urllib.parse.quote(poll_prompt)
+        poll_url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&model=flux&nologo=true"
+        poll_resp = requests.get(poll_url, timeout=180, allow_redirects=True)
+        if poll_resp.status_code == 200 and len(poll_resp.content) > 10000:
+            raw = poll_resp.content
+            b64_data = base64.b64encode(raw).decode()
+            print(f"  >> Pollinations.ai generated: {len(raw):,} bytes")
+            save(f"{label}_scene.png", raw)
+            return {"ok": True, "b64": b64_data, "bytes": raw, "model": "pollinations/flux"}
+        else:
+            print(f"  Pollinations.ai failed: status={poll_resp.status_code}, size={len(poll_resp.content)}")
+    except Exception as e:
+        print(f"  Pollinations.ai failed: {str(e)[:200]}")
 
     return {"ok": False}
 

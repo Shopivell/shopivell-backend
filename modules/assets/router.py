@@ -176,70 +176,57 @@ async def upload_image_simple(
     folder: str = Form("shopivell/uploads")
 ):
     """
-    Simple image upload to Cloudinary - returns URL only.
-    Use this for store logos, profile pictures, etc.
+    Simple image upload - returns URL only.
+    Uses MinIO (primary) or Cloudinary (fallback).
     No asset record is created.
     """
-    import cloudinary
-    import cloudinary.uploader
-    import os
+    from .service import minio_client, MINIO_BUCKET, MINIO_CONFIGURED, CLOUDINARY_CONFIGURED, _get_minio_url
+    import io
 
-    # Check Cloudinary configuration
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-    api_key = os.getenv("CLOUDINARY_API_KEY")
-    api_secret = os.getenv("CLOUDINARY_API_SECRET")
-
-    if not all([cloud_name, api_key, api_secret]) or cloud_name == "your_cloud_name":
-        raise HTTPException(status_code=503, detail="Cloudinary not configured")
-
-    # Configure Cloudinary
-    cloudinary.config(
-        cloud_name=cloud_name,
-        api_key=api_key,
-        api_secret=api_secret,
-        secure=True
-    )
-
-    # Validate file type
     content_type = file.content_type or ""
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
 
-    # Read file data
     file_data = await file.read()
 
-    if len(file_data) > 10 * 1024 * 1024:  # 10MB limit for simple uploads
+    if len(file_data) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
 
     try:
-        # Upload to Cloudinary
-        result = cloudinary.uploader.upload(
-            file_data,
-            folder=folder,
-            resource_type="image",
-            overwrite=True,
-            eager=[
-                {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}
-            ],
-            eager_async=False
-        )
-
-        # Get thumbnail URL
-        thumbnail_url = None
-        if result.get("eager") and len(result["eager"]) > 0:
-            thumbnail_url = result["eager"][0].get("secure_url")
-
-        return {
-            "success": True,
-            "url": result.get("secure_url"),
-            "public_id": result.get("public_id"),
-            "thumbnail_url": thumbnail_url,
-            "width": result.get("width"),
-            "height": result.get("height"),
-            "format": result.get("format"),
-            "bytes": result.get("bytes")
-        }
-
+        if minio_client:
+            import uuid as _uuid
+            file_ext = file.filename.rsplit('.', 1)[-1] if file.filename and '.' in file.filename else 'jpg'
+            object_name = f"{folder}/{_uuid.uuid4().hex}.{file_ext}"
+            minio_client.put_object(
+                MINIO_BUCKET, object_name, io.BytesIO(file_data),
+                length=len(file_data), content_type=content_type
+            )
+            url = _get_minio_url(object_name)
+            return {
+                "success": True, "url": url, "public_id": object_name,
+                "thumbnail_url": url, "width": None, "height": None,
+                "format": file_ext, "bytes": len(file_data)
+            }
+        elif CLOUDINARY_CONFIGURED:
+            import cloudinary.uploader
+            result = cloudinary.uploader.upload(
+                file_data, folder=folder, resource_type="image", overwrite=True,
+                eager=[{"width": 300, "height": 300, "crop": "fill", "format": "jpg"}],
+                eager_async=False
+            )
+            thumbnail_url = None
+            if result.get("eager") and len(result["eager"]) > 0:
+                thumbnail_url = result["eager"][0].get("secure_url")
+            return {
+                "success": True, "url": result.get("secure_url"),
+                "public_id": result.get("public_id"), "thumbnail_url": thumbnail_url,
+                "width": result.get("width"), "height": result.get("height"),
+                "format": result.get("format"), "bytes": result.get("bytes")
+            }
+        else:
+            raise HTTPException(status_code=503, detail="No storage backend configured")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[Upload] Cloudinary error: {str(e)}")
+        print(f"[Upload] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")

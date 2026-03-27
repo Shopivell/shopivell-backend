@@ -70,14 +70,63 @@ class AutomatedRulesScheduler:
         }
 
     async def _run_cycle(self) -> dict:
-        """Run one cycle of rule execution for all accounts"""
+        """Run one cycle of rule execution for all accounts.
+
+        Tiered scheduling based on _run_count:
+        - Every cycle (15 min): run_all_rules()
+        - Every 24th cycle (~6 hr): sync_insights(days=3)
+        - Every 96th cycle (~24 hr): performance summary + notifications
+        - Every 672nd cycle (~7 days): audience refinement
+        """
         cycle_results = {
             "started_at": datetime.utcnow().isoformat(),
             "accounts_processed": 0,
             "total_rules_triggered": 0,
+            "insights_synced": False,
             "errors": []
         }
 
+        # Tier 2: Sync insights every 6 hours (24 cycles × 15 min)
+        if self._run_count % 24 == 0:
+            try:
+                from modules.marketing.insights_service import sync_insights_for_all_accounts
+                logger.info("[Scheduler] Tier 2: Syncing insights (6-hour cycle)")
+                sync_result = await sync_insights_for_all_accounts(days=3)
+                cycle_results["insights_synced"] = True
+                cycle_results["insights_result"] = sync_result
+                logger.info(f"[Scheduler] Insights sync: {sync_result.get('synced', 0)} ads synced")
+            except Exception as e:
+                logger.error(f"[Scheduler] Insights sync error: {e}")
+                cycle_results["errors"].append(f"Insights sync: {str(e)}")
+
+        # Tier 2.5: Optimize URL campaigns after insights sync (every 6 hours)
+        if self._run_count % 24 == 0:
+            try:
+                from database import SessionLocal
+                from modules.campaigns.models import UrlCampaign, CampaignStatus
+                from modules.campaigns.optimizer import CampaignOptimizer
+                opt_db = SessionLocal()
+                try:
+                    active_campaigns = opt_db.query(UrlCampaign).filter(
+                        UrlCampaign.status == CampaignStatus.ACTIVE
+                    ).all()
+                    opt_results = []
+                    for camp in active_campaigns:
+                        optimizer = CampaignOptimizer(opt_db)
+                        result = optimizer.optimize_campaign(camp.id, dry_run=False)
+                        opt_results.append({
+                            "campaign_id": str(camp.id),
+                            "paused": result.get("paused_count", 0),
+                        })
+                    cycle_results["url_campaign_optimization"] = opt_results
+                    logger.info(f"[Scheduler] Optimized {len(active_campaigns)} URL campaigns")
+                finally:
+                    opt_db.close()
+            except Exception as e:
+                logger.error(f"[Scheduler] URL campaign optimization error: {e}")
+                cycle_results["errors"].append(f"URL optimization: {str(e)}")
+
+        # Tier 1: Run rules every cycle (15 min)
         for ad_account_id in self._ad_account_ids:
             try:
                 logger.info(f"[Scheduler] Running rules for account: {ad_account_id}")
@@ -93,6 +142,251 @@ class AutomatedRulesScheduler:
                 error_msg = f"Error processing account {ad_account_id}: {str(e)}"
                 logger.error(f"[Scheduler] {error_msg}")
                 cycle_results["errors"].append(error_msg)
+
+        # Rollback checks (every cycle - lightweight, only processes eligible entries)
+        try:
+            rollbacks = await automated_rules_engine.check_rollbacks()
+            if rollbacks:
+                cycle_results["rollbacks"] = rollbacks
+                logger.info(f"[Scheduler] Rollbacks executed: {len(rollbacks)}")
+        except Exception as e:
+            logger.error(f"[Scheduler] Rollback check error: {e}")
+            cycle_results["errors"].append(f"Rollback: {str(e)}")
+
+        # Run micro-strategy phase checks and pixel tracker monitoring
+        try:
+            from modules.micro_strategy.service import run_micro_strategy_cycle
+            ms_result = await run_micro_strategy_cycle()
+            cycle_results["micro_strategy"] = ms_result
+            logger.info(
+                f"[Scheduler] Micro-strategy: {ms_result.get('strategies_checked', 0)} strategies, "
+                f"{ms_result.get('trackers_checked', 0)} trackers checked"
+            )
+        except Exception as e:
+            logger.error(f"[Scheduler] Micro-strategy cycle error: {e}")
+            cycle_results["errors"].append(f"Micro-strategy: {str(e)}")
+
+        # Tier 3: Performance summary + lead quality + fatigue check every 24 hours (96 cycles × 15 min)
+        if self._run_count > 0 and self._run_count % 96 == 0:
+            # Check ad fatigue for URL campaigns daily
+            try:
+                from database import SessionLocal
+                from modules.campaigns.models import UrlCampaign, CampaignStatus as UrlCampaignStatus
+                from modules.campaigns.fatigue_detector import FatigueDetector
+                fatigue_db = SessionLocal()
+                try:
+                    active_url_campaigns = fatigue_db.query(UrlCampaign).filter(
+                        UrlCampaign.status == UrlCampaignStatus.ACTIVE
+                    ).all()
+                    fatigue_results = []
+                    for camp in active_url_campaigns:
+                        detector = FatigueDetector(fatigue_db)
+                        check = detector.check_fatigue(camp.id)
+                        # Auto-refresh if fatigue score > 70
+                        if check.get("fatigued_content_ids"):
+                            import uuid as uuid_mod
+                            fatigued_ids = [uuid_mod.UUID(fid) for fid in check["fatigued_content_ids"]]
+                            refresh = await detector.refresh_creatives(camp.id, fatigued_ids)
+                            check["refresh_result"] = refresh
+                        fatigue_results.append({
+                            "campaign_id": str(camp.id),
+                            "fatigued": check.get("fatigued_count", 0),
+                            "refreshed": check.get("refresh_result", {}).get("refreshed_count", 0) if check.get("refresh_result") else 0,
+                        })
+                    cycle_results["fatigue_detection"] = fatigue_results
+                    logger.info(f"[Scheduler] Fatigue check: {len(active_url_campaigns)} campaigns checked")
+                finally:
+                    fatigue_db.close()
+            except Exception as e:
+                logger.error(f"[Scheduler] Fatigue detection error: {e}")
+                cycle_results["errors"].append(f"Fatigue detection: {str(e)}")
+
+            try:
+                logger.info("[Scheduler] Tier 3: Daily performance summary (24-hour cycle)")
+
+                # Get lead quality signal
+                lead_signal = automated_rules_engine.get_lead_quality_signal("")
+                cycle_results["lead_quality"] = lead_signal
+
+                # Create daily summary notification
+                try:
+                    from database import SessionLocal
+                    from modules.marketing.models import MetaAdAccount
+                    db = SessionLocal()
+                    try:
+                        for acc_id in self._ad_account_ids:
+                            account = db.query(MetaAdAccount).filter(
+                                MetaAdAccount.ad_account_id == acc_id
+                            ).first()
+                            if account and account.business_account_id:
+                                try:
+                                    from modules.notifications.models import Notification
+                                    notification = Notification(
+                                        title="Daily Ad Performance Summary",
+                                        message=(
+                                            f"24h summary for {account.account_name}: "
+                                            f"{self._run_count} cycles completed. "
+                                            f"Lead quality: {lead_signal.get('average_score', 0)}/100 "
+                                            f"({lead_signal.get('hot_leads', 0)} hot leads)"
+                                        ),
+                                        type="system",
+                                        priority="normal"
+                                    )
+                                    db.add(notification)
+                                except Exception:
+                                    pass
+                        db.commit()
+                    finally:
+                        db.close()
+                except Exception as e:
+                    logger.error(f"[Scheduler] Daily notification error: {e}")
+
+                logger.info(f"[Scheduler] Lead quality: avg={lead_signal.get('average_score', 0)}, "
+                           f"hot={lead_signal.get('hot_leads', 0)}")
+            except Exception as e:
+                logger.error(f"[Scheduler] Tier 3 error: {e}")
+                cycle_results["errors"].append(f"Daily summary: {str(e)}")
+
+        # Tier 3.4: Evaluate running creative tests (daily)
+        if self._run_count > 0 and self._run_count % 96 == 0:
+            try:
+                tests_completed = await automated_rules_engine.evaluate_creative_tests()
+                cycle_results["creative_tests_completed"] = len(tests_completed)
+                if tests_completed:
+                    logger.info(f"[Scheduler] Creative tests completed: {len(tests_completed)}")
+            except Exception as e:
+                logger.error(f"[Scheduler] Creative test evaluation error: {e}")
+                cycle_results["errors"].append(f"Creative tests: {str(e)}")
+
+        # Tier 3.5: LLM rule proposals (daily, after performance summary)
+        if self._run_count > 0 and self._run_count % 96 == 0:
+            try:
+                from modules.agents.monitor_optimizer_agent import MonitorOptimizerAgent
+                from modules.agents.models import Campaign as AgentCampaign
+                from database import SessionLocal as PropSessionLocal
+
+                proposer = MonitorOptimizerAgent()
+                prop_db = PropSessionLocal()
+                try:
+                    # Propose rules for campaigns with recent performance data
+                    campaigns = prop_db.query(AgentCampaign).filter(
+                        AgentCampaign.status == "active"
+                    ).limit(5).all()
+
+                    total_proposals = 0
+                    for campaign in campaigns:
+                        from modules.agents.models import PerformanceMetrics as PM
+                        metrics = prop_db.query(PM).filter(
+                            PM.campaign_id == campaign.id
+                        ).limit(20).all()
+
+                        if not metrics:
+                            continue
+
+                        perf_data = [{
+                            "ad_id": str(m.ad_id) if m.ad_id else "N/A",
+                            "ctr": m.ctr or 0, "cpc": m.cpc or 0,
+                            "roas": m.roas or 0, "spend": m.spend or 0,
+                            "conversions": m.conversions or 0
+                        } for m in metrics]
+
+                        history = automated_rules_engine.get_execution_history(limit=15)
+                        proposals = await proposer.propose_rules(
+                            campaign=campaign,
+                            performance_data=perf_data,
+                            current_rules=automated_rules_engine.rules,
+                            execution_history=history
+                        )
+                        total_proposals += len(proposals)
+
+                    cycle_results["rule_proposals"] = {"total": total_proposals}
+                    logger.info(f"[Scheduler] Rule proposals: {total_proposals} generated")
+                finally:
+                    prop_db.close()
+            except Exception as e:
+                logger.error(f"[Scheduler] Rule proposal error: {e}")
+                cycle_results["errors"].append(f"Rule proposals: {str(e)}")
+
+        # Tier 3.6: Meta-learner cycle (daily, after rule proposals)
+        if self._run_count > 0 and self._run_count % 96 == 0:
+            try:
+                from modules.agents.meta_learner import MetaLearner
+                meta_learner = MetaLearner()
+                for acc_id in self._ad_account_ids:
+                    ml_result = await meta_learner.run_meta_learner_cycle(acc_id)
+                    cycle_results["meta_learner"] = ml_result
+                    logger.info(
+                        f"[Scheduler] Meta-learner: {ml_result.get('data_maturity', 'unknown')} "
+                        f"({ml_result.get('days_of_data', 0)}d), "
+                        f"actions: {ml_result.get('actions_taken', [])}"
+                    )
+            except Exception as e:
+                logger.error(f"[Scheduler] Meta-learner error: {e}")
+                cycle_results["errors"].append(f"Meta-learner: {str(e)}")
+
+        # Tier 4: Audience refinement + weekly report every 7 days (672 cycles × 15 min)
+        if self._run_count > 0 and self._run_count % 672 == 0:
+            try:
+                logger.info("[Scheduler] Tier 4: Weekly tasks (7-day cycle)")
+                from modules.agents.creative_strategist_agent import CreativeStrategistAgent
+                from modules.agents.report_generator import WeeklyReportGenerator
+                from database import SessionLocal
+                from modules.marketing.models import MetaAdAccount
+
+                strategist = CreativeStrategistAgent()
+                report_gen = WeeklyReportGenerator()
+                db = SessionLocal()
+                try:
+                    for acc_id in self._ad_account_ids:
+                        account = db.query(MetaAdAccount).filter(
+                            MetaAdAccount.ad_account_id == acc_id
+                        ).first()
+                        if not account:
+                            continue
+
+                        # 4a: Audience refinement
+                        refinement = await strategist.refine_audience_from_performance(
+                            ad_account_id=acc_id,
+                            access_token=account.access_token,
+                            company_name=account.account_name
+                        )
+                        cycle_results["audience_refinement"] = refinement
+                        if refinement.get("success"):
+                            logger.info(f"[Scheduler] Audience refinement complete for {acc_id}")
+
+                        # 4b: Weekly report generation
+                        report = await report_gen.generate_weekly_report(
+                            ad_account_id=acc_id,
+                            access_token=account.access_token
+                        )
+                        cycle_results["weekly_report"] = {"success": report.get("success", False)}
+                        if report.get("success"):
+                            logger.info(f"[Scheduler] Weekly report generated for {acc_id}")
+                            # Create notification with report summary
+                            try:
+                                from modules.notifications.models import Notification
+                                metrics = report.get("summary_metrics", {})
+                                notification = Notification(
+                                    title="Weekly Ad Performance Report",
+                                    message=(
+                                        f"Weekly report for {account.account_name}: "
+                                        f"${metrics.get('spend', 0):.2f} spent, "
+                                        f"{metrics.get('clicks', 0)} clicks, "
+                                        f"{metrics.get('conversions', 0)} conversions, "
+                                        f"{metrics.get('ctr', 0):.1f}% CTR"
+                                    ),
+                                    type="system",
+                                    priority="normal"
+                                )
+                                db.add(notification)
+                                db.commit()
+                            except Exception:
+                                pass
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"[Scheduler] Tier 4 error: {e}")
+                cycle_results["errors"].append(f"Weekly tasks: {str(e)}")
 
         self._last_run = datetime.utcnow()
         self._run_count += 1

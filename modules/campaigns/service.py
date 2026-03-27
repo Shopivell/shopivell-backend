@@ -24,6 +24,7 @@ from modules.ad_generator.service import AdGeneratorService
 from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
 from modules.agents.ad_creative_agent import AdCreativeAgent
 from modules.agents.media_generator_agent import MediaGeneratorAgent
+from modules.agents.copywriter_agent import CopywriterAgent
 from modules.agents.gemini_image_generator import GeminiImageGenerator
 from modules.agents.ad_image_composer import AdImageComposer
 
@@ -89,6 +90,7 @@ class CampaignService:
         self._init_ai_clients()
         self.ad_generator = AdGeneratorService()
         self.ad_creative_agent = AdCreativeAgent()
+        self.copywriter_agent = CopywriterAgent()
         self.media_generator = MediaGeneratorAgent()  # Fallback image generator
         self.gemini_generator = GeminiImageGenerator()  # Primary image generator with reference images
         self.ad_image_composer = AdImageComposer()  # Adds text overlays to generated images
@@ -112,7 +114,7 @@ class CampaignService:
             except Exception as e:
                 logger.warning(f"[CampaignService] Failed to initialize OpenAI: {e}")
 
-    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None) -> Tuple[Campaign, Optional[str]]:
+    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None, num_copies: int = 1, num_images: int = 1) -> Tuple[Campaign, Optional[str]]:
         """
         Scrape a URL and create a campaign with the extracted data.
         Returns (campaign, error_message)
@@ -173,8 +175,8 @@ class CampaignService:
                     campaign.name = ai_business_name
                     logger.info(f"[CampaignService] Updated campaign name to AI-generated: {ai_business_name}")
 
-                # Create ad sets (will use user assets if available)
-                self._create_ad_sets(campaign, ad_content, asset_ids)
+                # Create ad sets with cross-mixing variations
+                self._create_ad_sets(campaign, ad_content, asset_ids, num_copies=num_copies, num_images=num_images)
 
             # Strip large screenshot_base64 from scraped_data before DB commit
             if campaign.scraped_data and isinstance(campaign.scraped_data, dict):
@@ -892,12 +894,19 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             logger.error(f"[CampaignService] OpenAI generation error: {e}")
             return None
 
-    def _create_ad_sets(self, campaign: Campaign, ad_content: Dict[str, Any], asset_ids: Optional[List[uuid.UUID]] = None):
+    def _create_ad_sets(self, campaign: Campaign, ad_content: Dict[str, Any], asset_ids: Optional[List[uuid.UUID]] = None, num_copies: int = 1, num_images: int = 1):
         """Create ad sets from generated content with AI-generated images using Ad Creative Agent.
 
         If user provides assets via asset_ids, those will be used instead of generating AI images.
         Images are generated with store branding (logo, color theme) when available.
+
+        Args:
+            num_copies: Number of copy variations per ad set (1-5). Default 1 for backward compat.
+            num_images: Number of image variations per ad set (1-3). Default 1 for backward compat.
         """
+        # Clamp to safe ranges
+        num_copies = max(1, min(num_copies, 5))
+        num_images = max(1, min(num_images, 3))
         ad_sets_data = ad_content.get("ad_sets", [])
         business_name = ad_content.get("business_name", "Business")
 
@@ -1006,7 +1015,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             if user_assets:
                 logger.info(f"[CampaignService] Using {len(user_assets)} user-provided assets for ad sets")
 
-        for i, ad_set_data in enumerate(ad_sets_data[:1]):  # Only create 1 ad set to save tokens
+        for i, ad_set_data in enumerate(ad_sets_data[:1]):  # Create 1 ad set per campaign
             ad_set = AdSet(
                 campaign_id=campaign.id,
                 name=ad_set_data.get("name", f"Ad Set {i+1}"),
@@ -1027,7 +1036,6 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             base_visual_direction = ad_set_data.get("visual_direction", "")
 
             # Build enhanced visual direction with brand colors and business type
-            # This helps the AdCreativeAgent generate better structured prompts
             visual_direction_parts = []
             if detected_industry:
                 visual_direction_parts.append(f"Business type: {detected_industry.replace('_', ' ')}")
@@ -1037,10 +1045,9 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                 visual_direction_parts.append(base_visual_direction)
             visual_direction = ". ".join(visual_direction_parts) if visual_direction_parts else ""
 
-            generated_image_base64 = None
-            generated_cloudinary_url = None  # Cloudinary URL for AI-generated image
             agent_ad_angle = None
             agent_headline = None
+            agent_image_prompt = ""
             user_asset_url = None
             user_asset_id = None
 
@@ -1082,53 +1089,105 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                     logger.info(f"[AdCreativeAgent] Generated prompt: {agent_image_prompt[:100]}...")
                     logger.info(f"[AdCreativeAgent] Generated ad angle: {agent_ad_angle[:100]}...")
 
-                    # Step 2: Generate image with cropped screenshot sections
-                    if not user_asset_url and agent_image_prompt:
+                    # --- Step 2: Generate COPY VARIATIONS ---
+                    copy_variations = [{
+                        "headline": agent_headline or headline,
+                        "primary_text": agent_ad_angle or primary_text,
+                        "description": description,
+                        "call_to_action": campaign.conversion_button or "Learn More",
+                        "strategy": "original",
+                    }]
+
+                    if num_copies > 1:
                         try:
-                            # Strip text overlay directives from the AI prompt
-                            scene_prompt = self.media_generator._strip_text_overlay_from_prompt(agent_image_prompt)
-
-                            # Get brand colors
-                            brand_colors = scraped_data.get("brand_colors", [])
-                            accent = color_theme_to_use or (brand_colors[0] if brand_colors else "#FFB800")
-
-                            logger.info(f"[MediaGenerator] Generating campaign ad for: {ad_set.name}")
-                            ad_result = loop.run_until_complete(
-                                self.media_generator.generate_campaign_ad(
-                                    store_name=business_name,
-                                    store_description=primary_text or description or "",
-                                    business_type=scraped_data.get("business_identity", {}).get("industry", "business") if isinstance(scraped_data.get("business_identity"), dict) else "business",
-                                    logo_url=logo_url_to_use,
-                                    screenshot_url=scraped_data.get("screenshot_url"),
-                                    screenshot_base64=scraped_data.get("screenshot_base64"),
-                                    color_theme=color_theme_to_use,
-                                    accent_color=accent,
-                                    products_or_services=features,
-                                    key_benefits=ad_set_data.get("key_benefits", features[:3]) if features else None,
-                                    scene_prompt=scene_prompt,
-                                    headline=agent_headline or headline or business_name,
-                                    bullet_points=features[:3] if features else None,
-                                    cta_text=campaign.conversion_button or "Learn More",
-                                    upload_to_cloud=True,
-                                    uniforms_description=uniforms_desc,
-                                    vehicles_description=vehicles_desc,
-                                    equipment_description=equipment_desc,
-                                    imagery_description=imagery_desc,
+                            logger.info(f"[CopywriterAgent] Generating {num_copies} copy variations for: {ad_set.name}")
+                            extra_copies = loop.run_until_complete(
+                                self.copywriter_agent.generate_copy_variations_for_url_ad(
+                                    business_name=business_name,
+                                    product_description=primary_text or description or f"{business_name}",
+                                    target_audience=ad_set_data.get("name", "General audience"),
+                                    base_headline=agent_headline or headline,
+                                    base_primary_text=agent_ad_angle or primary_text,
+                                    features=features,
+                                    cta=campaign.conversion_button or "Learn More",
+                                    num_variations=num_copies,
+                                    store_id=str(campaign.store_id) if campaign.store_id else None,
                                 )
                             )
+                            # Replace with all variations (the LLM generates fresh ones including a variation of the original)
+                            if extra_copies:
+                                copy_variations = extra_copies[:num_copies]
+                                logger.info(f"[CopywriterAgent] Got {len(copy_variations)} copy variations")
+                        except Exception as copy_err:
+                            logger.error(f"[CopywriterAgent] Error generating variations: {copy_err}")
+                            # Fallback: use the single original copy
 
-                            if ad_result.get("success"):
-                                generated_image_base64 = ad_result.get("image_base64")
-                                generated_cloudinary_url = ad_result.get("cloudinary_url")
-                                logger.info(f"[MediaGenerator] SUCCESS - Generated ad: {generated_cloudinary_url or 'base64 only'}")
-                            else:
-                                logger.error(f"[MediaGenerator] Failed: {ad_result.get('error')}")
-                        except Exception as gen_err:
-                            import traceback
-                            logger.error(f"[MediaGenerator] Error generating campaign ad: {gen_err}")
-                            logger.error(f"[MediaGenerator] Traceback: {traceback.format_exc()}")
-                    elif user_asset_url:
+                    # --- Step 3: Generate IMAGE VARIATIONS ---
+                    image_variations = []  # List of {"image_base64": ..., "cloudinary_url": ...}
+
+                    if user_asset_url:
+                        # User provided assets — use them instead of generating
+                        image_variations = [{"image_base64": None, "cloudinary_url": user_asset_url, "asset_id": user_asset_id}]
                         logger.info(f"[MediaGenerator] Using user asset for ad set: {ad_set.name}")
+                    elif agent_image_prompt:
+                        scene_prompt = self.media_generator._strip_text_overlay_from_prompt(agent_image_prompt)
+                        brand_colors = scraped_data.get("brand_colors", [])
+                        accent = color_theme_to_use or (brand_colors[0] if brand_colors else "#FFB800")
+
+                        for img_idx in range(num_images):
+                            try:
+                                # Add variation seed for images beyond the first
+                                varied_scene = scene_prompt
+                                if img_idx > 0:
+                                    variation_seeds = [
+                                        "Alternative angle: different camera perspective and lighting mood",
+                                        "Variation: different background environment and color emphasis",
+                                        "Alternate composition: different layout and visual focus",
+                                    ]
+                                    varied_scene = f"{scene_prompt}. {variation_seeds[img_idx % len(variation_seeds)]}"
+
+                                logger.info(f"[MediaGenerator] Generating image {img_idx+1}/{num_images} for: {ad_set.name}")
+                                ad_result = loop.run_until_complete(
+                                    self.media_generator.generate_campaign_ad(
+                                        store_name=business_name,
+                                        store_description=primary_text or description or "",
+                                        business_type=scraped_data.get("business_identity", {}).get("industry", "business") if isinstance(scraped_data.get("business_identity"), dict) else "business",
+                                        logo_url=logo_url_to_use,
+                                        screenshot_url=scraped_data.get("screenshot_url"),
+                                        screenshot_base64=scraped_data.get("screenshot_base64"),
+                                        color_theme=color_theme_to_use,
+                                        accent_color=accent,
+                                        products_or_services=features,
+                                        key_benefits=ad_set_data.get("key_benefits", features[:3]) if features else None,
+                                        scene_prompt=varied_scene,
+                                        headline=agent_headline or headline or business_name,
+                                        bullet_points=features[:3] if features else None,
+                                        cta_text=campaign.conversion_button or "Learn More",
+                                        upload_to_cloud=True,
+                                        uniforms_description=uniforms_desc,
+                                        vehicles_description=vehicles_desc,
+                                        equipment_description=equipment_desc,
+                                        imagery_description=imagery_desc,
+                                    )
+                                )
+
+                                if ad_result.get("success"):
+                                    image_variations.append({
+                                        "image_base64": ad_result.get("image_base64"),
+                                        "cloudinary_url": ad_result.get("cloudinary_url"),
+                                        "asset_id": None,
+                                    })
+                                    logger.info(f"[MediaGenerator] SUCCESS - Image {img_idx+1}: {ad_result.get('cloudinary_url', 'base64 only')}")
+                                else:
+                                    logger.error(f"[MediaGenerator] Failed image {img_idx+1}: {ad_result.get('error')}")
+                            except Exception as gen_err:
+                                import traceback
+                                logger.error(f"[MediaGenerator] Error generating image {img_idx+1}: {gen_err}")
+                                logger.error(f"[MediaGenerator] Traceback: {traceback.format_exc()}")
+
+                    # Ensure at least one image slot (even if generation failed)
+                    if not image_variations:
+                        image_variations = [{"image_base64": None, "cloudinary_url": None, "asset_id": None}]
 
                 finally:
                     loop.close()
@@ -1137,24 +1196,45 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                 import traceback
                 logger.error(f"[AdCreativeAgent/AdGenerator] Error for ad set {i+1}: {e}")
                 logger.error(f"[AdCreativeAgent/AdGenerator] Traceback: {traceback.format_exc()}")
+                # Fallback: single copy + no image
+                copy_variations = [{
+                    "headline": headline,
+                    "primary_text": primary_text,
+                    "description": description,
+                    "call_to_action": campaign.conversion_button or "Learn More",
+                    "strategy": "fallback",
+                }]
+                image_variations = [{"image_base64": None, "cloudinary_url": None, "asset_id": None}]
 
-            # Create ad content with generated image and agent's ad angle
-            # Use user asset URL if available, otherwise use Cloudinary URL from AI generation
-            final_media_url = user_asset_url or generated_cloudinary_url
+            # --- Step 4: CROSS-MIX copies × images into UrlAdContent entries ---
+            content_count = 0
+            for copy_idx, copy_var in enumerate(copy_variations):
+                for img_idx, img_var in enumerate(image_variations):
+                    is_first = (copy_idx == 0 and img_idx == 0)
+                    # Build variation label (None for single variant = backward compat)
+                    variation_label = None
+                    if num_copies > 1 or num_images > 1:
+                        variation_label = f"Copy-{chr(65 + copy_idx)}_Image-{img_idx + 1}"
 
-            ad_content_obj = AdContent(
-                ad_set_id=ad_set.id,
-                headline=agent_headline or headline,  # Use agent's headline if available
-                primary_text=agent_ad_angle or primary_text,  # Use agent's ad angle as primary text
-                description=description,
-                call_to_action=campaign.conversion_button,
-                destination_url=campaign.source_url,
-                media_url=final_media_url,  # Use user asset URL or AI-generated Cloudinary URL
-                asset_id=user_asset_id,  # Link to user asset (if provided)
-                is_primary=True,
-                generated_image_base64=generated_image_base64 if not user_asset_url else None  # Keep base64 as backup
-            )
-            self.db.add(ad_content_obj)
+                    ad_content_obj = AdContent(
+                        ad_set_id=ad_set.id,
+                        headline=copy_var.get("headline", headline),
+                        primary_text=copy_var.get("primary_text", primary_text),
+                        description=copy_var.get("description", description),
+                        call_to_action=copy_var.get("call_to_action", campaign.conversion_button),
+                        destination_url=campaign.source_url,
+                        media_url=img_var.get("cloudinary_url"),
+                        asset_id=img_var.get("asset_id"),
+                        is_primary=is_first,
+                        generated_image_base64=img_var.get("image_base64") if not user_asset_url else None,
+                        variation_label=variation_label,
+                        copy_variation_index=copy_idx,
+                        image_variation_index=img_idx,
+                    )
+                    self.db.add(ad_content_obj)
+                    content_count += 1
+
+            logger.info(f"[CampaignService] Created {content_count} ad content entries for ad set '{ad_set.name}' ({len(copy_variations)} copies × {len(image_variations)} images)")
 
     def _extract_logo_url(self, base_url: str, content: str = "") -> Optional[str]:
         """Extract logo URL from website by fetching and parsing HTML."""

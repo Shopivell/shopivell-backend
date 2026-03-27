@@ -18,7 +18,8 @@ AdContent = UrlAdContent
 from .schemas import (
     CampaignCreate, CampaignUpdate, CampaignResponse, CampaignListResponse,
     ScrapeUrlRequest, ScrapeUrlResponse, AdSetResponse, AdContentResponse,
-    GenerateAdsRequest, CreateCampaignFromStoreRequest, CreateCampaignFromStoreResponse
+    GenerateAdsRequest, CreateCampaignFromStoreRequest, CreateCampaignFromStoreResponse,
+    QuickLaunchRequest, QuickLaunchResponse
 )
 from .service import CampaignService
 
@@ -1125,3 +1126,574 @@ def toggle_ad_set(ad_set_id: uuid.UUID, db: Session = Depends(get_db)):
     ad_set.is_selected = not ad_set.is_selected
     db.commit()
     return {"is_selected": ad_set.is_selected}
+
+
+# ============ Quick Launch ============
+
+@campaign_router.post("/quick-launch", response_model=QuickLaunchResponse)
+async def quick_launch(request: QuickLaunchRequest, db: Session = Depends(get_db)):
+    """
+    Quick Launch: paste a URL → scrape → generate ads → publish to Meta → start scheduler.
+
+    End-to-end pipeline that creates a full Meta Ads campaign from just a URL:
+    1. Scrape the URL and create a campaign
+    2. Run the AI pipeline (research → angles → copy → visuals)
+    3. Publish to Meta Ads Manager
+    4. Register with the scheduler for 24/7 optimization
+
+    Returns:
+        QuickLaunchResponse with campaign details and publish results
+    """
+    if not META_ADS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta Ads integration is not available"
+        )
+
+    errors = []
+    response_data = {
+        "success": False,
+        "campaign_id": None,
+        "campaign_name": "",
+        "meta_campaign_id": None,
+        "ad_sets_created": 0,
+        "ads_created": 0,
+        "scheduler_registered": False,
+        "pipeline_results": None,
+        "publish_results": None,
+        "errors": [],
+        "message": ""
+    }
+
+    try:
+        # Step 1: Scrape URL and create campaign
+        logger.info(f"[QuickLaunch] Step 1: Scraping URL: {request.url}")
+        service = CampaignService(db)
+        campaign = service.scrape_url_for_campaign(
+            url=request.url,
+            store_id=request.store_id,
+            campaign_name=request.campaign_name
+        )
+
+        # Set campaign settings from request
+        campaign.daily_budget = request.daily_budget
+        campaign.countries = request.countries
+        campaign.age_range = request.age_range
+        campaign.gender = request.gender
+        campaign.goal = request.goal
+        db.commit()
+
+        response_data["campaign_id"] = campaign.id
+        response_data["campaign_name"] = campaign.name
+
+        # Step 2: Generate ad content
+        logger.info(f"[QuickLaunch] Step 2: Generating ad content for '{campaign.name}'")
+        store_context = None
+        try:
+            from modules.stores.models import Store
+            store = db.query(Store).filter(Store.id == request.store_id).first()
+            if store:
+                store_context = {
+                    "store_name": store.name,
+                    "store_description": store.description,
+                    "store_category": getattr(store, 'category', None),
+                }
+        except Exception:
+            pass
+
+        ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url, store_context)
+        if ad_content:
+            campaign.generated_headlines = ad_content.get("headlines", [])
+            campaign.generated_descriptions = ad_content.get("descriptions", [])
+            service._create_ad_sets(campaign, ad_content)
+            db.commit()
+            db.refresh(campaign)
+
+        # Ensure all ad sets are selected
+        for ad_set in campaign.ad_sets:
+            ad_set.is_selected = True
+        db.commit()
+
+        response_data["ad_sets_created"] = len(campaign.ad_sets)
+
+        # Step 3: Publish to Meta Ads
+        logger.info(f"[QuickLaunch] Step 3: Publishing to Meta Ads")
+        ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == request.ad_account_id).first()
+        if not ad_account:
+            raise HTTPException(status_code=404, detail="Meta Ad Account not found")
+
+        if not ad_account.is_connected:
+            raise HTTPException(status_code=400, detail="Meta Ad Account is not connected")
+
+        # Get Facebook Page — prefer top-performing page if available
+        facebook_page_id = None
+        if request.page_id:
+            fb_page = db.query(FacebookPage).filter(FacebookPage.id == request.page_id).first()
+            if fb_page:
+                facebook_page_id = fb_page.page_id
+
+        if not facebook_page_id:
+            # Try to find the best-performing page based on historical ad insights
+            try:
+                from sqlalchemy import func, desc
+                connected_pages = db.query(FacebookPage).filter(
+                    FacebookPage.is_connected == True,
+                    FacebookPage.is_active == True
+                ).all()
+
+                if connected_pages and len(connected_pages) > 1:
+                    # Check which page has best CTR from past campaigns
+                    # We look at MetaAdInsight aggregated by page (via ad → campaign → account → page)
+                    best_page = None
+                    best_score = -1
+
+                    for page in connected_pages:
+                        # Find campaigns that used this page's business account
+                        page_campaigns = db.query(MetaCampaign).filter(
+                            MetaCampaign.ad_account_id == ad_account.id,
+                            MetaCampaign.is_active == True
+                        ).all()
+
+                        if not page_campaigns:
+                            continue
+
+                        campaign_ids = [c.id for c in page_campaigns]
+
+                        # Get aggregated performance for ads under these campaigns
+                        from modules.marketing.models import MetaAdInsight
+                        perf = db.query(
+                            func.sum(MetaAdInsight.clicks).label("total_clicks"),
+                            func.sum(MetaAdInsight.impressions).label("total_impressions"),
+                            func.sum(MetaAdInsight.conversions).label("total_conversions"),
+                            func.avg(MetaAdInsight.ctr).label("avg_ctr")
+                        ).join(
+                            MetaAd, MetaAd.id == MetaAdInsight.ad_id
+                        ).filter(
+                            MetaAd.campaign_id.in_(campaign_ids)
+                        ).first()
+
+                        if perf and perf.total_impressions and perf.total_impressions > 0:
+                            # Score: weighted combination of CTR and conversion rate
+                            ctr = float(perf.avg_ctr or 0)
+                            conv_rate = (float(perf.total_conversions or 0) / float(perf.total_impressions)) * 100
+                            score = (ctr * 0.6) + (conv_rate * 0.4)
+
+                            if score > best_score:
+                                best_score = score
+                                best_page = page
+                                logger.info(
+                                    f"[QuickLaunch] Page '{page.page_name}' score: {score:.4f} "
+                                    f"(CTR={ctr:.2f}%, conv_rate={conv_rate:.4f}%)"
+                                )
+
+                    if best_page:
+                        facebook_page_id = best_page.page_id
+                        logger.info(f"[QuickLaunch] Selected top-performing page: {best_page.page_name} (score={best_score:.4f})")
+                elif connected_pages:
+                    facebook_page_id = connected_pages[0].page_id
+            except Exception as page_err:
+                logger.warning(f"[QuickLaunch] Top-performer page selection error: {page_err}")
+
+        # Fallback: use business_id or first connected page
+        if not facebook_page_id:
+            if ad_account.business_id:
+                facebook_page_id = ad_account.business_id
+            else:
+                first_page = db.query(FacebookPage).filter(
+                    FacebookPage.is_connected == True,
+                    FacebookPage.is_active == True
+                ).first()
+                if first_page:
+                    facebook_page_id = first_page.page_id
+
+        if not facebook_page_id:
+            raise HTTPException(status_code=400, detail="No Facebook Page found. Connect a Facebook Page first.")
+
+        # Country code mapping
+        country_name_to_code = {
+            "zimbabwe": "ZW", "south africa": "ZA", "united states": "US", "usa": "US",
+            "united kingdom": "GB", "uk": "GB", "canada": "CA", "australia": "AU",
+            "germany": "DE", "france": "FR", "india": "IN", "nigeria": "NG", "kenya": "KE",
+            "ghana": "GH", "botswana": "BW", "zambia": "ZM", "mozambique": "MZ",
+            "namibia": "NA", "tanzania": "TZ", "uganda": "UG",
+        }
+
+        def get_country_codes(countries_list):
+            if not countries_list:
+                return ["ZW"]
+            codes = []
+            for country in countries_list:
+                cl = country.lower().strip()
+                if len(cl) == 2:
+                    codes.append(cl.upper())
+                elif cl in country_name_to_code:
+                    codes.append(country_name_to_code[cl])
+            return codes if codes else ["ZW"]
+
+        country_codes = get_country_codes(campaign.countries)
+
+        # Map goal to Meta objective
+        goal_to_objective = {
+            "sales": "OUTCOME_SALES", "leads": "OUTCOME_LEADS", "traffic": "OUTCOME_TRAFFIC",
+            "awareness": "OUTCOME_AWARENESS", "engagement": "OUTCOME_ENGAGEMENT"
+        }
+        objective = goal_to_objective.get(
+            campaign.goal.value if hasattr(campaign.goal, 'value') else campaign.goal,
+            "OUTCOME_TRAFFIC"
+        )
+
+        # Determine budget type and dayparting schedule
+        use_lifetime = getattr(request, 'budget_type', 'daily') == 'lifetime'
+        campaign_duration_days = getattr(request, 'campaign_duration_days', 30)
+        dayparting_schedule = []
+        dayparting_reasoning = ""
+
+        if use_lifetime and campaign.daily_budget:
+            try:
+                from modules.marketing.dayparting_service import (
+                    get_schedule_for_industry,
+                    daily_budget_to_lifetime,
+                    generate_schedule_with_ai,
+                )
+                # Extract industry/business_type from generated content
+                ad_content_data = campaign.scraped_data or {}
+                business_type = ""
+                industry = ""
+
+                # Try to get business type from generated ad content
+                if campaign.ad_sets:
+                    for aset in campaign.ad_sets:
+                        if hasattr(aset, 'audience_description') and aset.audience_description:
+                            business_type = aset.audience_description[:100]
+                            break
+
+                # Try scraped data for industry
+                if isinstance(ad_content_data, dict):
+                    content_text = str(ad_content_data.get("content", ""))[:500].lower()
+                    industry = ad_content_data.get("industry", "")
+                    if not industry:
+                        # Infer from content
+                        for keyword in ["restaurant", "ecommerce", "technology", "fashion",
+                                       "health", "education", "real estate", "services",
+                                       "fitness", "food", "retail", "software"]:
+                            if keyword in content_text:
+                                industry = keyword
+                                break
+
+                dayparting_schedule = get_schedule_for_industry(industry, business_type)
+                dayparting_reasoning = f"Auto-scheduled for {industry or 'general'} business"
+                logger.info(f"[QuickLaunch] Dayparting: {len(dayparting_schedule)} schedule blocks for industry='{industry}'")
+            except Exception as dp_err:
+                logger.warning(f"[QuickLaunch] Dayparting setup error: {dp_err}, continuing without schedule")
+                dayparting_schedule = []
+
+        # Create Meta Campaign
+        meta_campaign_data = {
+            "name": campaign.name,
+            "objective": objective,
+            "status": "PAUSED",
+            "buying_type": "AUCTION",
+            "special_ad_categories": '["NONE"]'
+        }
+
+        if use_lifetime and campaign.daily_budget:
+            from modules.marketing.dayparting_service import daily_budget_to_lifetime
+            lifetime_cents = daily_budget_to_lifetime(campaign.daily_budget, campaign_duration_days)
+            meta_campaign_data["lifetime_budget"] = str(lifetime_cents)
+            response_data["budget_type"] = "lifetime"
+            response_data["dayparting_enabled"] = bool(dayparting_schedule)
+            response_data["dayparting_schedule"] = dayparting_schedule if dayparting_schedule else None
+            response_data["dayparting_reasoning"] = dayparting_reasoning
+        elif campaign.daily_budget:
+            meta_campaign_data["daily_budget"] = str(int(campaign.daily_budget * 100))
+            response_data["budget_type"] = "daily"
+
+        meta_campaign_result = create_meta_campaign(
+            ad_account.ad_account_id, ad_account.access_token, meta_campaign_data
+        )
+        meta_campaign_id = meta_campaign_result.get("id")
+        response_data["meta_campaign_id"] = meta_campaign_id
+
+        # Save Meta Campaign to DB
+        db_budget = None
+        if use_lifetime and campaign.daily_budget:
+            from modules.marketing.dayparting_service import daily_budget_to_lifetime
+            db_budget = daily_budget_to_lifetime(campaign.daily_budget, campaign_duration_days)
+        elif campaign.daily_budget:
+            db_budget = int(campaign.daily_budget * 100)
+
+        db_meta_campaign = MetaCampaign(
+            campaign_id=meta_campaign_id,
+            ad_account_id=ad_account.id,
+            name=campaign.name,
+            objective=objective,
+            status="PAUSED",
+            special_ad_categories=["NONE"],
+            buying_type="AUCTION",
+            daily_budget=db_budget,
+            created_time=datetime.utcnow(),
+            updated_time=datetime.utcnow(),
+            effective_status="PAUSED",
+            is_draft=False,
+            is_active=True
+        )
+        db.add(db_meta_campaign)
+        db.commit()
+        db.refresh(db_meta_campaign)
+
+        # Create Ad Sets and Ads
+        ads_created = 0
+        selected_ad_sets = [ad_set for ad_set in campaign.ad_sets if ad_set.is_selected]
+
+        for ad_set in selected_ad_sets:
+            try:
+                targeting = {
+                    "geo_locations": {"countries": country_codes},
+                    "age_min": campaign.age_range.get("min", 18) if campaign.age_range else 18,
+                    "age_max": campaign.age_range.get("max", 65) if campaign.age_range else 65
+                }
+                if campaign.gender and campaign.gender != "all":
+                    targeting["genders"] = [1] if campaign.gender == "male" else [2]
+
+                meta_adset_data = {
+                    "name": ad_set.name,
+                    "campaign_id": meta_campaign_id,
+                    "status": "PAUSED",
+                    "optimization_goal": "LINK_CLICKS",
+                    "billing_event": "IMPRESSIONS",
+                    "targeting": json.dumps(targeting),
+                    "bid_amount": "100"
+                }
+
+                # Apply dayparting schedule for lifetime budget campaigns
+                if use_lifetime and campaign.daily_budget:
+                    from modules.marketing.dayparting_service import (
+                        build_adset_schedule_params, daily_budget_to_lifetime
+                    )
+                    lifetime_cents = daily_budget_to_lifetime(
+                        campaign.daily_budget, campaign_duration_days
+                    )
+                    schedule_params = build_adset_schedule_params(
+                        schedule=dayparting_schedule,
+                        lifetime_budget_cents=lifetime_cents,
+                        campaign_duration_days=campaign_duration_days
+                    )
+                    # Remove daily budget params, add lifetime + schedule
+                    meta_adset_data.pop("bid_amount", None)
+                    meta_adset_data.update(schedule_params)
+                    logger.info(
+                        f"[QuickLaunch] Ad set '{ad_set.name}': lifetime budget "
+                        f"${campaign.daily_budget * campaign_duration_days:.2f}, "
+                        f"{len(dayparting_schedule)} schedule blocks"
+                    )
+
+                meta_adset_result = create_meta_adset(
+                    ad_account.ad_account_id, ad_account.access_token, meta_adset_data
+                )
+                meta_adset_id = meta_adset_result.get("id")
+
+                # Save Ad Set to DB
+                db_meta_adset = MetaAdSet(
+                    adset_id=meta_adset_id,
+                    ad_account_id=ad_account.id,
+                    campaign_id=db_meta_campaign.id,
+                    name=ad_set.name,
+                    status="PAUSED",
+                    optimization_goal="LINK_CLICKS",
+                    billing_event="IMPRESSIONS",
+                    targeting=targeting,
+                    bid_amount=100,
+                    created_time=datetime.utcnow(),
+                    updated_time=datetime.utcnow(),
+                    effective_status="PAUSED",
+                    is_active=True
+                )
+                db.add(db_meta_adset)
+                db.commit()
+                db.refresh(db_meta_adset)
+
+                # Create Ads for each content
+                for ad_content_item in ad_set.ad_contents:
+                    if not ad_content_item.is_active:
+                        continue
+                    try:
+                        meta_ad_data = {
+                            "name": f"{ad_set.name} - Ad",
+                            "adset_id": meta_adset_id,
+                            "status": "PAUSED",
+                            "creative": json.dumps({
+                                "object_story_spec": {
+                                    "page_id": facebook_page_id,
+                                    "link_data": {
+                                        "link": ad_content_item.destination_url or campaign.source_url,
+                                        "message": ad_content_item.primary_text or campaign.name,
+                                        "name": ad_content_item.headline or campaign.name,
+                                        "description": ad_content_item.description or "",
+                                        "call_to_action": {
+                                            "type": "LEARN_MORE",
+                                            "value": {"link": ad_content_item.destination_url or campaign.source_url}
+                                        }
+                                    }
+                                }
+                            })
+                        }
+
+                        meta_ad_result = create_meta_ad(
+                            ad_account.ad_account_id, ad_account.access_token, meta_ad_data
+                        )
+                        meta_ad_id = meta_ad_result.get("id")
+
+                        db_meta_ad = MetaAd(
+                            ad_id=meta_ad_id,
+                            ad_account_id=ad_account.id,
+                            adset_id=db_meta_adset.id,
+                            campaign_id=db_meta_campaign.id,
+                            name=f"{ad_set.name} - Ad",
+                            status="PAUSED",
+                            effective_status="PAUSED",
+                            created_time=datetime.utcnow(),
+                            updated_time=datetime.utcnow(),
+                            is_active=True
+                        )
+                        db.add(db_meta_ad)
+                        ads_created += 1
+
+                    except Exception as ad_err:
+                        errors.append(f"Ad creation failed for {ad_set.name}: {str(ad_err)}")
+
+            except Exception as adset_err:
+                errors.append(f"Ad set creation failed for {ad_set.name}: {str(adset_err)}")
+
+        # Update campaign status
+        platform_ids = campaign.platform_campaign_ids or {}
+        platform_ids["meta"] = meta_campaign_id
+        campaign.platform_campaign_ids = platform_ids
+        campaign.status = CampaignStatus.ACTIVE
+        campaign.published_at = datetime.utcnow()
+        db.commit()
+
+        response_data["ads_created"] = ads_created
+
+        # Step 4: Register with scheduler
+        if request.auto_start_scheduler:
+            try:
+                from modules.agents.scheduler import add_ad_account_to_scheduler, start_rules_scheduler, rules_scheduler
+                add_ad_account_to_scheduler(ad_account.ad_account_id)
+                if not rules_scheduler._running:
+                    start_rules_scheduler(interval_minutes=15)
+                response_data["scheduler_registered"] = True
+                logger.info(f"[QuickLaunch] Registered {ad_account.ad_account_id} with scheduler")
+            except Exception as sched_err:
+                errors.append(f"Scheduler registration failed: {str(sched_err)}")
+
+        # Create notification
+        if NOTIFICATIONS_AVAILABLE:
+            try:
+                notification = Notification(
+                    store_id=campaign.store_id,
+                    title="Quick Launch Campaign Published",
+                    message=f"Campaign '{campaign.name}' published with {len(selected_ad_sets)} ad sets and {ads_created} ads. Scheduler {'active' if response_data['scheduler_registered'] else 'inactive'}.",
+                    type=NotificationType.SYSTEM.value,
+                    priority=NotificationPriority.HIGH.value,
+                    related_entity_type="campaign",
+                    related_entity_id=campaign.id,
+                    action_url="/marketing/campaigns"
+                )
+                db.add(notification)
+                db.commit()
+            except Exception:
+                pass
+
+        response_data["success"] = True
+        response_data["errors"] = errors
+        response_data["message"] = (
+            f"Quick Launch complete! Created {len(selected_ad_sets)} ad sets with {ads_created} ads. "
+            f"Campaign is PAUSED — activate in Meta Ads Manager when ready."
+        )
+
+        logger.info(f"[QuickLaunch] Complete: {campaign.name} → {len(selected_ad_sets)} ad sets, {ads_created} ads")
+        return QuickLaunchResponse(**response_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[QuickLaunch] Failed: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Quick Launch failed: {str(e)}"
+        )
+
+
+# ──────────────────────────────────────────────
+# Optimization & Fatigue Detection Endpoints
+# ──────────────────────────────────────────────
+
+@campaign_router.post("/{campaign_id}/collect-metrics")
+def collect_campaign_metrics(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    """Pull latest performance metrics from Meta for all ad content variants."""
+    from .optimizer import CampaignOptimizer
+    optimizer = CampaignOptimizer(db)
+    result = optimizer.collect_metrics(campaign_id)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@campaign_router.post("/{campaign_id}/optimize")
+def optimize_campaign(
+    campaign_id: uuid.UUID,
+    dry_run: bool = Query(False, description="Preview actions without executing"),
+    min_impressions: int = Query(1000, description="Minimum impressions before evaluating"),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate variant performance and auto-pause losers.
+
+    - Collects latest metrics from Meta
+    - Compares CTR across variants within each ad set
+    - Pauses variants with CTR < 50% of the best performer
+    - Increases budget on winning ad sets by 30%
+    """
+    from .optimizer import CampaignOptimizer
+    optimizer = CampaignOptimizer(db)
+    result = optimizer.optimize_campaign(campaign_id, min_impressions=min_impressions, dry_run=dry_run)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@campaign_router.post("/{campaign_id}/check-fatigue")
+async def check_ad_fatigue(
+    campaign_id: uuid.UUID,
+    auto_refresh: bool = Query(False, description="Auto-generate fresh creatives for fatigued ads"),
+    db: Session = Depends(get_db),
+):
+    """
+    Check for ad fatigue and optionally auto-refresh stale creatives.
+
+    Fatigue signals:
+    - Frequency > 3.0 (audience seeing ad too often)
+    - CTR declining 3+ consecutive days
+    - CTR dropped > 30% from peak
+
+    When auto_refresh=True, fatigued ads are paused and replaced with fresh copy/images.
+    """
+    from .fatigue_detector import FatigueDetector
+    detector = FatigueDetector(db)
+    result = detector.check_fatigue(campaign_id)
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Auto-refresh if requested and fatigue detected
+    if auto_refresh and result.get("fatigued_content_ids"):
+        fatigued_ids = [uuid.UUID(fid) for fid in result["fatigued_content_ids"]]
+        refresh_result = await detector.refresh_creatives(campaign_id, fatigued_ids)
+        result["refresh_result"] = refresh_result
+
+    return result

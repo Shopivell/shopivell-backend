@@ -168,7 +168,8 @@ class GeminiImageGenerator:
 {prompt}
 
 IMPORTANT INSTRUCTIONS FOR REFERENCE IMAGES:
-CRITICAL RULE: ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no signs with text, no watermarks. The image must contain ZERO readable text. Only copy VISUAL elements from references (uniforms, vehicles, colors, equipment), never text.
+CRITICAL RULE: ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no signs with text, no watermarks, no review cards, no testimonials, no screen text, no vehicle text. The image must contain ZERO readable characters. If the prompt describes text on signs, screens, or vehicles - leave those surfaces blank or use abstract colored shapes instead. Only copy PHYSICAL/VISUAL elements from references (uniforms, vehicles, colors, equipment), never any text.
+CRITICAL RULE: NEVER place small people or faces in the background. Only 1-3 main foreground subjects with large clear faces. Keep backgrounds clean with buildings, vehicles, or equipment only.
 """
 
         # Add logo as reference
@@ -358,9 +359,11 @@ SCENE TO GENERATE:
 {prompt}
 
 RULES:
-- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no signs with text. The image must contain ZERO readable text.
-- Do NOT reproduce any text you see in the screenshot reference images. Only copy visual/physical elements.
-- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
+- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no review cards, no testimonials, no sign text, no screen text, no vehicle text. The image must contain ZERO readable characters.
+- If the scene mentions text on signs, screens, tablets, or vehicles - DO NOT render that text. Leave those surfaces blank, blurred, or use abstract colored shapes instead.
+- Do NOT reproduce any text you see in the screenshot reference images. Only copy PHYSICAL/VISUAL elements (colors, shapes, uniforms, vehicles, equipment).
+- NEVER place small people or faces in the background - they will appear distorted. Only 1-3 main foreground subjects with clear, large faces are allowed.
+- No background figures, no crowd scenes, no distant personnel. Keep the background clean with buildings, vehicles, or equipment only.
 - ONLY generate the photorealistic scene with NO text whatsoever
 """
 

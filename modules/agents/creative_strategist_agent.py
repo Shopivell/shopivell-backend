@@ -15,8 +15,10 @@ Uses OpenRouter API via ChatOpenRouter adapter for AI generation.
 
 import os
 import json
+import asyncio
 import logging
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
@@ -309,8 +311,56 @@ Generate {num_hooks} hooks that will resonate with this audience. For each hook,
 }}
 
 Create diverse hooks using different hook types. Make them specific to the product and audience.
+
+{performance_insights}
+
 Return ONLY valid JSON, no markdown.
 """)
+
+    def _get_hook_performance_insights(self) -> str:
+        """Query past creative test results to learn which hook types perform best."""
+        db = SessionLocal()
+        try:
+            from .models import CreativeAngle as CAModel
+            from .models import CreativeTest, CreativeTestVariant
+
+            tests = db.query(CreativeTest).filter(
+                CreativeTest.status == "completed",
+                CreativeTest.winner_ad_id.isnot(None)
+            ).order_by(CreativeTest.completed_at.desc()).limit(10).all()
+
+            if not tests:
+                return ""
+
+            winning_emotions = []
+            for test in tests:
+                results = test.results or {}
+                winner = results.get("winner", {})
+                if winner.get("is_original"):
+                    continue
+                headline = winner.get("headline", "")
+                if headline:
+                    angles = db.query(CAModel).filter(
+                        CAModel.emotion_target.isnot(None)
+                    ).order_by(CAModel.created_at.desc()).limit(20).all()
+                    for a in angles:
+                        if a.emotion_target:
+                            winning_emotions.append(a.emotion_target)
+
+            if not winning_emotions:
+                return ""
+
+            from collections import Counter
+            top_emotions = Counter(winning_emotions).most_common(3)
+            insights = "HOOK PERFORMANCE INSIGHTS (from past A/B tests):\n"
+            insights += "Top-performing emotion targets: " + ", ".join([f"{e} ({c}x)" for e, c in top_emotions])
+            insights += "\nPrioritize hooks using these emotion types."
+            return insights
+
+        except Exception:
+            return ""
+        finally:
+            db.close()
 
     def _clean_json_response(self, response: str) -> str:
         """Clean the JSON response from markdown formatting"""
@@ -377,7 +427,8 @@ Return ONLY valid JSON, no markdown.
         logger.info(f"[CreativeStrategistAgent] Generating Meta audience for: {company}")
 
         from modules.openrouter.context import set_ai_context
-        chain = self.meta_audience_prompt | self.llm | StrOutputParser()
+        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        chain = self.meta_audience_prompt | json_llm | StrOutputParser()
         with set_ai_context(agent_name="creative_strategist"):
             response = await chain.ainvoke(prompt_data)
 
@@ -399,6 +450,179 @@ Return ONLY valid JSON, no markdown.
                 "error": "Failed to parse audience analysis",
                 "raw_response": cleaned[:1000]
             }
+
+    async def generate_meta_audience_validated(
+        self,
+        website_data: Dict[str, Any],
+        access_token: str,
+        ad_account_id: str,
+        countries: List[str] = None,
+        company_name: str = None
+    ) -> Dict[str, Any]:
+        """
+        Generate Meta audience with interest validation and reach estimation.
+
+        Extends generate_meta_audience by:
+        1. Generating audience via LLM
+        2. Validating all interest_tags against Meta's Interest Search API
+        3. Getting reach estimates for the validated targeting spec
+
+        Args:
+            website_data: Data from market research agent
+            access_token: Meta API access token
+            ad_account_id: Meta ad account ID (e.g., "act_123456")
+            countries: Target countries (e.g., ["ZW"]). Extracted from audience if not provided.
+            company_name: Optional company name override
+
+        Returns:
+            Dict with audience_targeting + validation results + reach estimate
+        """
+        MAX_AUDIENCE_RETRIES = 2  # Retry up to 2 times if <30% interests validate
+
+        for attempt in range(1, MAX_AUDIENCE_RETRIES + 2):  # +2 for initial + retries
+            # Step 1: Generate audience via LLM
+            if attempt == 1:
+                result = await self.generate_meta_audience(website_data, company_name)
+            else:
+                # Retry with feedback about what failed
+                logger.info(
+                    f"[CreativeStrategistAgent] Audience retry {attempt - 1}/{MAX_AUDIENCE_RETRIES}: "
+                    f"only {prev_valid_count}/{prev_total_count} interests were valid on Meta. "
+                    f"Regenerating with broader terms."
+                )
+                # Augment website_data with retry hint
+                retry_data = dict(website_data)
+                retry_hint = (
+                    f"\n\nIMPORTANT RETRY CONTEXT: A previous attempt generated {prev_total_count} interest tags "
+                    f"but only {prev_valid_count} were valid on Meta's ad platform. "
+                    f"Invalid tags that failed: {', '.join(prev_invalid_tags[:15])}. "
+                    f"Please generate BROADER, more commonly used interest tags that are more likely to exist "
+                    f"in Meta's targeting system. Prefer well-known brands, broad categories, and popular topics "
+                    f"over niche or overly specific terms."
+                )
+                raw_content = retry_data.get("raw_content", {})
+                if isinstance(raw_content, dict):
+                    main_page = raw_content.get("main_page", "")
+                    raw_content["main_page"] = main_page + retry_hint
+                    retry_data["raw_content"] = raw_content
+                else:
+                    retry_data["raw_content"] = {"main_page": retry_hint}
+
+                result = await self.generate_meta_audience(retry_data, company_name)
+
+            if not result.get("success"):
+                return result
+
+            audience_data = result.get("audience_targeting", {})
+
+            # Step 2: Extract interest tags from LLM response
+            interest_tags = []
+            interest_categories = audience_data.get("interest_tags", {})
+            if isinstance(interest_categories, dict):
+                for category, tags in interest_categories.items():
+                    if isinstance(tags, list):
+                        interest_tags.extend(tags)
+            elif isinstance(interest_categories, list):
+                interest_tags = interest_categories
+
+            if not interest_tags:
+                logger.warning("[CreativeStrategistAgent] No interest tags found in LLM response")
+                return result
+
+            # Step 3: Validate interests against Meta API
+            try:
+                from modules.marketing.meta_targeting_service import MetaTargetingService
+                targeting_service = MetaTargetingService(access_token=access_token)
+
+                # Extract countries from audience data if not provided
+                if not countries:
+                    demographics = audience_data.get("demographics", {})
+                    locations = demographics.get("locations", demographics.get("countries", []))
+                    if isinstance(locations, list) and locations:
+                        countries = locations
+                    else:
+                        countries = ["US"]  # Fallback
+
+                # Extract age range from demographics
+                demographics = audience_data.get("demographics", {})
+                age_min = demographics.get("age_min", demographics.get("min_age", 18))
+                age_max = demographics.get("age_max", demographics.get("max_age", 65))
+
+                logger.info(f"[CreativeStrategistAgent] Validating {len(interest_tags)} interest tags against Meta API (attempt {attempt})")
+
+                validation_result = targeting_service.validate_and_estimate(
+                    ad_account_id=ad_account_id,
+                    interest_tags=interest_tags,
+                    countries=countries,
+                    age_min=age_min,
+                    age_max=age_max
+                )
+
+                # Update interest_tags with validated ones
+                validated_interests = validation_result["validation"]["validated"]
+                invalid_tags = validation_result["validation"].get("invalid", [])
+
+                # Check if we need to retry — less than 30% validated
+                valid_ratio = len(validated_interests) / len(interest_tags) if interest_tags else 0
+
+                if valid_ratio < 0.3 and attempt <= MAX_AUDIENCE_RETRIES:
+                    # Store info for retry
+                    prev_valid_count = len(validated_interests)
+                    prev_total_count = len(interest_tags)
+                    prev_invalid_tags = invalid_tags
+                    logger.warning(
+                        f"[CreativeStrategistAgent] Low validation rate: {valid_ratio:.0%} "
+                        f"({len(validated_interests)}/{len(interest_tags)}). Retrying..."
+                    )
+                    continue  # Loop back to regenerate
+
+                if validated_interests:
+                    # Replace LLM interest tags with validated Meta interests
+                    validated_names = [v["name"] for v in validated_interests]
+                    audience_data["validated_interest_tags"] = validated_names
+                    audience_data["interest_validation"] = {
+                        "original_count": len(interest_tags),
+                        "validated_count": len(validated_interests),
+                        "invalid": invalid_tags,
+                        "suggestions": validation_result["validation"]["suggestions"],
+                        "corrected": [
+                            {"original": v["original_tag"], "corrected_to": v["name"]}
+                            for v in validated_interests if v.get("was_corrected")
+                        ],
+                        "attempts": attempt
+                    }
+
+                # Add reach estimate
+                reach = validation_result.get("reach_estimate", {})
+                audience_data["reach_estimate"] = {
+                    "users_lower_bound": reach.get("users_lower_bound", 0),
+                    "users_upper_bound": reach.get("users_upper_bound", 0),
+                    "estimate_dau": reach.get("estimate_dau", 0),
+                    "estimate_mau": reach.get("estimate_mau", 0),
+                }
+
+                # Store the targeting spec for direct use in ad set creation
+                audience_data["meta_targeting_spec"] = validation_result.get("targeting_spec", {})
+
+                result["audience_targeting"] = audience_data
+                result["interest_validation"] = validation_result["validation"]
+                result["interest_validation"]["attempts"] = attempt
+                result["reach_estimate"] = validation_result["reach_estimate"]
+
+                logger.info(
+                    f"[CreativeStrategistAgent] Validation complete (attempt {attempt}): "
+                    f"{len(validated_interests)}/{len(interest_tags)} interests valid, "
+                    f"reach: {reach.get('users_lower_bound', 0):,}-{reach.get('users_upper_bound', 0):,}"
+                )
+
+            except Exception as e:
+                logger.error(f"[CreativeStrategistAgent] Interest validation failed: {e}")
+                result["interest_validation_error"] = str(e)
+                # Still return the LLM-generated audience even if validation fails
+
+            return result
+
+        return result
 
     async def analyze_audience(
         self,
@@ -478,17 +702,22 @@ Recommendations: {research.recommendations or 'Not available'}
                 f"- {h['name']}: {h['description']}" for h in HOOK_TYPES
             ])
 
+            # Get performance insights from past A/B tests
+            perf_insights = self._get_hook_performance_insights()
+
             prompt_data = {
                 "campaign_name": campaign.name,
                 "objective": campaign.objective,
                 "product_description": campaign.product_description or "Not specified",
                 "audience_analysis": json.dumps(audience_analysis, indent=2),
                 "hook_types": hook_types_text,
-                "num_hooks": num_hooks
+                "num_hooks": num_hooks,
+                "performance_insights": perf_insights
             }
 
             from modules.openrouter.context import set_ai_context
-            chain = self.hook_generation_prompt | self.llm | StrOutputParser()
+            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            chain = self.hook_generation_prompt | json_llm | StrOutputParser()
             with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_strategist"):
                 response = await chain.ainvoke(prompt_data)
 
@@ -575,6 +804,116 @@ Recommendations: {research.recommendations or 'Not available'}
             }
         finally:
             db.close()
+
+
+    async def refine_audience_from_performance(
+        self,
+        ad_account_id: str,
+        access_token: str,
+        current_targeting: Dict[str, Any] = None,
+        company_name: str = "Unknown"
+    ) -> Dict[str, Any]:
+        """
+        Refine audience targeting based on actual performance data.
+
+        Uses demographic breakdown from Meta Insights to understand
+        which age/gender/placement segments convert best, then asks
+        the LLM to refine the targeting strategy.
+
+        Called by scheduler every 7 days (Task 9 tiered scheduling).
+
+        Args:
+            ad_account_id: Meta ad account ID
+            access_token: Meta API access token
+            current_targeting: Current targeting spec (optional)
+            company_name: Company name for context
+
+        Returns:
+            Dict with refined targeting recommendations
+        """
+        try:
+            from modules.marketing.insights_service import get_demographic_breakdown
+
+            # Get demographic performance data
+            demographics = get_demographic_breakdown(ad_account_id, access_token, days=7)
+
+            if not demographics.get("success"):
+                return {
+                    "success": False,
+                    "error": "Could not get demographic breakdown",
+                    "details": demographics.get("error")
+                }
+
+            # Build prompt for LLM refinement
+            refinement_prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are an expert Meta Ads targeting strategist. Based on real performance data from the last 7 days, refine the audience targeting.
+
+Analyze which age groups, genders, and segments are converting best and recommend adjustments.
+
+Return JSON with:
+{{
+    "analysis": "Brief analysis of what's working and what's not",
+    "recommended_changes": [
+        {{"type": "narrow_age", "reason": "...", "new_age_min": 25, "new_age_max": 45}},
+        {{"type": "focus_gender", "reason": "...", "gender": "female"}},
+        {{"type": "increase_budget_segment", "reason": "...", "segment": "..."}},
+        {{"type": "exclude_segment", "reason": "...", "segment": "..."}}
+    ],
+    "refined_targeting": {{
+        "age_min": 25,
+        "age_max": 45,
+        "genders": [2],
+        "notes": "Focus on female 25-45 based on performance data"
+    }},
+    "confidence": 0.85
+}}
+
+Return ONLY valid JSON."""),
+                ("human", """Company: {company_name}
+
+Performance Data (Last 7 Days):
+- Age Breakdown: {age_breakdown}
+- Gender Breakdown: {gender_breakdown}
+- Best Performing Age: {best_age}
+- Best Performing Gender: {best_gender}
+
+Current Targeting: {current_targeting}
+
+Based on this real data, how should we refine the targeting?""")
+            ])
+
+            from modules.openrouter.context import set_ai_context
+            chain = refinement_prompt | self.llm | StrOutputParser()
+
+            with set_ai_context(agent_name="creative_strategist"):
+                response = await chain.ainvoke({
+                    "company_name": company_name,
+                    "age_breakdown": json.dumps(demographics.get("age_breakdown", {})),
+                    "gender_breakdown": json.dumps(demographics.get("gender_breakdown", {})),
+                    "best_age": demographics.get("best_performing_age", "Unknown"),
+                    "best_gender": demographics.get("best_performing_gender", "Unknown"),
+                    "current_targeting": json.dumps(current_targeting or {})
+                })
+
+            cleaned = self._clean_json_response(response)
+            try:
+                refinement = json.loads(cleaned)
+                return {
+                    "success": True,
+                    "demographics_data": demographics,
+                    "refinement": refinement,
+                    "company_name": company_name
+                }
+            except json.JSONDecodeError:
+                return {
+                    "success": False,
+                    "error": "Failed to parse refinement response",
+                    "raw_response": cleaned[:500]
+                }
+
+        except Exception as e:
+            logger.error(f"[CreativeStrategistAgent] Performance refinement failed: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Convenience function for direct use
@@ -716,25 +1055,34 @@ async def generate_audience_comparison(urls: List[str]) -> Dict[str, Any]:
     all_interests = []
     all_segments = []
 
-    for url in urls[:5]:  # Limit to 5 URLs
+    # Run all URL analyses in parallel
+    async def _analyze_url(url: str):
         try:
             result = await generate_audience_from_url(url, include_hooks=False)
-            results[url] = result
-
-            # Collect interests for comparison
-            if result.get("success"):
-                targeting = result.get("audience_targeting", {})
-                interests = targeting.get("interest_tags", {})
-                for category, tags in interests.items():
-                    if isinstance(tags, list):
-                        all_interests.extend(tags)
-
-                segments = targeting.get("audience_segments", [])
-                all_segments.extend([s.get("name", "") for s in segments if isinstance(s, dict)])
-
+            return url, result
         except Exception as e:
             logger.error(f"[CreativeStrategistAgent] Failed to analyze {url}: {e}")
-            results[url] = {"success": False, "error": str(e)}
+            return url, {"success": False, "error": str(e)}
+
+    tasks = [_analyze_url(url) for url in urls[:5]]
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for item in task_results:
+        if isinstance(item, Exception):
+            logger.error(f"[CreativeStrategistAgent] Parallel analysis error: {item}")
+            continue
+        url, result = item
+        results[url] = result
+
+        if result.get("success"):
+            targeting = result.get("audience_targeting", {})
+            interests = targeting.get("interest_tags", {})
+            for category, tags in interests.items():
+                if isinstance(tags, list):
+                    all_interests.extend(tags)
+
+            segments = targeting.get("audience_segments", [])
+            all_segments.extend([s.get("name", "") for s in segments if isinstance(s, dict)])
 
     # Find common and unique interests
     from collections import Counter

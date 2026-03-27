@@ -34,40 +34,39 @@ class VerificationCodeService:
             cls.twilio_from_number = os.getenv('TWILIO_FROM_NUMBER')
             
             # Debug output to see what's loaded
-            print(f"🔧 Email Configuration Debug:")
-            print(f"   EMAIL_USERNAME: {cls.email_username}")
-            print(f"   EMAIL_PASSWORD: {'*' * len(cls.email_password) if cls.email_password else 'None'}")
-            print(f"   SMTP_SERVER: {cls.smtp_server}")
-            print(f"   SMTP_PORT: {cls.smtp_port}")
-            
+            print(f"[Email Config] EMAIL_USERNAME: {cls.email_username}")
+            print(f"[Email Config] EMAIL_PASSWORD: {'*' * len(cls.email_password) if cls.email_password else 'None'}")
+            print(f"[Email Config] SMTP_SERVER: {cls.smtp_server}")
+            print(f"[Email Config] SMTP_PORT: {cls.smtp_port}")
+
             # Check which services are available
             cls._email_enabled = bool(cls.email_username and cls.email_password)
             cls._sms_enabled = bool(cls.twilio_account_sid and cls.twilio_auth_token and cls.twilio_from_number)
-            
+
             if cls._email_enabled:
-                print("✅ Email service is CONFIGURED and READY!")
+                print("[OK] Email service is CONFIGURED and READY!")
             else:
-                print("❌ Email service is NOT configured - check your .env file")
+                print("[WARN] Email service is NOT configured - check your .env file")
                 print("   Make sure EMAIL_USERNAME and EMAIL_PASSWORD are set")
-            
+
             if not cls._email_enabled and not cls._sms_enabled:
-                print("⚠️ Warning: Neither email nor SMS services are configured. Verification codes will only be logged to console.")
+                print("[WARN] Neither email nor SMS services are configured. Verification codes will only be logged to console.")
             
             cls._config_loaded = True
 
     @classmethod
-    def send_email(cls, to_email: str, subject: str, body: str) -> bool:
-        """Send email with verification code using SSL on port 465"""
+    def send_email(cls, to_email: str, subject: str, body: str, content_type: str = 'plain') -> bool:
+        """Send email using SSL on port 465. content_type can be 'plain' or 'html'."""
         cls._load_config()
 
         if not cls._email_enabled:
-            print(f"📧 Email (SIMULATED - not configured) to: {to_email}")
+            print(f"[Email SIMULATED] to: {to_email}")
             print(f"   Subject: {subject}")
             print(f"   Body: {body}")
-            return False
+            return True  # Allow dev login - code is logged to console
 
         try:
-            print(f"📧 Attempting to send email to: {to_email}")
+            print(f"[Email] Attempting to send to: {to_email}")
             print(f"   Using server: {cls.smtp_server}:{cls.smtp_port}")
 
             # Build proper MIME email
@@ -75,24 +74,24 @@ class VerificationCodeService:
             msg['From'] = cls.email_username
             msg['To'] = to_email
             msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg.attach(MIMEText(body, content_type, 'utf-8'))
 
             # Use SMTP_SSL for port 465 (SSL connection)
             with smtplib.SMTP_SSL(cls.smtp_server, cls.smtp_port, timeout=15) as s:
                 s.login(cls.email_username, cls.email_password)
                 s.sendmail(cls.email_username, to_email, msg.as_string())
 
-            print(f"✅ Email sent successfully to: {to_email}")
+            print(f"[OK] Email sent successfully to: {to_email}")
             return True
 
         except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ SMTP Authentication failed: {e}")
+            print(f"[ERROR] SMTP Authentication failed: {e}")
             return False
         except smtplib.SMTPConnectError as e:
-            print(f"❌ SMTP Connection failed: {e}")
+            print(f"[ERROR] SMTP Connection failed: {e}")
             return False
         except Exception as e:
-            print(f"❌ Failed to send email to {to_email}: {e}")
+            print(f"[ERROR] Failed to send email to {to_email}: {e}")
             return False
 
     @classmethod
@@ -108,18 +107,18 @@ class VerificationCodeService:
                     from_=cls.twilio_from_number,
                     body=body
                 )
-                print(f"✅ SMS sent to: {to_number} (SID: {message.sid})")
+                print(f"[OK] SMS sent to: {to_number} (SID: {message.sid})")
                 return True
             else:
                 # Fallback: log to console
-                print(f"📱 SMS (SIMULATED) to: {to_number}")
+                print(f"[SMS SIMULATED] to: {to_number}")
                 print(f"   Body: {body}")
                 return True
-                
+
         except Exception as e:
-            print(f"❌ Failed to send SMS to {to_number}: {e}")
+            print(f"[ERROR] Failed to send SMS to {to_number}: {e}")
             # Fallback to console logging
-            print(f"📱 SMS (FAILED - SIMULATED) to: {to_number}")
+            print(f"[SMS SIMULATED] to: {to_number}")
             print(f"   Body: {body}")
             return True  # Allow dev login
 

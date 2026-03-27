@@ -4,7 +4,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 # Assuming 'database' module and Base are available
 from database import Base 
 import uuid
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from typing import Optional, List
 import json
 

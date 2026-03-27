@@ -27,7 +27,7 @@ import bcrypt
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from database import SessionLocal, engine, Base
+from database import SessionLocal, engine, Base, init_db
 from modules.users.models import User, UserRole
 from modules.admin.models import AdminUser, AdminRole
 
@@ -163,8 +163,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # Ensure tables exist
-    from modules.admin.models import AdminUser, AdminInvitation, AuditLog
-    Base.metadata.create_all(bind=engine)
-
+    # Ensure all models are loaded and tables exist
+    init_db()
     main()

@@ -1,495 +1,319 @@
-# Implementation Status - Ad Creative System
+# Shopivell AI Ad Engine - Component Reference
 
-**Last Updated:** January 2026
-
----
-
-## 1. OCCASION-BASED TARGETING (B2C)
-
-### Status: WORKING
-
-**Location:** `modules/campaigns/service.py` lines 316-322
-
-**What Works:**
-For B2C businesses (retail, fashion, consumer products), the AI generates 5 ad sets targeting:
-
-| Ad Set | Targeting Type | Examples |
-|--------|---------------|----------|
-| #1 | Seasonal Occasion | Back-to-school, Valentine's Day, Christmas, summer vacation, winter fashion |
-| #2 | Life Event | First job interview, graduation, wedding preparation, new baby |
-| #3 | Demographic | Young professionals, parents with kids, fashion-forward teens |
-| #4 | Product Category | Specific product line (if business sells multiple types) |
-| #5 | Use Case | Office wear, weekend casual, party outfits, travel essentials |
-
-**Example Output (Edgars Clothing):**
-```
-Ad Set 1: "Back to School Season" - targeting parents buying school uniforms
-Ad Set 2: "Graduation Outfits" - targeting graduates needing formal wear
-Ad Set 3: "Young Professionals" - targeting office workers
-Ad Set 4: "Kids Fashion" - targeting parents
-Ad Set 5: "Weekend Casual" - targeting casual shoppers
-```
-
-**What Failed:** Nothing - this is working correctly.
+**Last Updated:** March 2026
 
 ---
 
-## 2. LOGO EXTRACTION & USAGE
+## System Components
 
-### Status: WORKING
+### 1. Website Scraping & Brand Analysis
 
-**Location:** `modules/stores/scraping_service.py`
+**How it works:**
+The system scrapes any website URL using Tavily, then analyzes all extracted images with Vision AI (GPT-4o-mini) to build a complete brand profile.
 
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| WordPress logo extraction | WORKING | Extracts from `.custom-logo`, `.site-logo`, `.logo img` |
-| OG image fallback | WORKING | Uses `og:image` meta tag if no logo found |
-| Logo passed to Gemini | WORKING | Logo URL sent as reference image |
-| Logo placement in generated image | WORKING | Prompt instructs "place logo in bottom-right corner" |
+| Component | File | What It Does |
+|-----------|------|-------------|
+| Website Scraper | `modules/stores/scraping_service.py` | Scrapes text + images from multiple pages |
+| Brand DNA Extractor | `modules/brand_intelligence/brand_dna_extractor.py` | Orchestrates complete brand analysis |
+| Asset Categorizer | `modules/brand_intelligence/asset_categorizer.py` | Categorizes images (team, vehicle, product, logo, hero) |
+| Visual Style Analyzer | `modules/brand_intelligence/visual_style_analyzer.py` | Extracts photography style, color treatment, composition |
 
-**Code Flow:**
-```
-1. _extract_images_from_website(url)
-   → Returns: { "logo_url": "https://..." }
+**Extraction capabilities:**
+- Logo (WordPress selectors, OG image, favicon fallback)
+- Brand colors (from logo via Vision AI, WordPress preset filtering)
+- Uniforms (image URLs + text description of colors/style/badges)
+- Vehicles (image URLs + branding details)
+- Equipment (image URLs)
+- Visual style DNA (photography style, color treatment, composition, typography)
 
-2. GeminiImageGenerator.generate_ad_image(logo_url=...)
-   → Creates image part from logo URL
-   → Adds to prompt: "Use the provided logo image EXACTLY as shown"
-```
-
-**What Failed Previously:**
-- Logo was not being passed to image generation (FIXED)
-- Logo was being recreated instead of used exactly (FIXED via prompt instructions)
+**Tracking pixel filter:** Blocks Facebook pixels, Google Analytics, tracking beacons, 1x1 GIFs, spacers.
 
 ---
 
-## 3. COLOR THEME / BRAND COLORS
+### 2. Market Research Agent
 
-### Status: WORKING
+**File:** `modules/agents/market_research_agent.py`
 
-**Location:** `modules/stores/scraping_service.py` - `_analyze_images_with_vision()`
-
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| Extract colors from logo via Vision AI | WORKING | GPT-4o-mini analyzes logo image |
-| WordPress preset filtering | WORKING | Skips `#ABB8C3`, `pale-pink`, etc. |
-| Color passed to ad prompts | WORKING | Brand color included in image generation prompt |
-
-**Vision AI Prompt:**
-```
-"brand_colors": ["#HEX1", "#HEX2"] - Extract 2-3 PRIMARY brand colors from the LOGO only
-```
-
-**What Failed Previously:**
-| Issue | Status |
-|-------|--------|
-| Extracting WordPress default colors like `#ABB8C3` | FIXED - Added WordPress preset filter |
-| Extracting CSS colors instead of logo colors | FIXED - Prioritize Vision-extracted colors |
-
-**Filtered WordPress Colors:**
-```python
-wordpress_color_names = ['cyan-bluish-gray', 'pale-pink', 'luminous-vivid-orange', ...]
-wordpress_preset_hex = ['#ABB8C3', '#F78DA7', '#FF6900', '#FCB900', '#00D084', ...]
-```
+**How it works:**
+1. Takes scraped website data as input
+2. Fetches competitor ads from Meta Ad Library using business keywords
+3. Sends combined data (website + competitor ads) to LLM
+4. Returns: industry analysis, competitor positioning, target audience insights, messaging opportunities
 
 ---
 
-## 4. REAL ASSETS - UNIFORMS
+### 3. Creative Strategist Agent
 
-### Status: WORKING
+**File:** `modules/agents/creative_strategist_agent.py`
 
-**Location:** `modules/stores/scraping_service.py` - `_analyze_images_with_vision()`
+**How it works:**
 
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| Identify uniform images from website | WORKING | Vision AI scans all images |
-| Extract uniform description | WORKING | Color, style, badges, branding |
-| Return actual uniform image URLs | WORKING | `uniform_images: [url1, url2]` |
-| Pass uniform images to Gemini | WORKING | As reference images with type="uniform" |
+**Audience Generation (`generate_meta_audience_validated`):**
+1. LLM generates 25-40 interest tags across 6 categories
+2. Each tag validated against Meta Interest Search API
+3. If <30% validate, auto-retries with broader terms (injects failed tags as context)
+4. Up to 2 retries before returning best available result
+5. Reach estimated via Meta Reach Estimate API
 
-**Vision AI Output:**
-```json
-{
-  "uniform_description": "Dark green uniforms with company logo badges, tactical style",
-  "uniform_images": [
-    "https://securico.co.zw/wp-content/uploads/2024/07/how-we-make_-1024x682.jpg"
-  ]
-}
-```
-
-**Gemini Prompt Instruction:**
-```
-UNIFORM REFERENCE #1: Use the provided uniform image as reference.
-Any staff/employees in the generated image should wear uniforms that
-EXACTLY match this reference (same colors, style, badges).
-```
-
-**Test Results:**
-| Website | Uniforms Found | Status |
-|---------|---------------|--------|
-| securico.co.zw | 1 image | SUCCESS |
-| safeguard.co.zw | 0 images (none on site) | SUCCESS (handled gracefully) |
-
-**What Failed Previously:**
-- Uniforms were only described in text, not passed as images (FIXED)
-- Generated images showed generic uniforms instead of actual company uniforms (FIXED)
+**Audience Refinement (`refine_audience_from_performance`):**
+1. Fetches demographic breakdown from Meta API (age x gender)
+2. LLM analyzes which demographics convert best
+3. Outputs refined targeting: narrowed age ranges, gender focus, new interests
 
 ---
 
-## 5. REAL ASSETS - VEHICLES
+### 4. Ad Copy Agent
 
-### Status: WORKING
+**File:** `modules/agents/ad_copy_agent.py`
 
-**Location:** `modules/stores/scraping_service.py` - `_analyze_images_with_vision()`
-
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| Identify vehicle images from website | WORKING | Vision AI scans all images |
-| Extract vehicle description | WORKING | Type, color, branding |
-| Return actual vehicle image URLs | WORKING | `vehicle_images: [url1, url2]` |
-| Pass vehicle images to Gemini | WORKING | As reference images with type="vehicle" |
-
-**Vision AI Output:**
-```json
-{
-  "vehicle_description": "White trucks and vans with green Securico branding",
-  "vehicle_images": [
-    "https://securico.co.zw/wp-content/uploads/2024/07/cars-e1694096854202-1536x563-1.jpg"
-  ]
-}
-```
-
-**Gemini Prompt Instruction:**
-```
-VEHICLE REFERENCE #1: Use the provided vehicle image as reference.
-Any company vehicles in the generated image should match this reference
-(same colors, branding, vehicle type).
-```
-
-**Test Results:**
-| Website | Vehicles Found | Status |
-|---------|---------------|--------|
-| securico.co.zw | 2 images | SUCCESS |
-| safeguard.co.zw | 0 images (none on site) | SUCCESS (handled gracefully) |
+**How it works:**
+- Generates B2B and B2C ad copy variants
+- Outputs: headline, primary text, description, CTA
+- Supports platform-specific copy (Facebook, Instagram)
+- Uses research data + audience info for contextual messaging
 
 ---
 
-## 6. REAL ASSETS - EQUIPMENT
+### 5. Media Generator Agent
 
-### Status: WORKING
+**File:** `modules/agents/media_generator_agent.py`
 
-**Location:** `modules/stores/scraping_service.py` - `_analyze_images_with_vision()`
+**How it works:**
+- Primary: Gemini image generation with reference images
+- Fallback: FLUX via Replicate
+- Brand-aware: queries store assets (logos, photos) when `store_id` provided
+- Builds brand context prompt from colors, asset descriptions, visual style
+- Supports image and video generation
 
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| Identify equipment images | WORKING | Security equipment, tools, devices |
-| Extract equipment description | WORKING | Type, brand, features |
-| Return equipment image URLs | WORKING | `equipment_images: [url1]` |
+**Gemini Image Generator** (`modules/agents/gemini_image_generator.py`):
+- Model: `gemini-2.5-flash-image`
+- Accepts logo + uniform + vehicle images as references
+- Prompt includes brand DNA style instructions
 
-**Note:** Equipment is lower priority than uniforms/vehicles. Currently passed to Gemini but not all websites have equipment images.
-
----
-
-## 7. GEMINI IMAGE GENERATION
-
-### Status: WORKING
-
-**Location:** `modules/agents/gemini_image_generator.py`
-
-**What Works:**
-| Feature | Status | Details |
-|---------|--------|---------|
-| Generate images from prompts | WORKING | Using `gemini-2.5-flash-image` model |
-| Pass logo as reference | WORKING | Fetches image, creates Part object |
-| Pass uniform images as reference | WORKING | Up to 2 uniform images |
-| Pass vehicle images as reference | WORKING | Up to 1 vehicle image |
-| Save generated images locally | WORKING | PNG format to `generated_images/` |
-| Return base64 image data | WORKING | For API responses |
-
-**What Failed Previously:**
-| Issue | Error | Fix |
-|-------|-------|-----|
-| Wrong model name | `models/gemini-2.5-flash-preview-05-20 is not found` | Changed to `gemini-2.5-flash-image` |
-| Facebook tracking pixels | `Failed to download image from https://www.facebook.com/tr?...` | Added tracking pixel filter |
-
-**Available Models:**
-| Model | Use Case |
-|-------|----------|
-| `gemini-2.5-flash-image` | Fast generation (CURRENT) |
-| `gemini-3-pro-image-preview` | High quality, 14 reference images |
+**Ad Image Composer** (`modules/agents/ad_image_composer.py`):
+- PIL-based post-processing
+- Gradient overlay, word-wrapped headline, bullet points, rounded CTA button
+- Logo overlay at proportional size (~8% height, ~20% width)
 
 ---
 
-## 8. CAMPAIGN DATA ISOLATION
+### 6. Campaign Service
 
-### Status: WORKING
+**File:** `modules/campaigns/service.py`
 
-**Location:** `modules/campaigns/service.py`, `modules/campaigns/router.py`
+**`_generate_ad_content()`:** LLM generates from scraped content:
+- Business name, type, key metrics (extracted from website)
+- 1 buyer persona ad set with: audience tags, primary text, headline, features, visual direction
+- Campaign data is isolated — AI derives everything from URL, not store data
 
-**Problem Solved:**
-When scraping URL A with store B's ID, the campaign was mixing content from both.
-
-**Solution:**
-| Location | Change |
-|----------|--------|
-| `service.py:130` | `store_context = None` - Don't pass store data |
-| `service.py:283` | `store_info_section = ""` - Empty store section in prompt |
-| `service.py:491` | `store_name = business_name` - Use AI-determined name |
-| `router.py:767` | `store_context = None` - Same for regenerate |
-
-**Result:** Each URL scrape is fully isolated. Scraping Edgars produces Edgars content only.
+**`_create_ad_sets()`:** Creates ad set records:
+- Maps business type to industry template
+- Generates AI images via Gemini with brand references (uniforms, vehicles, logo)
+- Uploads to Cloudinary
+- Falls back to MediaGenerator if Gemini fails
 
 ---
 
-## 9. TRACKING PIXEL FILTERING
+### 7. Quick Launch Pipeline
 
-### Status: WORKING
-
-**Location:** `modules/stores/scraping_service.py`
-
-**Filtered Patterns:**
-```python
-invalid_patterns = [
-    'facebook.com/tr',      # Facebook pixel
-    'google-analytics.com', # Google Analytics
-    'doubleclick.net',      # Google Ads
-    'pixel',                # Generic pixels
-    'tracking',             # Tracking scripts
-    'beacon',               # Beacons
-    '1x1',                  # 1x1 pixel images
-    'spacer',               # Spacer images
-    '.gif',                 # Often tracking GIFs
-    'analytics',            # Analytics
-    'stat',                 # Statistics
-    'counter',              # Counters
-    'noscript'              # Noscript fallbacks
-]
-```
-
----
-
-## SUMMARY TABLE
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Occasion-based targeting (B2C) | WORKING | Back-to-school, life events, demographics |
-| Logo extraction | WORKING | WordPress, OG image fallback |
-| Logo in generated images | WORKING | Passed as reference to Gemini |
-| Brand color from logo | WORKING | Vision AI extraction |
-| WordPress color filtering | WORKING | Skips preset colors |
-| Uniform identification | WORKING | Vision AI finds uniform images |
-| Uniform images to Gemini | WORKING | As reference images |
-| Vehicle identification | WORKING | Vision AI finds vehicle images |
-| Vehicle images to Gemini | WORKING | As reference images |
-| Equipment identification | WORKING | Lower priority |
-| Gemini image generation | WORKING | `gemini-2.5-flash-image` |
-| Gemini integrated with campaign service | WORKING | Primary generator in `_create_ad_sets()` |
-| Cloudinary upload for Gemini images | WORKING | Auto-uploads after generation |
-| Tracking pixel filtering | WORKING | Facebook, GA, etc. |
-| Campaign data isolation | WORKING | No store data leakage |
-| **Phase 1: Brand Intelligence** | **WORKING** | **Complete brand DNA extraction** |
-| BrandDNAExtractor | WORKING | Orchestrates complete brand analysis |
-| AssetCategorizer | WORKING | Categorizes all images by type |
-| VisualStyleAnalyzer | WORKING | Extracts photography/design style |
-| Style-matched prompts | WORKING | Included in Gemini generation |
-
----
-
-## RECENTLY COMPLETED
-
-### Phase 1: Brand Intelligence Module (DONE)
-
-**Location:** `modules/brand_intelligence/`
-
-**New Components:**
-
-1. **BrandDNAExtractor** (`brand_dna_extractor.py`)
-   - Main orchestrator for brand analysis
-   - Extracts complete brand identity from website
-   - Combines asset categorization + visual style analysis
-   - Returns ready-to-use style prompts for image generation
-
-2. **AssetCategorizer** (`asset_categorizer.py`)
-   - Crawls multiple pages (home, about, services, gallery, etc.)
-   - Extracts ALL images from website
-   - Uses Vision AI to categorize: logo, team, vehicle, product, hero, office, equipment
-   - Filters tracking pixels and icons
-
-3. **VisualStyleAnalyzer** (`visual_style_analyzer.py`)
-   - Analyzes photography style (studio, candid, documentary, etc.)
-   - Extracts color treatment (saturated, muted, warm, cool)
-   - Determines composition style and lighting
-   - Extracts uniform and vehicle details
-   - Generates style-matched prompts
-
-**Brand DNA Output:**
-```python
-{
-    "business_identity": {
-        "company_name": "Securico",
-        "industry": "security_services",
-        "business_type": "armed_security",
-        "visual_requirements": {...}
-    },
-    "visual_style": {
-        "photography_style": "professional_studio",
-        "color_treatment": "high_contrast_saturated",
-        "uniform_details": {"colors": ["dark green"], "style": "tactical"},
-        "vehicle_details": {"types": ["trucks"], "color_scheme": "white with green"}
-    },
-    "brand_colors": ["#005B5C", "#FFFFFF"],
-    "categorized_images": {
-        "team": [...],
-        "vehicle": [...],
-        "product": [...]
-    },
-    "style_prompt": "PHOTOGRAPHY STYLE: Professional studio photography..."
-}
-```
-
-**Integration with Campaign Service:**
-- `_scrape_website()` now calls `BrandDNAExtractor`
-- Style prompt included in Gemini image generation
-- Categorized images passed as references
-
----
-
-### Gemini Integration with Campaign Service (DONE)
-
-**Location:** `modules/campaigns/service.py`
-
-**What Was Added:**
-
-1. **Import GeminiImageGenerator** (line 23):
-```python
-from modules.agents.gemini_image_generator import GeminiImageGenerator
-```
-
-2. **Import Vision AI functions** (lines 25-30):
-```python
-from modules.stores.scraping_service import _extract_images_from_website, _analyze_images_with_vision
-```
-
-3. **Initialize Gemini generator** (line 66):
-```python
-self.gemini_generator = GeminiImageGenerator()  # Primary image generator with reference images
-```
-
-4. **Vision AI analysis in `_scrape_website()`** (lines 270-311):
-   - Extracts images from website
-   - Analyzes with Vision AI
-   - Stores `uniform_images`, `vehicle_images`, `equipment_images` in scraped_data
-   - Extracts brand colors from logo
-
-5. **Gemini generation in `_create_ad_sets()`** (lines 653-756):
-   - Builds reference images list from uniform_images, vehicle_images
-   - Uses Gemini as primary generator with reference images
-   - Falls back to MediaGenerator if Gemini fails
-   - Uploads generated images to Cloudinary
+**File:** `modules/campaigns/router.py` — `POST /api/url-campaigns/quick-launch`
 
 **Flow:**
-```
-1. _scrape_website() calls Vision AI
-   → Returns: uniform_images, vehicle_images, logo_url, brand_color
+1. Scrape URL -> create campaign with brand analysis
+2. Generate ad content (copy + images for buyer persona)
+3. Select Facebook Page (top performer by CTR/conversion or fallback)
+4. Create Meta Campaign (lifetime budget with dayparting or daily budget)
+5. For each ad set: build targeting spec -> create Meta ad set (with schedule if lifetime) -> create Meta ads
+6. Register with scheduler for 24/7 optimization
+7. Create notification
 
-2. _create_ad_sets() uses Gemini
-   → Passes: logo_url + uniform_images + vehicle_images as references
-   → Generates: Image matching actual uniforms/vehicles from website
-   → Uploads: To Cloudinary
-```
-
----
-
-## RECENTLY COMPLETED (Jan 30, 2026)
-
-### Media Generator Pipeline Improvements
-
-**Test Script:** `test_2adsets_securesights.py` (usage: `python test_2adsets_securesights.py [website_url]`)
-
-| Feature | Status | Details |
-|---------|--------|---------|
-| Screenshot cropping | DONE | Full-page screenshots split into header (500px) + 3 content sections (1500px each) so Gemini can see fine details (logos, uniforms, etc.) |
-| Logo extraction from HTML | DONE | BeautifulSoup scraping with priority: header/nav "logo" imgs > logo-class links > logo-class imgs > first header img > favicon fallback |
-| Lazy-loading handling | DONE | Prefers `data-src`/`data-lazy-src` over `src`, skips `data:` URIs, filters loader/spinner/placeholder filenames |
-| PIL logo overlay | DONE | Real logo from website overlaid by PIL at proportional size (~8% height, ~20% width) instead of Gemini-generated distorted logos |
-| Cropped logo fallback | DONE | If no logo URL found in HTML, crops top-left 350x100px of screenshot as logo |
-| Conditional logo instructions | DONE | If PIL logo available: tell Gemini "no standalone logos". If not: tell Gemini "include logo from screenshot" |
-| Industry-aware ad angles | DONE | "Product Showcase" and "Customer Experience" with dynamic descriptions using industry field (no more "Technology Showcase" for fashion stores) |
-| Modern ad composer | DONE | `compose_modern_ad_image()` in `ad_image_composer.py` - gradient overlay, word-wrapped headline, bullet points, rounded CTA button |
-| OpenRouter for AdCreativeAgent | DONE | Routes Claude (`anthropic/claude-sonnet-4`) and GPT-4o (`openai/gpt-4o`) through single OpenRouter API key. No more separate Anthropic/OpenAI keys needed |
-| Store ad API endpoint | DONE | `POST /generate-store-ad` in `router.py` for store-based ad generation |
-
-**Tested Websites:**
-| Website | Logo Found | Results |
-|---------|-----------|---------|
-| safeguard.co.zw | `SAFEGUARD-LOGO-1-1-1.png` (header img with "logo" attr) | Uniforms, vehicles, yellow brand color correct |
-| fawcetts.co.zw | Found via header/nav | Uniforms improved with cropped sections |
-| edgarsstores.co.zw | `logo-retina.png` (header img) | Fashion store, red accent, proper ad angles |
-| webzim.co.zw | `webzim-6.png` (first img in header - Priority 4) | Green accent, server rooms, logo overlay correct |
-| zimswitch.co.zw | Favicon fallback (SVG-only logo) | Small but correct logo |
+**Budget modes:**
+- `lifetime` (default): Converts daily to lifetime, applies industry dayparting schedule
+- `daily`: Standard daily budget, no scheduling
 
 ---
 
-## NEXT STEPS
+### 8. Dayparting Service
 
-| Step | Priority | Description |
-|------|----------|-------------|
-| Port pipeline to production agents | HIGH | Move screenshot cropping, logo extraction, and industry-aware angles from `test_2adsets_securesights.py` into `media_generator_agent.py` and `gemini_image_generator.py` |
-| Update Cloudinary API secret | HIGH | Current secret is stale - uploads fail. User must update manually in `.env` and Render |
-| Deploy to Render | HIGH | Push updated code to production server |
-| Start Redis locally | MEDIUM | Currently disabled (`localhost:6379` refused) - caching not working |
-| SVG logo rendering | LOW | PIL can't render SVG logos - currently falls back to favicon. Could use `cairosvg` for SVG-to-PNG conversion |
-| Batch generation | MEDIUM | Generate all ad set images in parallel |
-| Retry logic | MEDIUM | Handle API failures gracefully |
-| Aspect ratio options | LOW | 1:1, 16:9, 9:16 for different placements |
-| Multiple image variants | LOW | A/B testing with different images |
+**File:** `modules/marketing/dayparting_service.py`
+
+**How it works:**
+- 79 industry keywords mapped to 11 schedule profiles
+- `get_schedule_for_industry(industry, business_type)` returns optimal time blocks
+- `build_adset_schedule_params()` creates Meta API params: `lifetime_budget`, `end_time`, `pacing_type`, `adset_schedule`
+- Optional: `generate_schedule_with_ai()` uses LLM for custom schedules
 
 ---
 
-## TEST RESULTS
+### 9. Monitor Optimizer Agent (Rules Engine)
 
-### Test 1: Securico (Security Company)
-```
-URL: https://securico.co.zw
-Brand Colors: #005B5C, #FFFFFF, #4B7F99
-Logo: Shield with globe design
-Uniforms: 1 image found (dark green tactical)
-Vehicles: 2 images found (white trucks with green branding)
-Image Generation: SUCCESS
-Output: generated_images/securico_co_zw_ad.png
-```
+**File:** `modules/agents/monitor_optimizer_agent.py`
 
-### Test 2: Safeguard (Security Company)
-```
-URL: https://safeguard.co.zw
-Brand Colors: #FFFF00, #000000
-Logo: Bold "SAFeguard" yellow/black triangular
-Uniforms: Not detected (none on website)
-Vehicles: Not detected (none on website)
-Image Generation: SUCCESS (with logo only)
-Output: generated_images/safeguard_co_zw_ad.png
-```
+**Rule templates:**
+| Template | Condition | Action |
+|----------|-----------|--------|
+| `scale_winning_ads` | ROAS >= target x 1.25 for 3 days | +20% budget |
+| `kill_underperformers` | CPA > 2x target, 0 purchases after 2000 impressions | -50% budget |
+| `creative_fatigue` | Frequency > 3, CTR decline > 30% over 3 days | Pause |
+| `creative_fatigue_refresh` | Same as fatigue | Full creative refresh |
+| `scale_high_lead_quality` | Lead score > 70, 5+ hot leads | +15% budget |
+
+**Computed metrics:**
+- `ctr_decline_pct`: Last 3 days CTR vs previous 3 days
+- `lead_quality_score`: Weighted average from WhatsApp lead data
+
+**Creative refresh process:**
+1. Pause fatigued ad
+2. AdCopyAgent generates new headline, primary text, description
+3. MediaGeneratorAgent generates new brand-aware image
+4. Create new Meta ad in same ad set (ACTIVE)
+5. Old ad stays PAUSED
+
+**Lead quality signal:**
+- Queries WhatsAppLead model for 7-day window
+- Categories: HOT (70+), WARM (40-69), COOL (20-39), COLD (<20)
+- Returns average score, category counts, total leads
 
 ---
 
-## FILES REFERENCE
+### 10. Tiered Scheduler
 
+**File:** `modules/agents/scheduler.py`
+
+**How it works:**
+- Background thread with configurable interval (default: 15 min)
+- Uses `_run_count` modular arithmetic for tiered execution
+- Auto-starts on app boot, registers all connected ad accounts
+- Graceful shutdown on app stop
+
+| Tier | Frequency | Tasks |
+|------|-----------|-------|
+| 1 | Every 15 min | Rules engine for all accounts + micro-strategy cycle |
+| 2 | Every 6 hr | Sync insights from Meta API (3-day window) |
+| 3 | Every 24 hr | Performance summary + lead quality check + daily notification |
+| 4 | Every 7 days | Audience refinement + weekly report + weekly notification |
+
+---
+
+### 11. Insights Service
+
+**File:** `modules/marketing/insights_service.py`
+
+| Function | Purpose |
+|----------|---------|
+| `sync_ad_insights()` | Fetch insights for single ad from Meta API |
+| `sync_insights_background()` | Background task for bulk sync |
+| `sync_insights_for_all_accounts()` | Iterate all connected accounts, sync all ads |
+| `get_demographic_breakdown()` | Age x gender breakdown for audience refinement |
+
+---
+
+### 12. Meta Targeting Service
+
+**File:** `modules/marketing/meta_targeting_service.py`
+
+| Function | Purpose |
+|----------|---------|
+| `validate_interests()` | Search Meta Interest taxonomy for each tag |
+| `get_reach_estimate()` | Size audience with targeting spec |
+| `build_targeting_spec()` | Construct Meta-compatible targeting JSON |
+| `create_custom_audience()` | SHA256 hash phone numbers, batch upload to Meta |
+| `create_lookalike_audience()` | Create lookalike from source (1%-20% ratio) |
+
+---
+
+### 13. Weekly Report Generator
+
+**File:** `modules/agents/report_generator.py`
+
+**How it works:**
+1. Aggregates 7 days of MetaAdInsight data per ad account
+2. Calculates: total spend, impressions, clicks, CTR, CPC, conversions, ROAS
+3. Identifies top 5 and worst 5 ads by CTR
+4. Builds daily breakdown with spend/click trends
+5. Computes week-over-week changes
+6. LLM generates narrative summary with actionable recommendations
+
+---
+
+### 14. Keyword Intelligence Agent
+
+**File:** `modules/agents/keyword_intelligence_agent.py`
+
+**How it works:**
+1. Primary: DataForSEO API (search volume, CPC, competition, trends)
+2. Fallback: Google Autocomplete suggestions
+3. LLM clusters keywords by intent: informational, commercial, transactional, navigational
+4. Returns keyword groups with metrics for ad targeting
+
+---
+
+### 15. Notification System Integration
+
+The scheduler creates notifications at key moments:
+- **Daily (Tier 3):** Performance summary with lead quality metrics
+- **Weekly (Tier 4):** Full report with spend, clicks, conversions, CTR
+- **Quick Launch:** Campaign published notification with ad set/ads counts
+- **Creative Refresh:** When fatigue detected and new creative created
+
+---
+
+## Frontend Pages
+
+| Page | File | Route |
+|------|------|-------|
+| Quick Launch | `pages/marketing/QuickLaunch.tsx` | `/:userId/marketing/quick-launch` |
+| Lead Scoring | `pages/marketing/LeadScoring.tsx` | `/:userId/marketing/lead-scoring` |
+
+**Quick Launch UI:** URL input, store/account IDs, budget, goal selector, country picker, demographics, auto-optimizer toggle. Shows 4-stage progress animation during launch. Result view with ad sets/ads counts and Meta campaign ID.
+
+**Lead Scoring UI:** Summary cards (total, hot, warm, cool, cold + avg score). Funnel visualization with proportional bars. Filterable table with score bars, status badges, interests tags.
+
+---
+
+## File Reference
+
+### Core Pipeline
 | File | Purpose |
 |------|---------|
-| `modules/stores/scraping_service.py` | Website scraping, Vision AI analysis |
-| `modules/agents/ad_creative_agent.py` | Ad copy and image prompt generation (via OpenRouter) |
-| `modules/agents/gemini_image_generator.py` | Gemini image generation with references |
-| `modules/agents/ad_image_composer.py` | PIL-based ad composition (text overlays, logo, CTA button) |
-| `modules/agents/media_generator_agent.py` | Full media generation pipeline |
-| `modules/agents/router.py` | API endpoints (includes `/generate-store-ad`) |
-| `modules/openrouter/service.py` | OpenRouter API client |
-| `modules/openrouter/langchain_adapter.py` | LangChain-compatible OpenRouter adapter |
-| `modules/campaigns/service.py` | Campaign creation, ad set generation |
-| `modules/campaigns/router.py` | Campaign API endpoints |
-| `test_2adsets_securesights.py` | Full pipeline test (any website URL) |
-| `docs/AD_CREATIVE_SYSTEM.md` | System documentation |
+| `modules/campaigns/router.py` | Quick Launch endpoint, campaign publishing |
+| `modules/campaigns/service.py` | Content generation, ad set creation |
+| `modules/campaigns/schemas.py` | QuickLaunchRequest/Response schemas |
+
+### AI Agents
+| File | Purpose |
+|------|---------|
+| `modules/agents/market_research_agent.py` | Market research + Ad Library |
+| `modules/agents/creative_strategist_agent.py` | Audience generation + validation + refinement |
+| `modules/agents/ad_copy_agent.py` | Ad copy generation |
+| `modules/agents/media_generator_agent.py` | Image/video generation with brand awareness |
+| `modules/agents/monitor_optimizer_agent.py` | Rules engine + creative refresh + lead scoring |
+| `modules/agents/keyword_intelligence_agent.py` | Keyword research |
+| `modules/agents/report_generator.py` | Weekly performance reports |
+| `modules/agents/scheduler.py` | Tiered background scheduler |
+| `modules/agents/router.py` | All agent API endpoints |
+
+### Marketing Services
+| File | Purpose |
+|------|---------|
+| `modules/marketing/insights_service.py` | Meta insights sync |
+| `modules/marketing/meta_targeting_service.py` | Interest validation, audiences |
+| `modules/marketing/dayparting_service.py` | Ad scheduling by industry |
+| `modules/marketing/router.py` | Marketing API endpoints |
+
+### Brand Intelligence
+| File | Purpose |
+|------|---------|
+| `modules/brand_intelligence/brand_dna_extractor.py` | Complete brand identity extraction |
+| `modules/brand_intelligence/asset_categorizer.py` | Image categorization |
+| `modules/brand_intelligence/visual_style_analyzer.py` | Photography/design style analysis |
+
+### WhatsApp
+| File | Purpose |
+|------|---------|
+| `modules/whatsapp/router.py` | Lead analytics endpoint |
+
+### App
+| File | Purpose |
+|------|---------|
+| `main.py` | Scheduler auto-start/stop on app lifecycle |

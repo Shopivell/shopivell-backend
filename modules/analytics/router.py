@@ -634,3 +634,317 @@ async def create_exploration(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating exploration: {str(e)}"
         )
+
+
+# =============================================================================
+# PRODUCT ANALYTICS ENDPOINTS
+# =============================================================================
+
+@analytics_router.post("/products/events")
+def track_product_event(
+    product_id: uuid.UUID,
+    event_type: str = Query(..., description="Event type: view, click, add_to_cart, purchase, wishlist"),
+    store_id: uuid.UUID = Query(...),
+    customer_id: uuid.UUID = Query(None),
+    session_id: str = Query(None),
+    source: str = Query("storefront"),
+    db: Session = Depends(get_db)
+):
+    """Track a product event (view, click, add_to_cart, purchase)."""
+    from .models import ProductEvent
+
+    event = ProductEvent(
+        store_id=store_id,
+        product_id=product_id,
+        event_type=event_type,
+        customer_id=customer_id,
+        session_id=session_id,
+        source=source,
+    )
+    db.add(event)
+    db.commit()
+
+    # Also update daily metrics
+    _update_daily_metrics(db, store_id, product_id, event_type)
+
+    return {"success": True, "event_id": str(event.id)}
+
+
+@analytics_router.post("/products/events/batch")
+def track_product_events_batch(
+    events: list,
+    db: Session = Depends(get_db)
+):
+    """Track multiple product events at once."""
+    from .models import ProductEvent
+
+    created = []
+    for ev in events:
+        event = ProductEvent(
+            store_id=ev.get("store_id"),
+            product_id=ev.get("product_id"),
+            event_type=ev.get("event_type"),
+            customer_id=ev.get("customer_id"),
+            session_id=ev.get("session_id"),
+            source=ev.get("source", "storefront"),
+        )
+        db.add(event)
+        created.append(event)
+
+    db.commit()
+
+    # Update daily metrics for each unique product
+    seen = set()
+    for ev in events:
+        key = (str(ev.get("store_id")), str(ev.get("product_id")), ev.get("event_type"))
+        if key not in seen:
+            _update_daily_metrics(db, ev.get("store_id"), ev.get("product_id"), ev.get("event_type"))
+            seen.add(key)
+
+    return {"success": True, "tracked": len(created)}
+
+
+@analytics_router.get("/products/{store_id}/overview")
+def get_product_analytics_overview(
+    store_id: uuid.UUID,
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db)
+):
+    """
+    Get product analytics overview for a store.
+    Returns top products, totals, and trends.
+    """
+    from .models import ProductMetricsDaily
+    from modules.products.models import Product
+
+    start_date = (datetime.utcnow() - timedelta(days=days)).date()
+
+    # Get aggregated metrics per product
+    product_metrics = db.query(
+        ProductMetricsDaily.product_id,
+        func.sum(ProductMetricsDaily.views).label("total_views"),
+        func.sum(ProductMetricsDaily.clicks).label("total_clicks"),
+        func.sum(ProductMetricsDaily.add_to_cart).label("total_add_to_cart"),
+        func.sum(ProductMetricsDaily.purchases).label("total_purchases"),
+        func.sum(ProductMetricsDaily.revenue).label("total_revenue"),
+        func.sum(ProductMetricsDaily.units_sold).label("total_units_sold"),
+    ).filter(
+        ProductMetricsDaily.store_id == store_id,
+        ProductMetricsDaily.date >= start_date,
+    ).group_by(
+        ProductMetricsDaily.product_id
+    ).all()
+
+    # Get store totals
+    total_views = sum(m.total_views or 0 for m in product_metrics)
+    total_clicks = sum(m.total_clicks or 0 for m in product_metrics)
+    total_add_to_cart = sum(m.total_add_to_cart or 0 for m in product_metrics)
+    total_purchases = sum(m.total_purchases or 0 for m in product_metrics)
+    total_revenue = sum(float(m.total_revenue or 0) for m in product_metrics)
+
+    # Get product details for top products
+    product_ids = [m.product_id for m in product_metrics]
+    products_map = {}
+    if product_ids:
+        products = db.query(Product).filter(Product.id.in_(product_ids)).all()
+        products_map = {str(p.id): p for p in products}
+
+    # Build top products list (sorted by revenue)
+    top_products = []
+    for m in sorted(product_metrics, key=lambda x: float(x.total_revenue or 0), reverse=True)[:20]:
+        product = products_map.get(str(m.product_id))
+        if product:
+            conversion_rate = (float(m.total_purchases or 0) / float(m.total_views or 1)) * 100
+            top_products.append({
+                "product_id": str(m.product_id),
+                "title": product.title,
+                "image_url": product.image_url,
+                "category": product.category,
+                "price": float(product.price) if product.price else 0,
+                "views": int(m.total_views or 0),
+                "clicks": int(m.total_clicks or 0),
+                "add_to_cart": int(m.total_add_to_cart or 0),
+                "purchases": int(m.total_purchases or 0),
+                "revenue": float(m.total_revenue or 0),
+                "units_sold": int(m.total_units_sold or 0),
+                "conversion_rate": round(conversion_rate, 2),
+            })
+
+    return {
+        "store_id": str(store_id),
+        "period_days": days,
+        "totals": {
+            "views": total_views,
+            "clicks": total_clicks,
+            "add_to_cart": total_add_to_cart,
+            "purchases": total_purchases,
+            "revenue": round(total_revenue, 2),
+            "conversion_rate": round((total_purchases / max(total_views, 1)) * 100, 2),
+        },
+        "top_products": top_products,
+    }
+
+
+@analytics_router.get("/products/{store_id}/trends")
+def get_product_trends(
+    store_id: uuid.UUID,
+    days: int = Query(30, ge=1, le=365),
+    product_id: uuid.UUID = Query(None, description="Filter by specific product"),
+    db: Session = Depends(get_db)
+):
+    """Get daily trends for product metrics (views, purchases, revenue over time)."""
+    from .models import ProductMetricsDaily
+
+    start_date = (datetime.utcnow() - timedelta(days=days)).date()
+
+    query = db.query(
+        ProductMetricsDaily.date,
+        func.sum(ProductMetricsDaily.views).label("views"),
+        func.sum(ProductMetricsDaily.clicks).label("clicks"),
+        func.sum(ProductMetricsDaily.add_to_cart).label("add_to_cart"),
+        func.sum(ProductMetricsDaily.purchases).label("purchases"),
+        func.sum(ProductMetricsDaily.revenue).label("revenue"),
+        func.sum(ProductMetricsDaily.units_sold).label("units_sold"),
+    ).filter(
+        ProductMetricsDaily.store_id == store_id,
+        ProductMetricsDaily.date >= start_date,
+    )
+
+    if product_id:
+        query = query.filter(ProductMetricsDaily.product_id == product_id)
+
+    daily_data = query.group_by(ProductMetricsDaily.date).order_by(ProductMetricsDaily.date).all()
+
+    trends = []
+    for row in daily_data:
+        trends.append({
+            "date": row.date.isoformat(),
+            "views": int(row.views or 0),
+            "clicks": int(row.clicks or 0),
+            "add_to_cart": int(row.add_to_cart or 0),
+            "purchases": int(row.purchases or 0),
+            "revenue": float(row.revenue or 0),
+            "units_sold": int(row.units_sold or 0),
+        })
+
+    return {
+        "store_id": str(store_id),
+        "period_days": days,
+        "product_id": str(product_id) if product_id else None,
+        "trends": trends,
+    }
+
+
+@analytics_router.get("/products/{store_id}/product/{product_id}")
+def get_single_product_analytics(
+    store_id: uuid.UUID,
+    product_id: uuid.UUID,
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db)
+):
+    """Get detailed analytics for a single product."""
+    from .models import ProductMetricsDaily, ProductEvent
+    from modules.products.models import Product
+
+    product = db.query(Product).filter(Product.id == product_id, Product.store_id == store_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    start_date = (datetime.utcnow() - timedelta(days=days)).date()
+
+    # Daily metrics
+    daily_data = db.query(ProductMetricsDaily).filter(
+        ProductMetricsDaily.product_id == product_id,
+        ProductMetricsDaily.store_id == store_id,
+        ProductMetricsDaily.date >= start_date,
+    ).order_by(ProductMetricsDaily.date).all()
+
+    # Totals
+    total_views = sum(d.views or 0 for d in daily_data)
+    total_clicks = sum(d.clicks or 0 for d in daily_data)
+    total_add_to_cart = sum(d.add_to_cart or 0 for d in daily_data)
+    total_purchases = sum(d.purchases or 0 for d in daily_data)
+    total_revenue = sum(float(d.revenue or 0) for d in daily_data)
+    total_units = sum(d.units_sold or 0 for d in daily_data)
+
+    # Source breakdown
+    source_breakdown = db.query(
+        ProductEvent.source,
+        func.count(ProductEvent.id).label("count"),
+    ).filter(
+        ProductEvent.product_id == product_id,
+        ProductEvent.store_id == store_id,
+        ProductEvent.created_at >= datetime.utcnow() - timedelta(days=days),
+    ).group_by(ProductEvent.source).all()
+
+    return {
+        "product": {
+            "id": str(product.id),
+            "title": product.title,
+            "image_url": product.image_url,
+            "category": product.category,
+            "price": float(product.price) if product.price else 0,
+            "status": product.status,
+        },
+        "period_days": days,
+        "totals": {
+            "views": total_views,
+            "clicks": total_clicks,
+            "add_to_cart": total_add_to_cart,
+            "purchases": total_purchases,
+            "revenue": round(total_revenue, 2),
+            "units_sold": total_units,
+            "conversion_rate": round((total_purchases / max(total_views, 1)) * 100, 2),
+            "cart_rate": round((total_add_to_cart / max(total_views, 1)) * 100, 2),
+        },
+        "daily": [
+            {
+                "date": d.date.isoformat(),
+                "views": d.views or 0,
+                "clicks": d.clicks or 0,
+                "add_to_cart": d.add_to_cart or 0,
+                "purchases": d.purchases or 0,
+                "revenue": float(d.revenue or 0),
+                "units_sold": d.units_sold or 0,
+            }
+            for d in daily_data
+        ],
+        "sources": [
+            {"source": s.source or "unknown", "count": s.count}
+            for s in source_breakdown
+        ],
+    }
+
+
+def _update_daily_metrics(db: Session, store_id, product_id, event_type: str, revenue: float = 0, units: int = 0):
+    """Update or create daily metrics for a product."""
+    from .models import ProductMetricsDaily
+
+    today = datetime.utcnow().date()
+
+    metrics = db.query(ProductMetricsDaily).filter(
+        ProductMetricsDaily.store_id == store_id,
+        ProductMetricsDaily.product_id == product_id,
+        ProductMetricsDaily.date == today,
+    ).first()
+
+    if not metrics:
+        metrics = ProductMetricsDaily(
+            store_id=store_id,
+            product_id=product_id,
+            date=today,
+        )
+        db.add(metrics)
+
+    if event_type == "view":
+        metrics.views = (metrics.views or 0) + 1
+    elif event_type == "click":
+        metrics.clicks = (metrics.clicks or 0) + 1
+    elif event_type == "add_to_cart":
+        metrics.add_to_cart = (metrics.add_to_cart or 0) + 1
+    elif event_type == "purchase":
+        metrics.purchases = (metrics.purchases or 0) + 1
+        metrics.revenue = (metrics.revenue or 0) + revenue
+        metrics.units_sold = (metrics.units_sold or 0) + (units or 1)
+
+    db.commit()

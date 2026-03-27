@@ -3,7 +3,7 @@
 
 from typing import Optional, Dict, Any
 from sqlalchemy import String, Boolean, DateTime, Integer, Float, Text, JSON, Index
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 import uuid

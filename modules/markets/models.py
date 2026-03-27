@@ -1,7 +1,7 @@
 # models.py
 from typing import Optional
 from sqlalchemy import String, Integer, Boolean, DateTime, ForeignKey, Text, Float
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import uuid

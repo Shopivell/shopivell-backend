@@ -757,23 +757,21 @@ Return ONLY valid JSON, no other text.
             return {}
 
     def _search_competitors(self, business_type: str, location: str, products: List[str]) -> List[Dict[str, Any]]:
-        """Search for real competitors in the market"""
+        """Search for real competitors in the market using Tavily (basic)."""
         if not self.tavily:
             return []
 
         try:
-            # Build search query
             products_str = ", ".join(products[:3]) if products else business_type
             query = f"{business_type} companies {location} {products_str} competitors"
 
-            # Check cache
             cache_key = generate_cache_key(query, prefix="mra:competitors:")
             cached_result = self.cache.get(cache_key)
             if cached_result is not None:
                 logger.info(f"[MarketResearchAgent] Cache HIT for competitor search")
                 return cached_result
 
-            logger.info(f"[MarketResearchAgent] Searching competitors: {query}")
+            logger.info(f"[MarketResearchAgent] Searching competitors via Tavily: {query}")
 
             search_result = self.tavily.search(
                 query=query,
@@ -786,7 +784,8 @@ Return ONLY valid JSON, no other text.
                 competitors.append({
                     "name": result.get("title", ""),
                     "url": result.get("url", ""),
-                    "description": result.get("content", "")[:500]
+                    "description": result.get("content", "")[:500],
+                    "source": "tavily"
                 })
 
             self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
@@ -795,6 +794,106 @@ Return ONLY valid JSON, no other text.
         except Exception as e:
             logger.error(f"[MarketResearchAgent] Competitor search error: {e}")
             return []
+
+    def _search_competitors_enhanced(
+        self,
+        business_type: str,
+        location: str,
+        products: List[str],
+        domain: str = None,
+        country_code: str = "US"
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhanced competitor search: tries DataForSEO (deep, data-backed) first,
+        falls back to Tavily (basic search) if DataForSEO is not configured.
+
+        DataForSEO provides: actual keyword overlap, traffic estimates, competitor domains
+        ranked by intersection score — far richer than a Google search.
+        """
+        # Try DataForSEO-backed competitive intelligence first
+        if domain:
+            try:
+                from .competitive_intelligence_agent import CompetitiveIntelligenceAgent, DATAFORSEO_AVAILABLE
+                if DATAFORSEO_AVAILABLE:
+                    logger.info(f"[MarketResearchAgent] Using DataForSEO for competitor analysis: {domain}")
+
+                    agent = CompetitiveIntelligenceAgent()
+
+                    # Step 1: Get domain categories
+                    categories = agent.get_domain_categories(domain, country_code)
+
+                    # Step 2: Discover competitors via keyword overlap
+                    ci_competitors = agent.discover_competitors(domain, country_code, limit=10)
+
+                    if ci_competitors:
+                        # Step 3: Get top competitor keywords
+                        top_domains = [c["domain"] for c in ci_competitors[:5]]
+                        all_keywords, top_keywords = agent.analyze_competitor_keywords(
+                            top_domains, country_code
+                        )
+
+                        # Enrich with Tavily summaries
+                        if self.tavily:
+                            ci_competitors = agent._enrich_single_competitor(ci_competitors[0])
+                            # Just enrich the top one for efficiency
+
+                        # Format into standard competitor list
+                        competitors = []
+                        for comp in ci_competitors:
+                            competitors.append({
+                                "name": comp.get("domain", ""),
+                                "url": f"https://{comp.get('domain', '')}",
+                                "description": comp.get("tavily_summary", "")[:500] if comp.get("tavily_summary") else "",
+                                "source": "dataforseo",
+                                "organic_keywords": comp.get("organic_keywords"),
+                                "organic_traffic": comp.get("organic_traffic"),
+                                "intersections": comp.get("intersections"),
+                                "competition_score": comp.get("competition_score")
+                            })
+
+                        # Add keyword intelligence as extra data
+                        if top_keywords:
+                            competitors.append({
+                                "name": "__keyword_opportunities__",
+                                "source": "dataforseo_keywords",
+                                "keywords": [
+                                    {
+                                        "keyword": kw.get("keyword"),
+                                        "search_volume": kw.get("search_volume"),
+                                        "cpc": kw.get("cpc"),
+                                        "source_domain": kw.get("source_domain")
+                                    }
+                                    for kw in top_keywords[:10]
+                                ]
+                            })
+
+                        # Add category data
+                        if categories:
+                            competitors.append({
+                                "name": "__business_categories__",
+                                "source": "dataforseo_categories",
+                                "categories": [
+                                    {"category": c.get("category"), "traffic": c.get("organic_traffic")}
+                                    for c in categories[:5]
+                                ]
+                            })
+
+                        logger.info(
+                            f"[MarketResearchAgent] DataForSEO found {len(ci_competitors)} competitors "
+                            f"+ {len(top_keywords)} keyword opportunities for {domain}"
+                        )
+
+                        # Cache the result
+                        cache_key = generate_cache_key(f"ci:{domain}:{country_code}", prefix="mra:competitors:")
+                        self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
+
+                        return competitors
+
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] DataForSEO competitor analysis failed, falling back to Tavily: {e}")
+
+        # Fallback to basic Tavily search
+        return self._search_competitors(business_type, location, products)
 
     def _search_industry_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
         """Search for real industry trends"""
@@ -921,7 +1020,8 @@ Return ONLY valid JSON, no other text.
         campaign: Campaign,
         source_url: str = None,
         deep_scrape: bool = True,
-        extract_structure: bool = True
+        extract_structure: bool = True,
+        keyword_data: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Conduct comprehensive market research with REAL data.
@@ -931,6 +1031,8 @@ Return ONLY valid JSON, no other text.
             source_url: Optional URL to scrape for business information
             deep_scrape: Whether to scrape multiple pages (default: True)
             extract_structure: Whether to extract structured data using AI (default: True)
+            keyword_data: Optional keyword intelligence from DataForSEO/autocomplete with
+                          search volume, CPC, competition, and intent clusters
 
         Returns:
             Dict containing research results with enhanced structured data
@@ -989,11 +1091,77 @@ Return ONLY valid JSON, no other text.
         from datetime import datetime
         current_year = str(datetime.now().year)
 
+        # Extract domain from source_url for DataForSEO-backed competitor analysis
+        domain = None
+        if source_url:
+            parsed_url = urlparse(source_url)
+            domain = parsed_url.netloc.replace("www.", "")
+
+        # Determine country code from location
+        location_upper = location.upper() if location else ""
+        country_code = "US"  # Default
+        country_map = {
+            "ZIMBABWE": "ZW", "SOUTH AFRICA": "ZA", "BOTSWANA": "BW",
+            "ZAMBIA": "ZM", "MOZAMBIQUE": "MZ", "NAMIBIA": "NA",
+            "KENYA": "KE", "NIGERIA": "NG", "GHANA": "GH", "TANZANIA": "TZ",
+            "UNITED STATES": "US", "UNITED KINGDOM": "GB", "CANADA": "CA",
+            "AUSTRALIA": "AU", "GERMANY": "DE", "FRANCE": "FR", "INDIA": "IN"
+        }
+        for country_name, code in country_map.items():
+            if country_name in location_upper:
+                country_code = code
+                break
+
         competitors, trends, audience_data = await asyncio.gather(
-            asyncio.to_thread(self._search_competitors, business_type, location, products),
+            asyncio.to_thread(
+                self._search_competitors_enhanced,
+                business_type, location, products, domain, country_code
+            ),
             asyncio.to_thread(self._search_industry_trends, business_type, current_year),
             asyncio.to_thread(self._search_audience_insights, target_audience_str, business_type),
         )
+
+        # Step 5.5: Fetch competitor ads from Meta Ad Library (if access token available)
+        ad_library_data = []
+        try:
+            access_token = os.getenv("META_ACCESS_TOKEN") or os.getenv("FACEBOOK_ACCESS_TOKEN")
+            if access_token:
+                from modules.marketing.router import fetch_ads_library
+                # Build search terms from products/services and company name
+                search_keywords = []
+                if products:
+                    search_keywords.extend(products[:3])
+                if structured_data.get("company_name"):
+                    search_keywords.append(structured_data["company_name"])
+                if business_type and business_type != "business":
+                    search_keywords.append(business_type)
+
+                search_term = " ".join(search_keywords[:3]) if search_keywords else business_type
+
+                # Determine country from location
+                country_map = {"zimbabwe": "ZW", "south africa": "ZA", "kenya": "KE", "nigeria": "NG"}
+                ad_countries = ["ZW"]  # Default
+                if location:
+                    for name, code in country_map.items():
+                        if name in location.lower():
+                            ad_countries = [code]
+                            break
+
+                logger.info(f"[MarketResearchAgent] Fetching Ad Library ads for: '{search_term}' in {ad_countries}")
+                try:
+                    ad_lib_result = fetch_ads_library(
+                        access_token=access_token,
+                        search_term=search_term,
+                        ad_type="ALL",
+                        limit=10,
+                        ad_reached_countries=ad_countries
+                    )
+                    ad_library_data = ad_lib_result.get("data", [])
+                    logger.info(f"[MarketResearchAgent] Found {len(ad_library_data)} competitor ads in Ad Library")
+                except Exception as e:
+                    logger.warning(f"[MarketResearchAgent] Ad Library fetch failed: {e}")
+        except Exception as e:
+            logger.debug(f"[MarketResearchAgent] Ad Library not available: {e}")
 
         # Step 6: Build comprehensive prompt with REAL data including structured extraction
         prompt = ChatPromptTemplate.from_template("""
@@ -1024,6 +1192,9 @@ Statistics Found: {statistics}
 ## RAW WEBSITE CONTENT
 {website_content}
 
+## COMPETITOR ADS FROM META AD LIBRARY
+{ad_library_text}
+
 ## REAL COMPETITOR DATA (from web search)
 {competitor_data}
 
@@ -1032,6 +1203,9 @@ Statistics Found: {statistics}
 
 ## REAL AUDIENCE INSIGHTS (from web search)
 {audience_data}
+
+## KEYWORD INTELLIGENCE (search volume, CPC & competition data)
+{keyword_intelligence}
 
 ---
 
@@ -1060,6 +1234,7 @@ Based on the REAL DATA above, provide analysis in these sections:
 - Base each recommendation on the real data found
 - Include specific tactics for Facebook/Instagram ads
 - Suggest unique selling propositions based on competitor gaps
+- If keyword intelligence data is available, recommend which high-volume keywords to target in ads and which intent clusters (transactional, commercial, informational) to prioritize for different campaign objectives
 
 Format your response with clear section headers.
 """)
@@ -1079,6 +1254,20 @@ Format your response with clear section headers.
             f"- {a['title']}: {a['insight'][:200]}... (Source: {a['source']})"
             for a in audience_data[:5]
         ]) if audience_data else "No audience data found - provide general audience analysis"
+
+        # Format Ad Library data
+        ad_library_text = ""
+        if ad_library_data:
+            ad_entries = []
+            for ad in ad_library_data[:8]:
+                page_name = ad.get("page_name", "Unknown")
+                body = (ad.get("ad_creative_bodies") or [""])[0][:200] if ad.get("ad_creative_bodies") else ""
+                title = (ad.get("ad_creative_link_titles") or [""])[0][:100] if ad.get("ad_creative_link_titles") else ""
+                start = ad.get("ad_delivery_start_time", "")
+                ad_entries.append(f"- {page_name}: {title} | {body}... (Started: {start})")
+            ad_library_text = "\n".join(ad_entries)
+        else:
+            ad_library_text = "No competitor ads found in Meta Ad Library"
 
         # Format structured data for prompt
         services_text = ""
@@ -1125,6 +1314,44 @@ Format your response with clear section headers.
                 for s in all_stats[:10]
             ])
 
+        # Format keyword intelligence data
+        keyword_intel_text = "No keyword data available"
+        if keyword_data and keyword_data.get("success"):
+            kw_lines = []
+            kw_source = keyword_data.get("source", "unknown")
+            kw_lines.append(f"Source: {kw_source} | Total keywords found: {keyword_data.get('total_found', 0)}")
+
+            # Top keywords by search volume
+            top_keywords = keyword_data.get("keywords", [])[:15]
+            if top_keywords:
+                kw_lines.append("\nTop Keywords by Search Volume:")
+                for kw in top_keywords:
+                    vol = kw.get("search_volume")
+                    cpc = kw.get("cpc")
+                    comp = kw.get("competition_level") or kw.get("competition")
+                    vol_str = f"vol: {vol}" if vol is not None else "vol: N/A"
+                    cpc_str = f"CPC: ${cpc}" if cpc is not None else "CPC: N/A"
+                    comp_str = f"competition: {comp}" if comp else ""
+                    kw_lines.append(f"  - \"{kw.get('keyword', '')}\" ({vol_str}, {cpc_str}{', ' + comp_str if comp_str else ''})")
+
+            # Intent clusters
+            clusters = keyword_data.get("clusters", {})
+            if clusters:
+                kw_lines.append("\nKeyword Intent Clusters:")
+                for intent in ["transactional", "commercial", "informational", "navigational"]:
+                    cluster_kws = clusters.get(intent, [])
+                    if cluster_kws:
+                        names = [k.get("keyword", "") for k in cluster_kws[:5]]
+                        kw_lines.append(f"  {intent.title()} ({len(cluster_kws)} keywords): {', '.join(names)}")
+
+                recs = clusters.get("ad_recommendations", [])
+                if recs:
+                    kw_lines.append("\nKeyword-Based Ad Recommendations:")
+                    for rec in recs:
+                        kw_lines.append(f"  - {rec}")
+
+            keyword_intel_text = "\n".join(kw_lines)
+
         campaign_data = {
             "campaign_name": campaign.name,
             "business_type": business_type,
@@ -1141,9 +1368,11 @@ Format your response with clear section headers.
             "contact_info": contact_text or "Not found",
             "statistics": stats_text or "Not found",
             "website_content": website_data.get("content", "")[:3000] or "No website content available",
+            "ad_library_text": ad_library_text,
             "competitor_data": competitor_text,
             "trend_data": trend_text,
-            "audience_data": audience_text
+            "audience_data": audience_text,
+            "keyword_intelligence": keyword_intel_text
         }
 
         # Run the LLM chain
@@ -1185,6 +1414,7 @@ Format your response with clear section headers.
                     "competitors_found": len(competitors),
                     "trends_found": len(trends),
                     "audience_insights_found": len(audience_data),
+                    "ad_library_ads_found": len(ad_library_data),
                     "website_scraped": website_data.get("success", False),
                     "pages_scraped": multi_page_data.get("success_count", 1) if multi_page_data else 1,
                     "structured_data_extracted": bool(structured_data)
@@ -1208,7 +1438,13 @@ Format your response with clear section headers.
                     "call_to_actions": structured_data.get("call_to_actions", []),
                     "pricing_info": structured_data.get("pricing_info"),
                     "contact_info": all_contacts if all_contacts else website_data.get("contact_info", {}),
-                    "statistics": all_stats if all_stats else website_data.get("statistics", [])
+                    "statistics": all_stats if all_stats else website_data.get("statistics", []),
+                    "keyword_intelligence": {
+                        "source": keyword_data.get("source", "none") if keyword_data else "none",
+                        "total_found": keyword_data.get("total_found", 0) if keyword_data else 0,
+                        "top_keywords": keyword_data.get("keywords", [])[:20] if keyword_data else [],
+                        "clusters": keyword_data.get("clusters", {}) if keyword_data else {}
+                    }
                 },
                 "created_at": research.created_at.isoformat()
             }
@@ -1321,8 +1557,12 @@ async def research_website_directly(
     current_year = str(datetime.now().year)
     target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
 
+    # Extract domain for DataForSEO-backed competitor analysis
+    parsed_url = urlparse(url)
+    domain = parsed_url.netloc.replace("www.", "")
+
     competitors, trends, audience_insights = await asyncio.gather(
-        asyncio.to_thread(agent._search_competitors, industry, location, products),
+        asyncio.to_thread(agent._search_competitors_enhanced, industry, location, products, domain),
         asyncio.to_thread(agent._search_industry_trends, industry, current_year),
         asyncio.to_thread(agent._search_audience_insights, target_audience_str, industry),
     )

@@ -15,6 +15,7 @@ Features:
 import os
 import json
 import logging
+import asyncio
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
@@ -30,8 +31,34 @@ except ImportError:
     from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
 
+from pydantic import BaseModel, Field
+
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# --- Structured output models for ad copy ---
+
+class AdCopyHooks(BaseModel):
+    pattern_interrupt: str = ""
+    question: str = ""
+    social_proof: str = ""
+
+class AdCopyHeadline(BaseModel):
+    type: str = ""
+    text: str = ""
+
+class AdCopyPrimaryText(BaseModel):
+    short: str = ""
+    medium: str = ""
+    long: str = ""
+
+class AdCopyStructuredOutput(BaseModel):
+    hooks: dict = Field(default_factory=dict)
+    headlines: List[dict] = Field(default_factory=list)
+    primary_text: dict = Field(default_factory=dict)
+    descriptions: List[str] = Field(default_factory=list)
+    call_to_action: str = "Learn More"
 
 
 class AdCopyAgent:
@@ -74,6 +101,8 @@ Audience Type: {audience_type}
 PLATFORM: {platform}
 
 BRAND VOICE: {brand_voice}
+
+{creative_insights}
 
 ---
 
@@ -362,6 +391,30 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
         return response.strip()
 
+    def _parse_and_validate_ad_copy(self, response: str) -> Dict[str, Any]:
+        """Parse LLM response and validate with Pydantic. Returns validated dict or raises."""
+        cleaned = self._clean_json_response(response)
+
+        # Try Pydantic validation first
+        try:
+            validated = AdCopyStructuredOutput.model_validate_json(cleaned)
+            result = validated.model_dump()
+            result['validated'] = True
+            return result
+        except Exception:
+            pass
+
+        # Fallback: plain JSON parse
+        result = json.loads(cleaned)
+        # Ensure required fields exist
+        result.setdefault('hooks', {})
+        result.setdefault('headlines', [])
+        result.setdefault('primary_text', {})
+        result.setdefault('descriptions', [])
+        result.setdefault('call_to_action', 'Learn More')
+        result['validated'] = False
+        return result
+
     def _extract_statistics_string(self, statistics: List[Dict]) -> str:
         """Convert statistics list to readable string"""
         if not statistics:
@@ -394,250 +447,182 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
         return "\n".join(service_parts) if service_parts else "Quality products and services"
 
-    def _extract_product_keywords(self, research_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _extract_product_keywords_ai(self, research_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract specific product/service keywords from research data.
-        Returns actual product terms instead of generic industry categories.
+        Use AI to extract product/service keywords from research data.
+        Industry-agnostic — works for any business type without hardcoded mappings.
         """
         extracted = research_data.get('extracted_data', {})
         summary = research_data.get('research_summary', {})
 
-        # Common product keyword mappings
-        product_keywords = []
-        benefit_keywords = []
-
-        # Extract from services/products
+        company_name = summary.get('company_name', '')
+        industry = summary.get('industry', '')
         services = extracted.get('services_products', [])
-        for svc in services:
-            if isinstance(svc, dict):
-                desc = svc.get('description', '').lower()
-                name = svc.get('name', '').lower()
-
-                # Fashion/Clothing keywords
-                if any(kw in desc or kw in name for kw in ['fashion', 'clothing', 'clothes', 'apparel', 'wear', 'dress']):
-                    product_keywords.extend(['fashion', 'clothing', 'style'])
-                if any(kw in desc or kw in name for kw in ['footwear', 'shoes', 'boots']):
-                    product_keywords.append('footwear')
-                if any(kw in desc or kw in name for kw in ['accessories', 'jewelry', 'bags']):
-                    product_keywords.append('accessories')
-                if any(kw in desc or kw in name for kw in ['beauty', 'cosmetics', 'skincare']):
-                    product_keywords.append('beauty products')
-
-                # Fintech/Payment keywords
-                if any(kw in desc or kw in name for kw in ['payment', 'pay', 'transfer', 'transaction']):
-                    product_keywords.extend(['payments', 'money transfers'])
-                if any(kw in desc or kw in name for kw in ['atm', 'cash', 'withdrawal']):
-                    product_keywords.append('ATM services')
-                if any(kw in desc or kw in name for kw in ['pos', 'merchant', 'card']):
-                    product_keywords.append('card payments')
-                if any(kw in desc or kw in name for kw in ['mobile', 'p2p', 'instant']):
-                    product_keywords.append('instant transfers')
-                if any(kw in desc or kw in name for kw in ['online', 'e-commerce', 'ecommerce', 'gateway']):
-                    product_keywords.append('online payments')
-                if any(kw in desc or kw in name for kw in ['bulk', 'salary', 'disbursement', 'payroll']):
-                    product_keywords.append('bulk payments')
-
-                # Security/Surveillance keywords
-                if any(kw in desc or kw in name for kw in ['security', 'surveillance', 'cctv', 'camera', 'monitor']):
-                    product_keywords.extend(['security systems', 'surveillance'])
-                if any(kw in desc or kw in name for kw in ['alarm', 'access control', 'intrusion']):
-                    product_keywords.append('alarm systems')
-                if any(kw in desc or kw in name for kw in ['guard', 'patrol', 'protection']):
-                    product_keywords.append('security services')
-
-                # Technology/Software keywords
-                if any(kw in desc or kw in name for kw in ['software', 'app', 'platform', 'system']):
-                    product_keywords.append('software solutions')
-                if any(kw in desc or kw in name for kw in ['cloud', 'saas', 'hosting']):
-                    product_keywords.append('cloud services')
-                if any(kw in desc or kw in name for kw in ['invoice', 'invoicing', 'billing']):
-                    product_keywords.append('invoicing tools')
-                if any(kw in desc or kw in name for kw in ['crm', 'customer relationship', 'client management']):
-                    product_keywords.append('CRM')
-                if any(kw in desc or kw in name for kw in ['project management', 'task', 'collaboration']):
-                    product_keywords.append('project management')
-                if any(kw in desc or kw in name for kw in ['analytics', 'reporting', 'dashboard']):
-                    product_keywords.append('business analytics')
-
-                # Telecom keywords
-                if any(kw in desc or kw in name for kw in ['voice', 'call', 'sms', 'messaging']):
-                    product_keywords.append('voice and SMS')
-                if any(kw in desc or kw in name for kw in ['data', 'internet', 'connectivity', 'broadband']):
-                    product_keywords.append('data and internet')
-                if any(kw in desc or kw in name for kw in ['5g', '4g', 'lte', 'network']):
-                    product_keywords.append('mobile network')
-                if any(kw in desc or kw in name for kw in ['roaming', 'international']):
-                    product_keywords.append('international roaming')
-                if any(kw in desc or kw in name for kw in ['gaming', 'game', 'entertainment']):
-                    product_keywords.append('digital entertainment')
-                if any(kw in desc or kw in name for kw in ['esim', 'sim']):
-                    product_keywords.append('eSIM services')
-
-                # Healthcare/Pharma keywords
-                if any(kw in desc or kw in name for kw in ['medicine', 'pharmaceutical', 'drug', 'medication']):
-                    product_keywords.append('medicines')
-                if any(kw in desc or kw in name for kw in ['health', 'medical', 'healthcare']):
-                    product_keywords.append('healthcare services')
-                if any(kw in desc or kw in name for kw in ['distribution', 'delivery', 'supply chain']):
-                    product_keywords.append('distribution services')
-                if any(kw in desc or kw in name for kw in ['warehouse', 'storage', 'inventory']):
-                    product_keywords.append('warehousing')
-
-                # Service keywords
-                if any(kw in desc or kw in name for kw in ['finance', 'loan', 'credit', 'microfinance']):
-                    product_keywords.append('financing options')
-                if any(kw in desc or kw in name for kw in ['loyalty', 'rewards', 'club', 'membership']):
-                    benefit_keywords.append('loyalty rewards')
-
-                # Benefit keywords
-                if any(kw in desc for kw in ['secure', 'security', 'fraud', 'protect']):
-                    benefit_keywords.append('security')
-                if any(kw in desc for kw in ['instant', 'real-time', 'fast', 'quick']):
-                    benefit_keywords.append('instant processing')
-                if any(kw in desc for kw in ['interbank', 'any bank', 'interoperable']):
-                    benefit_keywords.append('interbank access')
-
-                # Quality/Value keywords
-                if 'quality' in desc:
-                    benefit_keywords.append('quality')
-                if 'competitive' in desc or 'value' in desc or 'affordable' in desc:
-                    benefit_keywords.append('great value')
-                if 'family' in desc or 'families' in desc:
-                    benefit_keywords.append('family-friendly')
-
-        # Extract from value propositions
         value_props = extracted.get('value_propositions', [])
-        for vp in value_props:
-            vp_lower = vp.lower()
-            if 'one-stop' in vp_lower or 'all-in-one' in vp_lower:
-                benefit_keywords.append('one-stop shop')
-            if 'family' in vp_lower:
-                benefit_keywords.append('whole family')
 
-        # Deduplicate
-        product_keywords = list(dict.fromkeys(product_keywords))
-        benefit_keywords = list(dict.fromkeys(benefit_keywords))
+        services_text = ', '.join([
+            s.get('name', '') if isinstance(s, dict) else str(s)
+            for s in services[:10]
+        ]) if services else 'Not specified'
 
-        # Build primary product description
-        if product_keywords:
-            primary_products = ', '.join(product_keywords[:3])
-        else:
-            # Fallback to industry but make it specific
-            industry = summary.get('industry', '').lower()
-            if 'fashion' in industry or 'clothing' in industry or 'retail' in industry:
-                primary_products = 'fashion and clothing'
-            elif 'fintech' in industry or 'payment' in industry or 'financial' in industry:
-                primary_products = 'payment solutions'
-            elif 'security' in industry or 'surveillance' in industry:
-                primary_products = 'security solutions'
-            elif 'tech' in industry or 'software' in industry:
-                primary_products = 'technology solutions'
-            elif 'food' in industry or 'restaurant' in industry:
-                primary_products = 'food and dining'
-            elif 'health' in industry or 'medical' in industry:
-                primary_products = 'healthcare services'
-            elif 'education' in industry or 'training' in industry:
-                primary_products = 'education and training'
-            elif 'consulting' in industry or 'advisory' in industry:
-                primary_products = 'consulting services'
-            else:
-                primary_products = 'products and services'
+        vp_text = ', '.join(value_props[:5]) if value_props else 'Not specified'
+
+        try:
+            from modules.openrouter.context import set_ai_context
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", """You are a product analyst. Extract specific product/service keywords from company data.
+Return ONLY valid JSON with this exact structure:
+{{
+  "product_keywords": ["specific product 1", "specific product 2", "specific product 3"],
+  "benefit_keywords": ["key benefit 1", "key benefit 2"],
+  "primary_products": "2-3 word summary of main offerings",
+  "primary_benefit": "single most important benefit"
+}}
+
+Rules:
+- Use SPECIFIC terms a customer would search for (e.g., "fridge repair" not "home services")
+- Maximum 5 product keywords, 3 benefit keywords
+- primary_products should be concise (2-4 words)"""),
+                ("human", """Company: {company_name}
+Industry: {industry}
+Services/Products: {services}
+Value Propositions: {value_props}""")
+            ])
+
+            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            chain = prompt | json_llm | StrOutputParser()
+            with set_ai_context(agent_name="product_extractor"):
+                response = await chain.ainvoke({
+                    "company_name": company_name,
+                    "industry": industry,
+                    "services": services_text,
+                    "value_props": vp_text
+                })
+
+            cleaned = self._clean_json_response(response)
+            result = json.loads(cleaned)
+
+            # Ensure all required keys exist
+            return {
+                'product_keywords': result.get('product_keywords', [])[:5],
+                'benefit_keywords': result.get('benefit_keywords', [])[:3],
+                'primary_products': result.get('primary_products', 'products and services'),
+                'primary_benefit': result.get('primary_benefit', 'quality')
+            }
+
+        except Exception as e:
+            logger.warning(f"[AdCopyAgent] AI product extraction failed, using basic extraction: {e}")
+            return self._extract_product_keywords_basic(research_data)
+
+    def _extract_product_keywords_basic(self, research_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Basic fallback product extraction from service names — no hardcoded industry mappings."""
+        extracted = research_data.get('extracted_data', {})
+        summary = research_data.get('research_summary', {})
+
+        product_keywords = []
+        services = extracted.get('services_products', [])
+        for svc in services[:6]:
+            if isinstance(svc, dict):
+                name = svc.get('name', '')
+                if name and len(name) < 50:
+                    product_keywords.append(name.strip())
+            elif isinstance(svc, str) and len(svc) < 50:
+                product_keywords.append(svc.strip())
+
+        primary_products = ', '.join(product_keywords[:3]) if product_keywords else 'products and services'
 
         return {
-            'product_keywords': product_keywords,
-            'benefit_keywords': benefit_keywords,
+            'product_keywords': product_keywords[:5],
+            'benefit_keywords': ['quality', 'reliability'],
             'primary_products': primary_products,
-            'primary_benefit': benefit_keywords[0] if benefit_keywords else 'quality'
+            'primary_benefit': 'quality'
         }
 
-    def _extract_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+    def _extract_product_keywords(self, research_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract context about an audience from its name and research data.
-        Returns specific descriptors for the audience.
+        Sync wrapper for backward compatibility. Use _extract_product_keywords_ai for async.
+        Falls back to basic extraction (no hardcoded industry mappings).
         """
-        audience_lower = audience_name.lower()
+        return self._extract_product_keywords_basic(research_data)
+
+    async def _extract_audience_context_ai(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Use AI to extract audience context from research data.
+        Works for ANY industry — no hardcoded mappings needed.
+        """
         extracted = research_data.get('extracted_data', {})
+        summary = research_data.get('research_summary', {})
+        company_info = extracted.get('company_info', {})
 
-        context = {
-            'shopping_need': 'great products',
-            'pain_point': 'finding what you need',
-            'desire': 'quality and value',
-            'demographic_hint': ''
-        }
+        # Build a concise business context string
+        services = extracted.get('services_products', [])
+        services_text = ", ".join(
+            svc.get('name', svc) if isinstance(svc, dict) else str(svc)
+            for svc in services[:8]
+        ) if services else "Not specified"
 
-        # Income-based context
-        if 'upper-income' in audience_lower or 'upper income' in audience_lower:
-            context['shopping_need'] = 'premium quality'
-            context['pain_point'] = 'finding exclusive, quality items'
-            context['desire'] = 'style and exclusivity'
-            context['demographic_hint'] = 'discerning shoppers'
-        elif 'middle-income' in audience_lower or 'middle income' in audience_lower:
-            context['shopping_need'] = 'quality at fair prices'
-            context['pain_point'] = 'balancing quality with budget'
-            context['desire'] = 'value without compromise'
-            context['demographic_hint'] = 'smart shoppers'
-        elif 'lower-income' in audience_lower or 'lower income' in audience_lower or 'budget' in audience_lower:
-            context['shopping_need'] = 'affordable options'
-            context['pain_point'] = 'stretching their budget'
-            context['desire'] = 'great deals and savings'
-            context['demographic_hint'] = 'value-conscious shoppers'
+        value_props = extracted.get('value_propositions', [])
+        value_text = ", ".join(value_props[:5]) if value_props else "Not specified"
 
-        # Family context
-        if 'family' in audience_lower or 'families' in audience_lower:
-            context['shopping_need'] = 'outfits for the whole family'
-            context['pain_point'] = 'shopping at multiple stores for everyone'
-            context['desire'] = 'one place for everyone'
+        prompt = ChatPromptTemplate.from_template("""
+You are a marketing strategist. Given a company and an audience segment, identify the audience's specific needs, pain points, and desires related to what this company sells.
 
-        # Fashion context
-        if 'fashion' in audience_lower or 'style' in audience_lower:
-            context['shopping_need'] = 'trendy, stylish pieces'
-            context['pain_point'] = 'staying fashionable on budget'
-            context['desire'] = 'looking great'
+COMPANY: {company_name}
+INDUSTRY: {industry}
+PRODUCTS/SERVICES: {services}
+VALUE PROPOSITIONS: {value_props}
+GEOGRAPHIC COVERAGE: {location}
 
-        # Corporate context
-        if 'corporate' in audience_lower or 'business' in audience_lower or 'workwear' in audience_lower:
-            context['shopping_need'] = 'professional attire'
-            context['pain_point'] = 'finding quality workwear'
-            context['desire'] = 'looking professional'
+AUDIENCE SEGMENT: {audience_name}
 
-        # Fintech/Payment audiences
-        if 'consumer' in audience_lower and ('transfer' in audience_lower or 'payment' in audience_lower or 'money' in audience_lower):
-            context['shopping_need'] = 'fast, secure money transfers'
-            context['pain_point'] = 'slow bank transfers and high fees'
-            context['desire'] = 'instant, affordable payments'
+Return ONLY valid JSON with these 4 fields — be specific to this company and audience, not generic:
+{{
+    "shopping_need": "What this specific audience segment is looking for from this company (1 sentence)",
+    "pain_point": "The specific frustration or problem this audience faces that this company can solve (1 sentence)",
+    "desire": "What outcome this audience ultimately wants (1 short phrase)",
+    "demographic_hint": "A 2-3 word descriptor for this audience segment"
+}}
 
-        if 'sme' in audience_lower or 'small' in audience_lower and 'enterprise' in audience_lower:
-            context['shopping_need'] = 'efficient payment processing'
-            context['pain_point'] = 'managing multiple payment channels'
-            context['desire'] = 'streamlined operations'
+Be concrete and specific. Reference the actual products/services. Do NOT use generic phrases like "quality products" or "great service".
+Return ONLY valid JSON, no markdown.
+""")
 
-        if 'merchant' in audience_lower or 'retailer' in audience_lower:
-            context['shopping_need'] = 'reliable POS and card acceptance'
-            context['pain_point'] = 'payment failures and slow settlements'
-            context['desire'] = 'seamless customer payments'
+        try:
+            from modules.openrouter.context import set_ai_context
+            chain = prompt | self.llm | StrOutputParser()
+            with set_ai_context(agent_name="ad_copy"):
+                response = await chain.ainvoke({
+                    'company_name': summary.get('company_name') or company_info.get('name') or 'Company',
+                    'industry': company_info.get('industry') or summary.get('industry') or 'General',
+                    'services': services_text,
+                    'value_props': value_text,
+                    'location': company_info.get('geographic_coverage') or summary.get('geographic_coverage') or '',
+                    'audience_name': audience_name
+                })
 
-        if 'bank' in audience_lower or 'fintech' in audience_lower or 'financial institution' in audience_lower:
-            context['shopping_need'] = 'robust clearing infrastructure'
-            context['pain_point'] = 'interoperability challenges'
-            context['desire'] = 'seamless integration'
+            cleaned = self._clean_json_response(response)
+            context = json.loads(cleaned)
 
-        if 'e-commerce' in audience_lower or 'online' in audience_lower:
-            context['shopping_need'] = 'secure online payment gateway'
-            context['pain_point'] = 'cart abandonment due to payment issues'
-            context['desire'] = 'smooth checkout experience'
+            # Ensure all required keys exist
+            return {
+                'shopping_need': context.get('shopping_need', 'quality products and services'),
+                'pain_point': context.get('pain_point', 'finding the right provider'),
+                'desire': context.get('desire', 'reliable service'),
+                'demographic_hint': context.get('demographic_hint', '')
+            }
 
-        # Security industry audiences
-        if 'homeowner' in audience_lower or 'residential' in audience_lower or 'home' in audience_lower:
-            context['shopping_need'] = 'home security systems'
-            context['pain_point'] = 'worry about break-ins and safety'
-            context['desire'] = 'peace of mind'
+        except Exception as e:
+            logger.warning(f"[AdCopyAgent] AI audience context extraction failed: {e}, using defaults")
+            return {
+                'shopping_need': 'quality products and services',
+                'pain_point': 'finding the right provider',
+                'desire': 'reliable service',
+                'demographic_hint': ''
+            }
 
-        if 'property' in audience_lower or 'estate' in audience_lower:
-            context['shopping_need'] = 'property surveillance'
-            context['pain_point'] = 'monitoring large areas'
-            context['desire'] = 'comprehensive coverage'
-
-        return context
+    async def _extract_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+        """Extract audience context using AI. Works for any industry."""
+        return await self._extract_audience_context_ai(audience_name, research_data)
 
     async def generate_ad_copy_from_research(
         self,
@@ -670,7 +655,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         tagline = company_info.get('tagline') or summary.get('tagline') or ''
 
         # Extract specific product keywords
-        product_info = self._extract_product_keywords(research_data)
+        product_info = await self._extract_product_keywords_ai(research_data)
 
         # Calculate years in business from statistics or key features
         years_in_business = self._extract_years(extracted.get('statistics', []))
@@ -695,7 +680,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             }
 
         # Get audience context
-        audience_context = self._extract_audience_context(audience_segment.get('name', ''), research_data)
+        audience_context = await self._extract_audience_context(audience_segment.get('name', ''), research_data)
 
         prompt_data = {
             'company_name': company_name,
@@ -711,18 +696,19 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             'pain_point': audience_context['pain_point'],
             'audience_type': audience_segment.get('type', 'B2C'),
             'platform': platform,
-            'brand_voice': brand_voice
+            'brand_voice': brand_voice,
+            'creative_insights': self._get_creative_performance_insights()
         }
 
-        # Run the LLM chain
+        # Run the LLM chain with structured JSON output
         from modules.openrouter.context import set_ai_context
-        chain = self.research_based_prompt | self.llm | StrOutputParser()
+        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        chain = self.research_based_prompt | json_llm | StrOutputParser()
 
         try:
             with set_ai_context(agent_name="ad_copy"):
                 response = await chain.ainvoke(prompt_data)
-            cleaned_json = self._clean_json_response(response)
-            ad_data = json.loads(cleaned_json)
+            ad_data = self._parse_and_validate_ad_copy(response)
 
             # Add metadata
             ad_data['company_name'] = company_name
@@ -739,41 +725,74 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             logger.error(f"[AdCopyAgent] Error generating ad copy: {e}")
             return self._fallback_ad_copy(company_name, product_info, audience_context, platform)
 
-    def _extract_b2b_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+    async def _extract_b2b_audience_context_ai(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
         """
-        Extract B2B context about an audience from its name and research data.
+        Use AI to extract B2B audience context from research data.
+        Works for ANY industry.
         """
-        audience_lower = audience_name.lower()
+        extracted = research_data.get('extracted_data', {})
+        summary = research_data.get('research_summary', {})
+        company_info = extracted.get('company_info', {})
 
-        context = {
-            'business_need': 'reliable business solutions',
-            'business_challenge': 'finding quality suppliers',
-            'job_titles': 'Decision makers, managers',
-            'company_types': 'SMEs, enterprises'
-        }
+        services = extracted.get('services_products', [])
+        services_text = ", ".join(
+            svc.get('name', svc) if isinstance(svc, dict) else str(svc)
+            for svc in services[:8]
+        ) if services else "Not specified"
 
-        # Corporate/Workwear context
-        if 'corporate' in audience_lower or 'workwear' in audience_lower:
-            context['business_need'] = 'professional workwear and uniforms'
-            context['business_challenge'] = 'outfitting their workforce consistently'
-            context['job_titles'] = 'HR managers, procurement officers, office managers'
-            context['company_types'] = 'Corporations, government offices, schools'
+        prompt = ChatPromptTemplate.from_template("""
+You are a B2B marketing strategist. Given a company and a B2B audience segment, identify their specific business needs, challenges, and who they are.
 
-        # Manufacturing/Supply context
-        if 'manufacturer' in audience_lower or 'retailer' in audience_lower or 'supplier' in audience_lower:
-            context['business_need'] = 'reliable manufacturing partners'
-            context['business_challenge'] = 'maintaining quality supply chains'
-            context['job_titles'] = 'Procurement managers, supply chain directors'
-            context['company_types'] = 'Retailers, distributors, wholesalers'
+COMPANY: {company_name}
+INDUSTRY: {industry}
+PRODUCTS/SERVICES: {services}
 
-        # Financial services context
-        if 'finance' in audience_lower or 'credit' in audience_lower:
-            context['business_need'] = 'financial services and credit solutions'
-            context['business_challenge'] = 'managing cash flow and customer financing'
-            context['job_titles'] = 'Finance directors, CFOs'
-            context['company_types'] = 'Financial institutions, lenders'
+B2B AUDIENCE SEGMENT: {audience_name}
 
-        return context
+Return ONLY valid JSON:
+{{
+    "business_need": "What this B2B audience specifically needs from this company (1 sentence)",
+    "business_challenge": "The specific business challenge this audience faces that this company solves (1 sentence)",
+    "job_titles": "Comma-separated list of job titles who make buying decisions for this",
+    "company_types": "Comma-separated list of company/organization types in this segment"
+}}
+
+Be concrete and specific to this company's actual products/services. Return ONLY valid JSON, no markdown.
+""")
+
+        try:
+            from modules.openrouter.context import set_ai_context
+            chain = prompt | self.llm | StrOutputParser()
+            with set_ai_context(agent_name="ad_copy"):
+                response = await chain.ainvoke({
+                    'company_name': summary.get('company_name') or company_info.get('name') or 'Company',
+                    'industry': company_info.get('industry') or summary.get('industry') or 'General',
+                    'services': services_text,
+                    'audience_name': audience_name
+                })
+
+            cleaned = self._clean_json_response(response)
+            context = json.loads(cleaned)
+
+            return {
+                'business_need': context.get('business_need', 'reliable business solutions'),
+                'business_challenge': context.get('business_challenge', 'finding quality suppliers'),
+                'job_titles': context.get('job_titles', 'Decision makers, managers'),
+                'company_types': context.get('company_types', 'SMEs, enterprises')
+            }
+
+        except Exception as e:
+            logger.warning(f"[AdCopyAgent] AI B2B audience context extraction failed: {e}, using defaults")
+            return {
+                'business_need': 'reliable business solutions',
+                'business_challenge': 'finding quality suppliers',
+                'job_titles': 'Decision makers, managers',
+                'company_types': 'SMEs, enterprises'
+            }
+
+    async def _extract_b2b_audience_context(self, audience_name: str, research_data: Dict[str, Any]) -> Dict[str, str]:
+        """Extract B2B audience context using AI. Works for any industry."""
+        return await self._extract_b2b_audience_context_ai(audience_name, research_data)
 
     async def generate_b2b_ad_copy(
         self,
@@ -796,8 +815,8 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         company_info = extracted.get('company_info', {})
 
         # Extract specific product keywords
-        product_info = self._extract_product_keywords(research_data)
-        b2b_context = self._extract_b2b_audience_context(audience_segment.get('name', ''), research_data)
+        product_info = await self._extract_product_keywords_ai(research_data)
+        b2b_context = await self._extract_b2b_audience_context(audience_segment.get('name', ''), research_data)
 
         prompt_data = {
             'company_name': summary.get('company_name', 'Company'),
@@ -815,13 +834,13 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         }
 
         from modules.openrouter.context import set_ai_context
-        chain = self.b2b_prompt | self.llm | StrOutputParser()
+        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        chain = self.b2b_prompt | json_llm | StrOutputParser()
 
         try:
             with set_ai_context(agent_name="ad_copy"):
                 response = await chain.ainvoke(prompt_data)
-            cleaned_json = self._clean_json_response(response)
-            ad_data = json.loads(cleaned_json)
+            ad_data = self._parse_and_validate_ad_copy(response)
             ad_data['generated_from'] = 'b2b_research'
             return ad_data
         except Exception as e:
@@ -849,8 +868,8 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         company_info = extracted.get('company_info', {})
 
         # Extract specific product keywords instead of generic industry terms
-        product_info = self._extract_product_keywords(research_data)
-        audience_context = self._extract_audience_context(audience_segment.get('name', ''), research_data)
+        product_info = await self._extract_product_keywords_ai(research_data)
+        audience_context = await self._extract_audience_context(audience_segment.get('name', ''), research_data)
 
         prompt_data = {
             'company_name': summary.get('company_name', 'Company'),
@@ -868,13 +887,13 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         }
 
         from modules.openrouter.context import set_ai_context
-        chain = self.b2c_prompt | self.llm | StrOutputParser()
+        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        chain = self.b2c_prompt | json_llm | StrOutputParser()
 
         try:
             with set_ai_context(agent_name="ad_copy"):
                 response = await chain.ainvoke(prompt_data)
-            cleaned_json = self._clean_json_response(response)
-            ad_data = json.loads(cleaned_json)
+            ad_data = self._parse_and_validate_ad_copy(response)
             ad_data['generated_from'] = 'b2c_research'
             return ad_data
         except Exception as e:
@@ -925,28 +944,273 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             'audiences': {}
         }
 
-        for audience in audiences:
+        # Build all (audience, platform) tasks for parallel execution
+        async def _generate_single(audience: Dict, platform: str) -> tuple:
             audience_name = audience.get('name', 'Unknown')
             audience_type = audience.get('type', 'B2C')
+            try:
+                if audience_type == 'B2B':
+                    ad_copy = await self.generate_b2b_ad_copy(research_data, audience, platform)
+                else:
+                    ad_copy = await self.generate_b2c_ad_copy(research_data, audience, platform)
+                return (audience_name, audience_type, platform, ad_copy)
+            except Exception as e:
+                logger.error(f"[AdCopyAgent] Error for {audience_name}/{platform}: {e}")
+                return (audience_name, audience_type, platform, {'error': str(e)})
 
-            results['audiences'][audience_name] = {
-                'type': audience_type,
-                'platforms': {}
-            }
+        # Run all audience/platform combinations in parallel
+        tasks = [
+            _generate_single(audience, platform)
+            for audience in audiences
+            for platform in platforms
+        ]
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for platform in platforms:
-                try:
-                    if audience_type == 'B2B':
-                        ad_copy = await self.generate_b2b_ad_copy(research_data, audience, platform)
-                    else:
-                        ad_copy = await self.generate_b2c_ad_copy(research_data, audience, platform)
-
-                    results['audiences'][audience_name]['platforms'][platform] = ad_copy
-                except Exception as e:
-                    logger.error(f"[AdCopyAgent] Error for {audience_name}/{platform}: {e}")
-                    results['audiences'][audience_name]['platforms'][platform] = {'error': str(e)}
+        # Organize results
+        for item in task_results:
+            if isinstance(item, Exception):
+                logger.error(f"[AdCopyAgent] Parallel generation error: {item}")
+                continue
+            audience_name, audience_type, platform, ad_copy = item
+            if audience_name not in results['audiences']:
+                results['audiences'][audience_name] = {'type': audience_type, 'platforms': {}}
+            results['audiences'][audience_name]['platforms'][platform] = ad_copy
 
         return results
+
+    # Meta ad specs (shared with CopywriterAgent)
+    META_CTAS = [
+        "Learn More", "Shop Now", "Sign Up", "Download", "Book Now",
+        "Get Quote", "Contact Us", "Subscribe", "Apply Now", "Get Offer",
+        "Order Now", "Buy Now", "Get Started", "Watch More", "Send Message"
+    ]
+
+    async def generate_copy_variations_for_url_ad(
+        self,
+        business_name: str,
+        product_description: str,
+        target_audience: str,
+        base_headline: str,
+        base_primary_text: str,
+        features: List[str],
+        cta: str = "Learn More",
+        num_variations: int = 3,
+        store_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate copy variations for URL-based campaigns (cross-mixing).
+        Works directly with URL campaign data (no Campaign/CreativeAngle models needed).
+
+        Returns:
+            List of dicts, each with headline, primary_text, description, call_to_action
+        """
+        features_str = ", ".join(features) if features else "Not specified"
+
+        variation_prompt = ChatPromptTemplate.from_template("""
+You are an expert Meta ad copywriter. Generate {num_variations} distinct ad copy variations
+for A/B testing. Each variation MUST use a different hook strategy and tone.
+
+BUSINESS: {business_name}
+PRODUCT/SERVICE: {product_description}
+TARGET AUDIENCE: {target_audience}
+KEY FEATURES: {features}
+REFERENCE HEADLINE: {base_headline}
+REFERENCE COPY: {base_primary_text}
+
+META AD SPECS:
+- Primary Text: 125 chars recommended, 500 max
+- Headline: 40 chars recommended
+- Description: 30 chars recommended
+
+AVAILABLE CTAs: {available_ctas}
+
+VARIATION STRATEGIES (use a different one for each):
+1. Pain-point focused: Lead with the problem, present the solution
+2. Social proof / trust: Lead with credibility, reviews, numbers
+3. Urgency / scarcity: Create FOMO, limited-time framing
+4. Benefit-first: Lead with the top benefit, emotional outcome
+5. Question hook: Start with a relatable question
+
+Return ONLY valid JSON:
+{{
+    "variations": [
+        {{
+            "strategy": "which strategy was used",
+            "headline": "punchy headline text",
+            "primary_text": "main ad copy with line breaks",
+            "description": "supporting description",
+            "call_to_action": "best CTA from available list"
+        }}
+    ]
+}}
+""")
+
+        prompt_data = {
+            "num_variations": num_variations,
+            "business_name": business_name,
+            "product_description": product_description,
+            "target_audience": target_audience,
+            "features": features_str,
+            "base_headline": base_headline,
+            "base_primary_text": base_primary_text,
+            "available_ctas": ", ".join(self.META_CTAS),
+        }
+
+        try:
+            from modules.openrouter.context import set_ai_context
+            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            chain = variation_prompt | json_llm | StrOutputParser()
+            with set_ai_context(store_id=store_id, agent_name="ad_copy_variations"):
+                response = await chain.ainvoke(prompt_data)
+
+            cleaned = self._clean_json_response(response)
+            data = json.loads(cleaned)
+            variations = data.get("variations", [])
+
+            result = []
+            for v in variations[:num_variations]:
+                result.append({
+                    "headline": v.get("headline", base_headline),
+                    "primary_text": v.get("primary_text", base_primary_text),
+                    "description": v.get("description", ""),
+                    "call_to_action": v.get("call_to_action", cta),
+                    "strategy": v.get("strategy", ""),
+                })
+
+            logger.info(f"[AdCopyAgent] Generated {len(result)} copy variations for '{business_name}'")
+            return result
+
+        except Exception as e:
+            logger.error(f"[AdCopyAgent] Error generating URL ad variations: {e}")
+            return [{
+                "headline": base_headline,
+                "primary_text": base_primary_text,
+                "description": "",
+                "call_to_action": cta,
+                "strategy": "fallback",
+            }]
+
+    async def generate_short_form_copy(
+        self,
+        product_description: str,
+        hook_text: str = "",
+        emotion: str = "Engaging",
+        store_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate short-form copy for Stories/Reels placements.
+        Max 125 characters for primary text, ultra-concise headlines.
+
+        Returns:
+            Dict with short-form copy variations
+        """
+        short_prompt = ChatPromptTemplate.from_template("""
+Generate 3 ultra-short ad copy variations for Instagram Stories/Reels.
+
+Product: {product_description}
+Hook: {hook_text}
+Emotion: {emotion}
+
+CONSTRAINTS:
+- Primary text: MAX 125 characters
+- Headline: MAX 25 characters
+- Must be punchy and attention-grabbing
+- No emojis unless brand-appropriate
+
+Return ONLY valid JSON:
+{{
+    "variations": [
+        {{
+            "primary_text": "short punchy copy (max 125 chars)",
+            "headline": "ultra-short (max 25 chars)",
+            "call_to_action": "Swipe Up or Learn More"
+        }}
+    ]
+}}
+""")
+
+        try:
+            from modules.openrouter.context import set_ai_context
+            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            chain = short_prompt | json_llm | StrOutputParser()
+            with set_ai_context(store_id=store_id, agent_name="ad_copy_short"):
+                response = await chain.ainvoke({
+                    "product_description": product_description,
+                    "hook_text": hook_text or "Discover something amazing",
+                    "emotion": emotion
+                })
+
+            cleaned = self._clean_json_response(response)
+            return json.loads(cleaned)
+
+        except Exception as e:
+            logger.error(f"[AdCopyAgent] Short-form copy error: {e}")
+            return {
+                "variations": [{
+                    "primary_text": f"Discover {product_description[:80]}",
+                    "headline": "See More",
+                    "call_to_action": "Learn More"
+                }]
+            }
+
+    def _get_creative_performance_insights(self, ad_account_id: Optional[str] = None) -> str:
+        """
+        Query past creative test results to learn what copy patterns perform best.
+        Feeds winning patterns back into generation prompts.
+
+        Returns a text summary like:
+        "Based on past A/B tests: authority-based headlines perform 20% better than curiosity-based.
+         Short primary text (<100 chars) gets higher CTR than long versions."
+        """
+        db = SessionLocal()
+        try:
+            from .models import CreativeTest, CreativeTestVariant
+
+            # Get completed tests
+            query = db.query(CreativeTest).filter(CreativeTest.status == "completed")
+            if ad_account_id:
+                query = query.filter(CreativeTest.ad_account_id == ad_account_id)
+            tests = query.order_by(CreativeTest.completed_at.desc()).limit(10).all()
+
+            if not tests:
+                return ""
+
+            insights = []
+            winner_headlines = []
+            loser_headlines = []
+
+            for test in tests:
+                variants = db.query(CreativeTestVariant).filter(
+                    CreativeTestVariant.test_id == test.id
+                ).all()
+
+                for v in variants:
+                    if v.status == "winner" and v.headline:
+                        winner_headlines.append(v.headline)
+                        if v.final_ctr:
+                            insights.append(f"Winner: \"{v.headline}\" (CTR={v.final_ctr:.2f}%)")
+                    elif v.status == "paused" and v.headline and not v.is_original:
+                        loser_headlines.append(v.headline)
+
+            if not insights:
+                return ""
+
+            summary = "CREATIVE PERFORMANCE INSIGHTS (from past A/B tests):\n"
+            summary += "\n".join(f"- {i}" for i in insights[:5])
+
+            if winner_headlines:
+                summary += f"\n\nWinning headline patterns: {', '.join(winner_headlines[:3])}"
+            if loser_headlines:
+                summary += f"\nUnderperforming patterns: {', '.join(loser_headlines[:3])}"
+
+            summary += "\n\nUse these insights to guide your copy generation — prioritize patterns similar to winners."
+            return summary
+
+        except Exception as e:
+            logger.warning(f"[AdCopyAgent] Failed to get creative insights: {e}")
+            return ""
+        finally:
+            db.close()
 
     def _extract_years(self, statistics: List[Dict]) -> str:
         """Extract years in business from statistics"""
@@ -1108,17 +1372,39 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
     async def generate_ad_copy(
         self,
         campaign: Campaign,
-        angle: CreativeAngle
+        angle: CreativeAngle,
+        keyword_data: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Generate ad copy for a specific creative angle.
         (Original method - kept for backward compatibility)
         """
+        # Enrich keywords with search volume data if available
+        keywords_str = ", ".join(campaign.keywords) if campaign.keywords else "Not specified"
+        if keyword_data and keyword_data.get("success"):
+            top_kws = keyword_data.get("keywords", [])[:8]
+            if top_kws:
+                kw_parts = []
+                for kw in top_kws:
+                    vol = kw.get("search_volume")
+                    if vol is not None:
+                        kw_parts.append(f"{kw['keyword']} (vol: {vol})")
+                    else:
+                        kw_parts.append(kw["keyword"])
+                keywords_str = ", ".join(kw_parts)
+
+                # Add intent hint
+                clusters = keyword_data.get("clusters", {})
+                transactional = clusters.get("transactional", [])
+                if transactional:
+                    tx_names = [k.get("keyword", "") for k in transactional[:3]]
+                    keywords_str += f"\nHigh-intent (transactional) keywords to prioritize: {', '.join(tx_names)}"
+
         prompt_data = {
             "campaign_name": campaign.name,
             "objective": campaign.objective,
             "product_description": campaign.product_description or "Not specified",
-            "keywords": ", ".join(campaign.keywords) if campaign.keywords else "Not specified",
+            "keywords": keywords_str,
             "angle_name": angle.angle_name,
             "value_proposition": angle.value_proposition or "",
             "emotion_target": angle.emotion_target or "",
@@ -1177,11 +1463,16 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
     async def generate_all_ad_copies(
         self,
         campaign: Campaign,
-        angles: Optional[List[CreativeAngle]] = None
+        angles: Optional[List[CreativeAngle]] = None,
+        keyword_data: Dict[str, Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Generate ad copies for all creative angles of a campaign.
-        (Original method - kept for backward compatibility)
+
+        Args:
+            campaign: Campaign object
+            angles: Optional list of CreativeAngle objects
+            keyword_data: Optional keyword intelligence with search volume, CPC, and intent clusters
         """
         db = SessionLocal()
         try:
@@ -1195,7 +1486,7 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 
             ad_copies = []
             for angle in angles:
-                ad_copy = await self.generate_ad_copy(campaign, angle)
+                ad_copy = await self.generate_ad_copy(campaign, angle, keyword_data=keyword_data)
                 ad_copies.append(ad_copy)
 
             return ad_copies

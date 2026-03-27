@@ -10,10 +10,12 @@ Provides intelligent lead scoring based on:
 
 import logging
 import re
+import json
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime
+from pydantic import BaseModel, Field
 
 from openai import OpenAI
 import os
@@ -31,6 +33,35 @@ class LeadStatus(str, Enum):
     WARM = "warm"           # 41-60: Interest in specific items
     HOT = "hot"             # 61-80: Serious interest, comparing
     VERY_HOT = "very_hot"   # 81-100: Ready to buy (HOT LEAD)
+
+
+# --- Structured output models ---
+
+class AIScoreOutput(BaseModel):
+    """Structured AI scoring response"""
+    ai_score: float = Field(..., ge=0, le=100, description="AI-assessed lead score 0-100")
+    confidence: float = Field(..., ge=0, le=1, description="Confidence in assessment")
+    reasoning: str = Field(..., description="Brief explanation")
+    buying_intent: str = Field(default="low", description="low/medium/high/very_high")
+    urgency: str = Field(default="none", description="none/low/medium/high")
+    suggested_response_tone: str = Field(default="helpful", description="helpful/persuasive/urgent/closing")
+
+
+class LeadScoreResult(BaseModel):
+    """Complete lead scoring result"""
+    score: float = Field(..., ge=0, le=100)
+    status: str
+    interests: List[str] = Field(default_factory=list)
+    engagement_level: str = "low"
+    primary_intent: Optional[str] = None
+    objections: List[str] = Field(default_factory=list)
+    recommended_action: str = ""
+    signals: List[Dict[str, Any]] = Field(default_factory=list)
+    score_change: float = 0.0
+    is_hot_lead: bool = False
+    message_count: int = 0
+    scoring_method: str = "rule_based"
+    ai_analysis: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -386,19 +417,20 @@ class EnhancedLeadScorer:
         # Get recommended action
         recommended_action = self._get_recommended_action(new_score, status, signals, objections)
 
-        return {
-            "score": round(new_score, 1),
-            "status": status.value,
-            "interests": interests,
-            "engagement_level": context["engagement_level"],
-            "primary_intent": primary_intent,
-            "objections": objections,
-            "recommended_action": recommended_action,
-            "signals": signals,
-            "score_change": round(new_score - current_score, 1),
-            "is_hot_lead": status == LeadStatus.VERY_HOT,
-            "message_count": context["message_count"]
-        }
+        result = LeadScoreResult(
+            score=round(new_score, 1),
+            status=status.value,
+            interests=interests,
+            engagement_level=context["engagement_level"],
+            primary_intent=primary_intent,
+            objections=objections,
+            recommended_action=recommended_action,
+            signals=signals,
+            score_change=round(new_score - current_score, 1),
+            is_hot_lead=status == LeadStatus.VERY_HOT,
+            message_count=context["message_count"]
+        )
+        return result.model_dump()
 
     async def score_with_ai(
         self,
@@ -448,18 +480,31 @@ Provide your assessment as JSON:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a lead scoring expert. Analyze conversations and assess buying intent."},
+                    {"role": "system", "content": "You are a lead scoring expert. Analyze conversations and assess buying intent. Return ONLY valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
-                max_tokens=300
+                max_tokens=300,
+                response_format={"type": "json_object"}
             )
 
-            import json
-            ai_analysis = json.loads(response.choices[0].message.content)
+            response_text = response.choices[0].message.content.strip()
 
-            # Blend AI and rule-based scores
-            blended_score = (rule_based["score"] * 0.6) + (ai_analysis["ai_score"] * 0.4)
+            # Validate with Pydantic first
+            try:
+                validated = AIScoreOutput.model_validate_json(response_text)
+                ai_analysis = validated.model_dump()
+            except Exception:
+                # Fallback to plain JSON parse
+                ai_analysis = json.loads(response_text)
+                ai_analysis.setdefault("ai_score", rule_based["score"])
+                ai_analysis.setdefault("confidence", 0.5)
+
+            # Blend AI and rule-based scores (weighted by AI confidence)
+            confidence = ai_analysis.get("confidence", 0.5)
+            ai_weight = 0.4 * confidence  # Scale AI weight by confidence
+            rule_weight = 1.0 - ai_weight
+            blended_score = (rule_based["score"] * rule_weight) + (ai_analysis["ai_score"] * ai_weight)
 
             rule_based.update({
                 "score": round(blended_score, 1),

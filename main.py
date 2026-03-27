@@ -1,6 +1,9 @@
+import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from database import engine, init_db
 from utils.cache import cache, check_redis_health
 from middleware.cache_middleware import CacheMiddleware, CacheControlMiddleware
@@ -15,11 +18,12 @@ from modules.customers.models import *
 from modules.admin.models import *  # Admin models (depends on User)
 from modules.procurement.models import *  # Procurement models (depends on Store, Product)
 from modules.delivery.models import *  # Delivery models (depends on Store, CustomerOrder)
-from modules.fashion.models import *  # Fashion try-on models (depends on User, Store)
+# from modules.fashion.models import *  # Fashion try-on models (depends on User, Store)
 from modules.reviews.models import *  # Review models (depends on User, Store)
-from modules.coupons.models import *  # Coupon models (depends on User, Store)
-from modules.returns.models import *  # Return models (depends on User, Store)
+# from modules.coupons.models import *  # Coupon models (depends on User, Store)
+# from modules.returns.models import *  # Return models (depends on User, Store)
 from modules.openrouter.models import *  # AI usage tracking models
+from modules.micro_strategy.models import *  # Micro-strategy models (depends on Store, MetaAdAccount)
 
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -39,6 +43,7 @@ from modules.marketing.router import marketing_router
 from modules.whatsapp.router import whatsapp_router
 from modules.whatsapp.faq_router import faq_router
 from modules.whatsapp.embedded_signup_router import embedded_signup_router
+from modules.whatsapp.flow_endpoint import flow_router
 from modules.agents.router import agents_router
 from modules.agency.router import agency_router
 from modules.campaigns.router import campaign_router
@@ -53,11 +58,12 @@ from modules.delivery.router import delivery_router
 from modules.pos.router import pos_router
 from modules.accounting.router import accounting_router
 from modules.website_builder.router import website_builder_router
-from modules.fashion.router import fashion_router
+# from modules.fashion.router import fashion_router
 from modules.reviews.router import review_router
-from modules.coupons.router import coupon_router
-from modules.returns.router import return_router
+# from modules.coupons.router import coupon_router
+# from modules.returns.router import return_router
 from modules.openrouter.router import ai_usage_router
+from modules.micro_strategy.router import micro_strategy_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -84,7 +90,17 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:5179",
         "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5176",
+        "http://127.0.0.1:5177",
+        "http://127.0.0.1:5178",
+        "http://127.0.0.1:5179",
         "https://shopivell.com",
         "https://www.shopivell.com",
         "https://admin.shopivell.com",
@@ -120,6 +136,7 @@ app.include_router(marketing_router, prefix="/v1")
 app.include_router(whatsapp_router, prefix="/v1")
 app.include_router(faq_router, prefix="/v1")
 app.include_router(embedded_signup_router, prefix="/v1/api")
+app.include_router(flow_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(agency_router, prefix="/v1")
 app.include_router(campaign_router, prefix="/v1")
@@ -134,16 +151,54 @@ app.include_router(delivery_router, prefix="/v1")
 app.include_router(pos_router, prefix="/v1")
 app.include_router(accounting_router, prefix="/v1")
 app.include_router(website_builder_router, prefix="/v1")
-app.include_router(fashion_router, prefix="/v1")
+# app.include_router(fashion_router, prefix="/v1")
 app.include_router(review_router, prefix="/v1")
-app.include_router(coupon_router, prefix="/v1")
-app.include_router(return_router, prefix="/v1")
+# app.include_router(coupon_router, prefix="/v1")
+# app.include_router(return_router, prefix="/v1")
 app.include_router(ai_usage_router, prefix="/v1")
+app.include_router(micro_strategy_router, prefix="/v1")
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/assets", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background services on app boot."""
+    from modules.agents.scheduler import start_rules_scheduler, rules_scheduler
+    from database import SessionLocal
+    from modules.marketing.models import MetaAdAccount
+
+    # Auto-register all connected ad accounts with the scheduler
+    db = SessionLocal()
+    try:
+        connected_accounts = db.query(MetaAdAccount).filter(
+            MetaAdAccount.is_connected == True,
+            MetaAdAccount.is_active == True
+        ).all()
+
+        for account in connected_accounts:
+            rules_scheduler.add_ad_account(account.ad_account_id)
+
+        if connected_accounts:
+            start_rules_scheduler(interval_minutes=15)
+            logger.info(f"[Startup] Scheduler started with {len(connected_accounts)} ad accounts")
+        else:
+            logger.info("[Startup] No connected ad accounts — scheduler not started")
+    except Exception as e:
+        logger.warning(f"[Startup] Could not auto-start scheduler: {e}")
+    finally:
+        db.close()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Gracefully stop background services."""
+    from modules.agents.scheduler import stop_rules_scheduler
+    stop_rules_scheduler()
+    logger.info("[Shutdown] Scheduler stopped")
 
 
 @app.get("/health")

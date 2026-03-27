@@ -5,9 +5,11 @@ Claude excels at understanding nuanced context and applying complex rules.
 """
 
 import os
+import re
 import json
 import logging
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # Import OpenRouter adapter
@@ -20,6 +22,23 @@ except ImportError:
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# --- Structured output model for compliance checks ---
+
+class ComplianceIssue(BaseModel):
+    category: str = ""
+    description: str = ""
+    severity: str = "medium"  # low, medium, high
+
+class ComplianceCheckOutput(BaseModel):
+    is_compliant: bool = False
+    risk_level: str = "medium"  # low, medium, high, critical
+    risk_score: int = Field(default=50, ge=0, le=100)  # Numeric risk 0-100
+    issues: List[ComplianceIssue] = Field(default_factory=list)
+    suggestions: List[str] = Field(default_factory=list)
+    safe_prompt: Optional[str] = None
+    reasoning: str = ""
 
 
 class ComplianceAgent:
@@ -140,34 +159,36 @@ class ComplianceAgent:
 
     def quick_keyword_check(self, prompt: str) -> Dict[str, Any]:
         """
-        Fast initial check using keyword matching.
-        This is free and instant - catches obvious violations.
+        Fast initial check using word-boundary regex matching.
+        Uses \\b word boundaries to avoid false positives (e.g., "arm" in "charm").
 
         Returns:
-            Dict with preliminary compliance status
+            Dict with preliminary compliance status and risk score
         """
         prompt_lower = prompt.lower()
         issues = []
         blocked_words = []
         suggestions = []
 
-        # Check prohibited content categories
+        # Check prohibited content categories with word boundaries
         for category, data in self.META_PROHIBITED_CONTENT.items():
             for example in data["examples"]:
-                if example in prompt_lower:
+                # Use word boundary regex to avoid false positives
+                pattern = r'\b' + re.escape(example) + r'\b'
+                if re.search(pattern, prompt_lower):
                     issues.append(f"[{category}] Contains: '{example}'")
                     blocked_words.append(example)
 
                     # Find safe alternative if available
                     for unsafe, safe in data.get("safe_alternatives", {}).items():
-                        if unsafe in prompt_lower:
+                        if re.search(r'\b' + re.escape(unsafe) + r'\b', prompt_lower):
                             suggestions.append(f"Replace '{unsafe}' with '{safe}'")
 
-        # Check AI content rules
+        # Check AI content rules with word boundaries
         has_people = False
         for rule_name, rule_data in self.AI_CONTENT_RULES.items():
             for keyword in rule_data["keywords"]:
-                if keyword in prompt_lower:
+                if re.search(r'\b' + re.escape(keyword) + r'\b', prompt_lower):
                     if rule_name == "faces_people":
                         has_people = True
                         suggestions.append(rule_data["recommendation"])
@@ -177,8 +198,11 @@ class ComplianceAgent:
         # Check restricted content (warning, not blocking)
         warnings = []
         for category, data in self.META_RESTRICTED_CONTENT.items():
-            if category in prompt_lower:
+            if re.search(r'\b' + re.escape(category) + r'\b', prompt_lower):
                 warnings.append(f"[{category}] {data['description']} - {data['requires']}")
+
+        # Calculate risk score (0-100)
+        risk_score = min(len(issues) * 25 + len(warnings) * 10, 100)
 
         return {
             "passed_quick_check": len(issues) == 0,
@@ -187,7 +211,8 @@ class ComplianceAgent:
             "suggestions": list(set(suggestions)),
             "warnings": warnings,
             "has_people_reference": has_people,
-            "needs_ai_review": len(issues) > 0 or has_people
+            "needs_ai_review": len(issues) > 0 or has_people,
+            "risk_score": risk_score
         }
 
     async def deep_compliance_check(self, prompt: str, context: Optional[Dict] = None) -> Dict[str, Any]:
@@ -246,11 +271,12 @@ Respond with JSON only:
 {{
     "is_compliant": true/false,
     "risk_level": "low/medium/high/critical",
+    "risk_score": 0-100,
     "issues": [
         {{"category": "category_name", "description": "what's wrong", "severity": "low/medium/high"}}
     ],
     "suggestions": ["list of specific suggestions to fix issues"],
-    "safe_prompt": "rewritten prompt that is compliant (if original is not)",
+    "safe_prompt": "rewritten prompt that is compliant (if original is not). Make it context-aware and grammatically correct.",
     "reasoning": "brief explanation of your analysis"
 }}"""
 
@@ -263,8 +289,13 @@ Respond with JSON only:
 
         try:
             from modules.openrouter.context import set_ai_context
+            json_llm = self.llm.bind(response_format={"type": "json_object"})
+
+            from langchain_core.output_parsers import StrOutputParser
+            chain_messages = [messages[0], messages[1]]
+
             with set_ai_context(agent_name="compliance"):
-                response = await self.llm.ainvoke(messages)
+                response = await json_llm.ainvoke(chain_messages)
             response_text = response.content.strip()
 
             # Clean JSON if wrapped in markdown
@@ -275,17 +306,36 @@ Respond with JSON only:
             if response_text.endswith("```"):
                 response_text = response_text[:-3]
 
-            result = json.loads(response_text.strip())
+            # Try Pydantic validation first
+            try:
+                validated = ComplianceCheckOutput.model_validate_json(response_text.strip())
+                result = validated.model_dump()
+            except Exception:
+                # Fallback to plain JSON parse
+                result = json.loads(response_text.strip())
+                # Ensure required fields
+                result.setdefault("is_compliant", False)
+                result.setdefault("risk_level", "medium")
+                result.setdefault("risk_score", 50)
+                result.setdefault("issues", [])
+                result.setdefault("suggestions", [])
+                result.setdefault("safe_prompt", None)
+                result.setdefault("reasoning", "")
+
             result["model_used"] = self.model
             result["check_type"] = "deep_ai_analysis"
+
+            # Log to AI Decision Trail
+            self._log_compliance_check(prompt, context, result)
 
             return result
 
         except json.JSONDecodeError as e:
             logger.error(f"[ComplianceAgent] Failed to parse AI response: {e}")
-            return {
+            result = {
                 "is_compliant": False,
                 "risk_level": "medium",
+                "risk_score": 50,
                 "issues": [{"category": "parse_error", "description": "Could not parse AI response", "severity": "medium"}],
                 "suggestions": ["Manual review recommended"],
                 "safe_prompt": None,
@@ -294,11 +344,14 @@ Respond with JSON only:
                 "check_type": "deep_ai_analysis",
                 "error": str(e)
             }
+            self._log_compliance_check(prompt, context, result)
+            return result
         except Exception as e:
             logger.error(f"[ComplianceAgent] AI check failed: {e}")
-            return {
+            result = {
                 "is_compliant": False,
                 "risk_level": "unknown",
+                "risk_score": 75,
                 "issues": [{"category": "error", "description": str(e), "severity": "high"}],
                 "suggestions": ["Manual review required"],
                 "safe_prompt": None,
@@ -307,6 +360,8 @@ Respond with JSON only:
                 "check_type": "deep_ai_analysis",
                 "error": str(e)
             }
+            self._log_compliance_check(prompt, context, result)
+            return result
 
     async def check_compliance(
         self,
@@ -315,7 +370,12 @@ Respond with JSON only:
         deep_check: bool = True
     ) -> Dict[str, Any]:
         """
-        Full compliance check - keyword + AI analysis.
+        Tiered compliance check — skips deep check when quick check passes cleanly.
+
+        Tiers:
+        1. Quick keyword check (free, instant) → if clean with no people refs, auto-approve
+        2. If borderline or has people refs → deep AI check
+        3. If critical (3+ blocked words) → block immediately, skip deep check
 
         Args:
             prompt: The image generation prompt
@@ -323,36 +383,62 @@ Respond with JSON only:
             deep_check: Whether to run AI analysis (costs ~$0.0003)
 
         Returns:
-            Complete compliance report
+            Complete compliance report with risk_score (0-100)
         """
         # Step 1: Quick keyword check (free, instant)
         quick_result = self.quick_keyword_check(prompt)
 
-        # If critical issues found in quick check, return immediately
+        # Tier 3: Critical issues → block immediately, no deep check needed
         if len(quick_result["blocked_words"]) > 3:
-            return {
+            result = {
                 "is_compliant": False,
                 "risk_level": "critical",
+                "risk_score": 95,
                 "quick_check": quick_result,
                 "deep_check": None,
                 "final_verdict": "BLOCKED - Multiple policy violations detected",
                 "suggestions": quick_result["suggestions"],
-                "safe_prompt": None
+                "safe_prompt": None,
+                "original_prompt": prompt,
+                "deep_check_skipped": True,
+                "skip_reason": "critical_violation"
             }
+            self._log_compliance_check(prompt, context, result)
+            return result
 
-        # Step 2: Deep AI check if requested
+        # Tier 1: Clean quick check with no people refs → auto-approve, skip deep check
+        if quick_result["passed_quick_check"] and not quick_result["has_people_reference"]:
+            result = {
+                "is_compliant": True,
+                "risk_level": "low",
+                "risk_score": quick_result.get("risk_score", 0),
+                "quick_check": quick_result,
+                "deep_check": None,
+                "final_verdict": "APPROVED - Prompt is Meta compliant",
+                "suggestions": quick_result.get("suggestions", []),
+                "safe_prompt": None,
+                "original_prompt": prompt,
+                "deep_check_skipped": True,
+                "skip_reason": "clean_quick_check"
+            }
+            self._log_compliance_check(prompt, context, result)
+            return result
+
+        # Tier 2: Borderline or has people refs → deep AI check
         deep_result = None
-        if deep_check and (quick_result["needs_ai_review"] or not quick_result["passed_quick_check"]):
+        if deep_check:
             deep_result = await self.deep_compliance_check(prompt, context)
 
         # Combine results
         if deep_result:
             is_compliant = deep_result.get("is_compliant", False)
             risk_level = deep_result.get("risk_level", "medium")
+            risk_score = deep_result.get("risk_score", 50)
             safe_prompt = deep_result.get("safe_prompt")
         else:
             is_compliant = quick_result["passed_quick_check"] and not quick_result["has_people_reference"]
             risk_level = "low" if is_compliant else "medium"
+            risk_score = quick_result.get("risk_score", 50)
             safe_prompt = None
 
         # Determine final verdict
@@ -368,29 +454,77 @@ Respond with JSON only:
         return {
             "is_compliant": is_compliant,
             "risk_level": risk_level,
+            "risk_score": risk_score,
             "quick_check": quick_result,
             "deep_check": deep_result,
             "final_verdict": verdict,
             "suggestions": (quick_result.get("suggestions", []) +
                           (deep_result.get("suggestions", []) if deep_result else [])),
             "safe_prompt": safe_prompt,
-            "original_prompt": prompt
+            "original_prompt": prompt,
+            "deep_check_skipped": False
         }
 
-    def clean_prompt(self, prompt: str) -> str:
+    def _log_compliance_check(self, prompt: str, context: Optional[Dict], result: Dict) -> None:
+        """Persist compliance check to AI Decision Log for audit trail."""
+        try:
+            from .meta_learner import log_ai_decision
+            log_ai_decision(
+                decision_type="compliance_check",
+                agent_name="compliance",
+                input_context={
+                    "prompt_preview": prompt[:200],
+                    "industry": context.get("industry") if context else None,
+                    "product": context.get("product") if context else None,
+                },
+                decision={
+                    "is_compliant": result.get("is_compliant"),
+                    "risk_level": result.get("risk_level"),
+                    "risk_score": result.get("risk_score"),
+                    "issues_count": len(result.get("issues", [])),
+                    "has_safe_prompt": bool(result.get("safe_prompt")),
+                },
+                reasoning=result.get("reasoning", ""),
+                confidence=1.0 - (result.get("risk_score", 50) / 100),
+                model_used=result.get("model_used")
+            )
+        except Exception as e:
+            logger.warning(f"[ComplianceAgent] Failed to log compliance check: {e}")
+
+    def clean_prompt(self, prompt: str, deep_check_result: Optional[Dict] = None) -> str:
         """
-        Automatically clean a prompt by replacing unsafe terms with safe alternatives.
+        Clean a prompt by replacing unsafe terms with safe alternatives.
+
+        Uses the LLM's safe_prompt from deep check if available (context-aware),
+        falls back to word-boundary regex replacement.
+
+        Args:
+            prompt: The original prompt
+            deep_check_result: Optional result from deep_compliance_check containing safe_prompt
 
         Returns:
             Cleaned prompt with safe alternatives
         """
-        cleaned = prompt.lower()
+        # Prefer the LLM's context-aware safe_prompt if available
+        if deep_check_result and deep_check_result.get("safe_prompt"):
+            logger.info("[ComplianceAgent] Using LLM-generated safe prompt (context-aware)")
+            return deep_check_result["safe_prompt"]
+
+        # Fallback: word-boundary regex replacement
+        cleaned = prompt
 
         for category, data in self.META_PROHIBITED_CONTENT.items():
             for unsafe, safe in data.get("safe_alternatives", {}).items():
-                if unsafe in cleaned:
-                    cleaned = cleaned.replace(unsafe, safe)
+                # Use word boundaries and case-insensitive matching
+                pattern = re.compile(r'\b' + re.escape(unsafe) + r'\b', re.IGNORECASE)
+                if pattern.search(cleaned):
+                    cleaned = pattern.sub(safe, cleaned)
                     logger.info(f"[ComplianceAgent] Replaced '{unsafe}' with '{safe}'")
+
+        # Verify the cleaned prompt doesn't still have issues
+        quick_check = self.quick_keyword_check(cleaned)
+        if not quick_check["passed_quick_check"]:
+            logger.warning(f"[ComplianceAgent] Cleaned prompt still has {len(quick_check['issues'])} issues")
 
         return cleaned
 

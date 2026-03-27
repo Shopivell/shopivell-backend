@@ -6,7 +6,7 @@ SQLAlchemy models for returns and refunds.
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from db_compat import UUID
 
 from database import Base
 

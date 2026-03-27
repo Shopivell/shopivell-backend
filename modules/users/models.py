@@ -1,7 +1,7 @@
 # modules/users/models.py
 from typing import Optional, List
 from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer, Text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import uuid

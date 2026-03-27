@@ -17,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from database import Base # Assuming 'database' module provides Base
 import uuid
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from db_compat import PG_UUID
 from typing import Dict, List, Optional
 
 

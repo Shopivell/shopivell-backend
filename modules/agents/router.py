@@ -14,17 +14,19 @@ from .schemas import (
     MarketResearchRequest, MarketResearchResponse,
     CreativeAngleRequest, CreativeAngleResponse,
     AdCopyRequest, AdCopyResponse,
-    PerformanceMetricsResponse
+    PerformanceMetricsResponse,
+    CompetitiveIntelligenceRequest
 )
 from .market_research_agent import MarketResearchAgent
 from .creative_angles_agent import CreativeAnglesAgent
 from .ad_copy_agent import AdCopyAgent
 from .monitor_optimizer_agent import MonitorOptimizerAgent
 from .media_generator_agent import MediaGeneratorAgent
+from .visual_director_agent import VisualDirectorAgent
 from modules.stores.models import Store
 from modules.openrouter.ai_usage_service import require_ai_quota
 from .vision_compliance_service import vision_compliance_service
-from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType
+from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType, ConditionGroup, ConditionLogic
 from .scheduler import rules_scheduler, start_rules_scheduler, stop_rules_scheduler
 
 # Setup logging
@@ -692,13 +694,17 @@ def get_performance_metrics(
 async def run_campaign_pipeline(
     campaign_id: uuid.UUID,
     num_angles: int = Query(4, ge=1, le=10, description="Number of creative angles to generate"),
+    include_visuals: bool = Query(True, description="Generate image prompts for each angle"),
+    include_video: bool = Query(False, description="Generate video concepts (slower)"),
     db: Session = Depends(get_db)
 ):
     """
     Run the full AI campaign pipeline:
-    1. Market Research - Analyze competitors, audience, trends
-    2. Creative Angles - Generate advertising angles based on research
-    3. Ad Copy Generation - Create ad copies for each angle
+    0. Keyword Intelligence - Research keyword search volume, CPC, competition & intent clusters
+    1. Market Research - Analyze competitors, audience, trends (enriched with keyword data)
+    2. Creative Angles - Generate advertising angles based on research + keyword insights
+    3. Ad Copy Generation - Create ad copies for each angle (prioritized by search volume)
+    4. Visual Direction - Generate image prompts and optional video concepts for each angle
 
     This is an async operation that generates all campaign assets.
     """
@@ -718,23 +724,53 @@ async def run_campaign_pipeline(
         results = {}
         print(f"DEBUG: Starting pipeline for campaign {campaign.name}")
 
-        # Step 1: Market Research
+        # Step 0: Keyword Intelligence
+        logger.info(f"Pipeline Step 0: Keyword Intelligence for {campaign.name}")
+        print("DEBUG: Starting Step 0 - Keyword Intelligence")
+        keyword_data = None
+        try:
+            from .keyword_intelligence_agent import KeywordIntelligenceAgent
+            keyword_agent = KeywordIntelligenceAgent()
+
+            # Use campaign keywords as seeds, fall back to product description
+            seed_keywords = list(campaign.keywords) if campaign.keywords else []
+            if not seed_keywords and campaign.product_description:
+                seed_keywords = [campaign.product_description[:60]]
+
+            if seed_keywords:
+                seed = seed_keywords[0]
+                additional = seed_keywords[1:] if len(seed_keywords) > 1 else None
+                keyword_data = await keyword_agent.research_keywords(
+                    seed_keyword=seed,
+                    additional_seeds=additional,
+                    country_code="ZW",
+                    limit=30
+                )
+                results["keyword_intelligence"] = keyword_data
+                print(f"DEBUG: Step 0 complete - found {keyword_data.get('total_found', 0)} keywords (source: {keyword_data.get('source', 'unknown')})")
+            else:
+                print("DEBUG: Step 0 skipped - no seed keywords available")
+        except Exception as e:
+            logger.warning(f"Keyword Intelligence step failed (non-critical): {e}")
+            print(f"DEBUG: Step 0 failed (continuing without keyword data): {e}")
+
+        # Step 1: Market Research (enriched with keyword data)
         logger.info(f"Pipeline Step 1: Market Research for {campaign.name}")
         print("DEBUG: Starting Step 1 - Market Research")
         research_agent = MarketResearchAgent()
-        research_result = await research_agent.conduct_research(campaign)
+        research_result = await research_agent.conduct_research(campaign, keyword_data=keyword_data)
         results["market_research"] = research_result
         print("DEBUG: Step 1 complete")
 
-        # Step 2: Creative Angles
+        # Step 2: Creative Angles (enriched with keyword data)
         logger.info(f"Pipeline Step 2: Generating {num_angles} Creative Angles")
         print(f"DEBUG: Starting Step 2 - Creative Angles ({num_angles})")
         angles_agent = CreativeAnglesAgent()
-        angles_result = await angles_agent.generate_angles(campaign, num_angles=num_angles)
+        angles_result = await angles_agent.generate_angles(campaign, num_angles=num_angles, keyword_data=keyword_data)
         results["creative_angles"] = angles_result
         print(f"DEBUG: Step 2 complete - generated {len(angles_result)} angles")
 
-        # Step 3: Ad Copy Generation
+        # Step 3: Ad Copy Generation (enriched with keyword data)
         logger.info(f"Pipeline Step 3: Generating Ad Copies for {len(angles_result)} angles")
         print(f"DEBUG: Starting Step 3 - Ad Copies for {len(angles_result)} angles")
         ad_agent = AdCopyAgent()
@@ -744,23 +780,49 @@ async def run_campaign_pipeline(
             CreativeAngle.campaign_id == campaign_id
         ).all()
 
-        ad_copies_result = await ad_agent.generate_all_ad_copies(campaign, angles)
+        ad_copies_result = await ad_agent.generate_all_ad_copies(campaign, angles, keyword_data=keyword_data)
         results["ad_copies"] = ad_copies_result
         print(f"DEBUG: Step 3 complete - generated {len(ad_copies_result)} ad copies")
+
+        # Step 4: Visual Direction (Image Prompts)
+        visual_packages = []
+        if include_visuals and angles:
+            logger.info(f"Pipeline Step 4: Generating Visual Direction for {len(angles)} angles")
+            print(f"DEBUG: Starting Step 4 - Visual Direction for {len(angles)} angles")
+            visual_agent = VisualDirectorAgent()
+
+            for angle in angles:
+                ad_copy = db.query(AdCopy).filter(AdCopy.angle_id == angle.id).first()
+                package = await visual_agent.generate_full_visual_package(
+                    campaign, angle, ad_copy, include_video=include_video
+                )
+                visual_packages.append(package)
+
+            results["visual_packages"] = visual_packages
+            print(f"DEBUG: Step 4 complete - generated {len(visual_packages)} visual packages")
 
         # Update campaign status
         campaign.status = "active"
         db.commit()
 
+        summary = {
+            "keyword_intelligence": keyword_data.get("total_found", 0) if keyword_data else 0,
+            "keyword_source": keyword_data.get("source", "none") if keyword_data else "none",
+            "market_research": 1,
+            "creative_angles": len(angles_result),
+            "ad_copies": len(ad_copies_result)
+        }
+        if include_visuals:
+            summary["visual_packages"] = len(visual_packages)
+            summary["total_image_concepts"] = sum(
+                len(p.get("image_concepts", [])) for p in visual_packages
+            )
+
         return {
             "success": True,
             "message": "Campaign pipeline completed successfully",
             "campaign_id": str(campaign_id),
-            "summary": {
-                "market_research": 1,
-                "creative_angles": len(angles_result),
-                "ad_copies": len(ad_copies_result)
-            },
+            "summary": summary,
             "results": results
         }
 
@@ -771,6 +833,206 @@ async def run_campaign_pipeline(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Pipeline failed: {str(e)}"
+        )
+
+
+# ============ Visual Director Endpoints ============
+
+@agents_router.post("/campaigns/{campaign_id}/visuals")
+async def generate_campaign_visuals(
+    campaign_id: uuid.UUID,
+    angle_id: Optional[uuid.UUID] = Query(None, description="Generate for specific angle only"),
+    include_video: bool = Query(False, description="Include video concepts"),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate image prompts and visual direction for a campaign's creative angles.
+
+    If angle_id is provided, generates visuals for that specific angle.
+    Otherwise, generates visuals for ALL angles of the campaign.
+
+    Each visual package includes:
+    - 3 image concepts with detailed AI generation prompts
+    - Composition guidelines (focal point, text zones, color palette)
+    - Format variants (square, portrait, stories)
+    - Optional video concepts with shot-by-shot breakdowns
+
+    Prerequisites: Campaign must have creative angles and ad copies generated first.
+    """
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
+
+    try:
+        visual_agent = VisualDirectorAgent()
+
+        if angle_id:
+            angle = db.query(CreativeAngle).filter(CreativeAngle.id == angle_id).first()
+            if not angle:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Creative angle not found")
+
+            ad_copy = db.query(AdCopy).filter(AdCopy.angle_id == angle_id).first()
+            package = await visual_agent.generate_full_visual_package(
+                campaign, angle, ad_copy, include_video=include_video
+            )
+
+            return {
+                "success": True,
+                "message": f"Generated visual package for angle: {angle.angle_name}",
+                "campaign_id": str(campaign_id),
+                "visual_packages": [package]
+            }
+        else:
+            angles = db.query(CreativeAngle).filter(
+                CreativeAngle.campaign_id == campaign_id
+            ).all()
+
+            if not angles:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No creative angles found. Generate creative angles first."
+                )
+
+            visual_packages = []
+            for angle in angles:
+                ad_copy = db.query(AdCopy).filter(AdCopy.angle_id == angle.id).first()
+                package = await visual_agent.generate_full_visual_package(
+                    campaign, angle, ad_copy, include_video=include_video
+                )
+                visual_packages.append(package)
+
+            total_concepts = sum(len(p.get("image_concepts", [])) for p in visual_packages)
+
+            return {
+                "success": True,
+                "message": f"Generated {len(visual_packages)} visual packages with {total_concepts} image concepts",
+                "campaign_id": str(campaign_id),
+                "summary": {
+                    "angles_processed": len(angles),
+                    "total_image_concepts": total_concepts,
+                    "includes_video": include_video
+                },
+                "visual_packages": visual_packages
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate visuals: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate visuals: {str(e)}"
+        )
+
+
+@agents_router.post("/campaigns/{campaign_id}/generate-images")
+async def generate_campaign_images(
+    campaign_id: uuid.UUID,
+    angle_id: Optional[uuid.UUID] = Query(None, description="Generate for specific angle only"),
+    aspect_ratio: str = Query("1:1", description="Image aspect ratio: 1:1, 4:5, 9:16, 16:9"),
+    style: str = Query("professional", description="Visual style"),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate actual images for a campaign using the Visual Director prompts + Media Generator.
+
+    This is a 2-step process:
+    1. Visual Director generates detailed image prompts per angle
+    2. Media Generator creates actual images from those prompts (Gemini/DALL-E/Stability)
+
+    Each generated image is uploaded to Cloudinary and returned with URLs.
+
+    Prerequisites: Campaign must have creative angles generated first.
+    """
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+    if campaign.store_id:
+        require_ai_quota(campaign.store_id, db)
+
+    try:
+        visual_agent = VisualDirectorAgent()
+        media_agent = MediaGeneratorAgent()
+
+        if angle_id:
+            angles = [db.query(CreativeAngle).filter(CreativeAngle.id == angle_id).first()]
+            if not angles[0]:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Creative angle not found")
+        else:
+            angles = db.query(CreativeAngle).filter(
+                CreativeAngle.campaign_id == campaign_id
+            ).all()
+
+        if not angles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No creative angles found. Generate creative angles first."
+            )
+
+        generated_assets = []
+
+        for angle in angles:
+            ad_copy = db.query(AdCopy).filter(AdCopy.angle_id == angle.id).first()
+
+            # Step 1: Get image prompts from Visual Director
+            prompts_result = await visual_agent.generate_image_prompts(campaign, angle, ad_copy)
+            image_concepts = prompts_result.get("image_concepts", [])
+
+            angle_assets = {
+                "angle_id": str(angle.id),
+                "angle_name": angle.angle_name,
+                "images": []
+            }
+
+            # Step 2: Generate actual images from prompts
+            for concept in image_concepts[:2]:  # Limit to 2 per angle to manage costs
+                prompt = concept.get("ai_image_prompt", "")
+                if not prompt:
+                    continue
+
+                image_result = await media_agent.generate_image(
+                    prompt=prompt,
+                    style=style,
+                    aspect_ratio=aspect_ratio,
+                    upload_to_cloud=True,
+                    cloudinary_folder=f"shopivell/campaigns/{campaign_id}"
+                )
+
+                angle_assets["images"].append({
+                    "concept_name": concept.get("concept_name"),
+                    "prompt_used": prompt,
+                    "cloudinary_url": image_result.get("cloudinary_url"),
+                    "thumbnail_url": image_result.get("thumbnail_url"),
+                    "provider_used": image_result.get("provider_used"),
+                    "is_placeholder": image_result.get("is_placeholder", False)
+                })
+
+            generated_assets.append(angle_assets)
+
+        total_images = sum(len(a["images"]) for a in generated_assets)
+
+        return {
+            "success": True,
+            "message": f"Generated {total_images} images across {len(angles)} angles",
+            "campaign_id": str(campaign_id),
+            "generated_assets": generated_assets
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate campaign images: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate campaign images: {str(e)}"
         )
 
 
@@ -990,7 +1252,8 @@ async def add_performance_metrics(
 async def generate_image(
     prompt: str,
     style: str = "professional",
-    aspect_ratio: str = "1:1"
+    aspect_ratio: str = "1:1",
+    store_id: Optional[uuid.UUID] = None
 ):
     """
     Generate an AI image using multiple providers with automatic fallback.
@@ -1005,6 +1268,7 @@ async def generate_image(
         prompt: The image generation prompt
         style: Visual style (professional, vibrant, minimal, luxury, lifestyle, bold, cinematic)
         aspect_ratio: Image aspect ratio (1:1, 16:9, 9:16, 4:5)
+        store_id: Optional store UUID to incorporate brand assets into prompt
     """
     try:
         agent = MediaGeneratorAgent()
@@ -1013,7 +1277,8 @@ async def generate_image(
             style=style,
             aspect_ratio=aspect_ratio,
             upload_to_cloud=True,
-            cloudinary_folder="shopivell/generated/ads"
+            cloudinary_folder="shopivell/generated/ads",
+            store_id=str(store_id) if store_id else None
         )
 
         return {
@@ -1545,7 +1810,10 @@ async def create_custom_rule(
     max_budget: Optional[float] = None,
     min_budget: Optional[float] = None,
     target_roas: Optional[float] = None,
-    target_cpa: Optional[float] = None
+    target_cpa: Optional[float] = None,
+    cooldown_minutes: int = 60,
+    max_triggers_per_day: int = 3,
+    condition_groups: Optional[dict] = None
 ):
     """
     Create a custom automated rule with specific conditions and actions.
@@ -1554,14 +1822,20 @@ async def create_custom_rule(
         name: Rule name
         description: Rule description
         entity_type: "campaign", "adset", or "ad"
-        conditions: List of condition objects with:
-            - metric: roas, cpa, ctr, impressions, conversions, spend, cpc
-            - operator: gt, gte, lt, lte, eq, neq
-            - value: Threshold value
-            - consecutive_days: Days condition must be met (default 1)
+        conditions: List of condition objects (flat AND logic)
+        condition_groups: Optional nested AND/OR/NOT logic tree. Example:
+            {"logic": "or", "conditions": [
+                {"logic": "and", "conditions": [
+                    {"metric": "roas", "operator": "gt", "value": 2},
+                    {"metric": "ctr", "operator": "lt", "value": 1}
+                ]},
+                {"metric": "cpa", "operator": "gt", "value": 50}
+            ]}
         action_type: scale_up, scale_down, pause, unpause, notify
         adjustment_percent: Budget adjustment percentage (for scale actions)
         max_budget: Maximum budget cap (for scale_up)
+        cooldown_minutes: Minimum minutes between triggers (default 60)
+        max_triggers_per_day: Maximum triggers per day per entity (default 3)
         min_budget: Minimum budget floor (for scale_down)
         target_roas: Target ROAS for reference
         target_cpa: Target CPA for reference
@@ -1596,15 +1870,26 @@ async def create_custom_rule(
             min_budget=min_budget
         )
 
+        # Parse condition groups if provided
+        parsed_groups = None
+        if condition_groups:
+            try:
+                parsed_groups = ConditionGroup.model_validate(condition_groups)
+            except Exception as eg:
+                raise HTTPException(status_code=400, detail=f"Invalid condition_groups: {str(eg)}")
+
         # Create rule
         rule = AutomatedRule(
             name=name,
             description=description,
             entity_type=entity_type,
             conditions=parsed_conditions,
+            condition_groups=parsed_groups,
             action=action,
             target_roas=target_roas,
-            target_cpa=target_cpa
+            target_cpa=target_cpa,
+            cooldown_minutes=cooldown_minutes,
+            max_triggers_per_day=max_triggers_per_day
         )
 
         automated_rules_engine.add_rule(rule)
@@ -1724,9 +2009,12 @@ async def run_rules_for_account(ad_account_id: str):
 
 
 @agents_router.get("/rules/history")
-async def get_rule_execution_history(limit: int = 100):
+async def get_rule_execution_history(
+    limit: int = 100,
+    ad_account_id: Optional[str] = Query(None, description="Filter by ad account")
+):
     """
-    Get history of rule executions.
+    Get history of rule executions from persistent database storage.
 
     Shows recent actions taken by automated rules including:
     - Which rule was triggered
@@ -1734,8 +2022,9 @@ async def get_rule_execution_history(limit: int = 100):
     - What action was taken (budget change, pause, etc.)
     - Old and new values
     - Success/failure status
+    - Rollback eligibility and status
     """
-    history = automated_rules_engine.get_execution_history(limit=limit)
+    history = automated_rules_engine.get_execution_history(limit=limit, ad_account_id=ad_account_id)
 
     return {
         "success": True,
@@ -2163,4 +2452,1301 @@ async def generate_b2c_ad_copy(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate B2C ad copy: {str(e)}"
+        )
+
+
+# ============ Interest Validation & Targeting Endpoints ============
+
+@agents_router.post("/validate-interests")
+async def validate_interests(
+    interest_tags: List[str],
+    access_token: str,
+    ad_account_id: Optional[str] = None,
+    countries: Optional[List[str]] = None,
+    age_min: int = 18,
+    age_max: int = 65,
+):
+    """
+    Validate interest tags against Meta's Interest Search API.
+
+    If ad_account_id and countries are provided, also returns a reach estimate.
+    """
+    try:
+        from modules.marketing.meta_targeting_service import MetaTargetingService
+        service = MetaTargetingService(access_token=access_token)
+
+        if ad_account_id and countries:
+            result = service.validate_and_estimate(
+                ad_account_id=ad_account_id,
+                interest_tags=interest_tags,
+                countries=countries,
+                age_min=age_min,
+                age_max=age_max
+            )
+        else:
+            validation = service.validate_interests(interest_tags)
+            result = {"validation": validation}
+
+        return {
+            "success": True,
+            "message": f"Validated {len(interest_tags)} interest tags",
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to validate interests: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to validate interests: {str(e)}"
+        )
+
+
+@agents_router.post("/audience-from-url-validated")
+async def generate_audience_from_url_validated(
+    url: str,
+    access_token: str,
+    ad_account_id: str,
+    countries: Optional[List[str]] = None,
+    deep_scrape: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate Meta audience from URL with interest validation and reach estimation.
+
+    Chains: scrape URL → LLM audience generation → Meta interest validation → reach estimate.
+    """
+    try:
+        from .creative_strategist_agent import CreativeStrategistAgent
+        from .market_research_agent import MarketResearchAgent
+
+        # Step 1: Research the URL
+        research_agent = MarketResearchAgent()
+        research_data = await research_agent.research_website(url, deep_scrape=deep_scrape)
+
+        # Step 2: Generate validated audience
+        strategist = CreativeStrategistAgent()
+        result = await strategist.generate_meta_audience_validated(
+            website_data=research_data,
+            access_token=access_token,
+            ad_account_id=ad_account_id,
+            countries=countries
+        )
+
+        return {
+            "success": True,
+            "message": "Generated and validated audience targeting",
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate validated audience: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate validated audience: {str(e)}"
+        )
+
+
+# ============ Keyword Intelligence Endpoints ============
+
+@agents_router.post("/keyword-research")
+async def keyword_research(
+    seed_keyword: str,
+    country_code: str = "ZW",
+    additional_seeds: Optional[List[str]] = None,
+    limit: int = 50
+):
+    """
+    Research keywords with search volume, CPC, competition data, and intent clustering.
+
+    Uses DataForSEO API if configured, falls back to Google Autocomplete.
+    Keywords are automatically clustered by search intent (informational, commercial, transactional).
+    """
+    try:
+        from .keyword_intelligence_agent import KeywordIntelligenceAgent
+        agent = KeywordIntelligenceAgent()
+
+        result = await agent.research_keywords(
+            seed_keyword=seed_keyword,
+            country_code=country_code,
+            additional_seeds=additional_seeds,
+            limit=limit
+        )
+
+        return {
+            "success": True,
+            "message": f"Found {result.get('total_found', 0)} keywords for '{seed_keyword}'",
+            "data": result
+        }
+
+    except Exception as e:
+        logger.error(f"Keyword research failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Keyword research failed: {str(e)}"
+        )
+
+
+# ============ Optimization Decision Logs ============
+
+@agents_router.get("/optimization/logs")
+async def get_optimization_logs(
+    campaign_id: Optional[uuid.UUID] = Query(None, description="Filter by campaign"),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db)
+):
+    """Get history of AI optimization analyses with parsed recommendations."""
+    try:
+        from .models import OptimizationDecisionLog
+        query = db.query(OptimizationDecisionLog).order_by(OptimizationDecisionLog.created_at.desc())
+        if campaign_id:
+            query = query.filter(OptimizationDecisionLog.campaign_id == campaign_id)
+        logs = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(logs),
+            "logs": [
+                {
+                    "id": str(log.id),
+                    "campaign_id": str(log.campaign_id) if log.campaign_id else None,
+                    "recommendations": log.recommendations,
+                    "health_score": log.health_score,
+                    "summary": log.summary,
+                    "parse_method": log.parse_method,
+                    "model_used": log.model_used,
+                    "created_at": log.created_at.isoformat() if log.created_at else None
+                }
+                for log in logs
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get optimization logs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Circuit Breaker Endpoints ============
+
+@agents_router.get("/circuit-breaker/{ad_account_id}")
+async def get_circuit_breaker_status(ad_account_id: str, db: Session = Depends(get_db)):
+    """Get circuit breaker state for an ad account."""
+    try:
+        from .models import CircuitBreakerState
+        cb = db.query(CircuitBreakerState).filter(
+            CircuitBreakerState.ad_account_id == ad_account_id
+        ).first()
+        if not cb:
+            return {"success": True, "state": "not_configured", "is_tripped": False}
+        return {
+            "success": True,
+            "is_tripped": cb.is_tripped,
+            "trip_reason": cb.trip_reason,
+            "tripped_at": cb.tripped_at.isoformat() if cb.tripped_at else None,
+            "auto_reset_at": cb.auto_reset_at.isoformat() if cb.auto_reset_at else None,
+            "config": {
+                "daily_spend_cap": cb.daily_spend_cap,
+                "volatility_threshold_pct": cb.volatility_threshold_pct,
+                "data_freshness_hours": cb.data_freshness_hours
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/circuit-breaker/{ad_account_id}/reset")
+async def reset_circuit_breaker(ad_account_id: str, db: Session = Depends(get_db)):
+    """Manually reset a tripped circuit breaker."""
+    try:
+        from .models import CircuitBreakerState
+        cb = db.query(CircuitBreakerState).filter(
+            CircuitBreakerState.ad_account_id == ad_account_id
+        ).first()
+        if not cb:
+            return {"success": False, "message": "No circuit breaker found for this account"}
+        cb.is_tripped = False
+        cb.trip_reason = None
+        cb.tripped_at = None
+        cb.auto_reset_at = None
+        db.commit()
+        return {"success": True, "message": "Circuit breaker reset"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.put("/circuit-breaker/{ad_account_id}/config")
+async def update_circuit_breaker_config(
+    ad_account_id: str,
+    daily_spend_cap: Optional[float] = Query(None, description="Max daily spend before tripping"),
+    volatility_threshold_pct: Optional[float] = Query(None, description="Max % metric change before blocking"),
+    data_freshness_hours: Optional[int] = Query(None, description="Max hours since last data sync"),
+    db: Session = Depends(get_db)
+):
+    """Update circuit breaker thresholds for an ad account."""
+    try:
+        from .models import CircuitBreakerState
+        cb = db.query(CircuitBreakerState).filter(
+            CircuitBreakerState.ad_account_id == ad_account_id
+        ).first()
+        if not cb:
+            cb = CircuitBreakerState(ad_account_id=ad_account_id)
+            db.add(cb)
+        if daily_spend_cap is not None:
+            cb.daily_spend_cap = daily_spend_cap
+        if volatility_threshold_pct is not None:
+            cb.volatility_threshold_pct = volatility_threshold_pct
+        if data_freshness_hours is not None:
+            cb.data_freshness_hours = data_freshness_hours
+        db.commit()
+        return {
+            "success": True,
+            "message": "Circuit breaker config updated",
+            "config": {
+                "daily_spend_cap": cb.daily_spend_cap,
+                "volatility_threshold_pct": cb.volatility_threshold_pct,
+                "data_freshness_hours": cb.data_freshness_hours
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Simulation Endpoints ============
+
+@agents_router.post("/rules/simulate/{ad_account_id}")
+async def simulate_rules(ad_account_id: str):
+    """
+    Run all rules in dry-run mode. Evaluates everything but makes no Meta API calls.
+    Shows what WOULD happen if rules were executed right now.
+    """
+    try:
+        result = await automated_rules_engine.run_all_rules(ad_account_id, dry_run=True)
+        return {"success": True, "simulation": result}
+    except Exception as e:
+        logger.error(f"Rule simulation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Rollback Endpoints ============
+
+@agents_router.post("/rules/check-rollbacks")
+async def check_rollbacks_now():
+    """Manually trigger rollback checks for all pending budget actions."""
+    try:
+        rollbacks = await automated_rules_engine.check_rollbacks()
+        return {
+            "success": True,
+            "rollbacks_executed": len(rollbacks),
+            "details": rollbacks
+        }
+    except Exception as e:
+        logger.error(f"Rollback check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Rule Proposals Endpoints ============
+
+@agents_router.get("/rules/proposals")
+async def list_proposed_rules(
+    status_filter: Optional[str] = Query("pending", description="Filter by status: pending, accepted, rejected"),
+    ad_account_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """List all LLM-proposed rules, filterable by status."""
+    try:
+        from .models import ProposedRule
+        query = db.query(ProposedRule).order_by(ProposedRule.created_at.desc())
+        if status_filter:
+            query = query.filter(ProposedRule.status == status_filter)
+        if ad_account_id:
+            query = query.filter(ProposedRule.ad_account_id == ad_account_id)
+        proposals = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(proposals),
+            "proposals": [
+                {
+                    "id": str(p.id),
+                    "name": p.name,
+                    "conditions": p.conditions,
+                    "action_type": p.action_type,
+                    "adjustment_percent": p.adjustment_percent,
+                    "reasoning": p.reasoning,
+                    "status": p.status,
+                    "campaign_id": str(p.campaign_id) if p.campaign_id else None,
+                    "created_at": p.created_at.isoformat() if p.created_at else None
+                }
+                for p in proposals
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/rules/proposals/{proposal_id}/accept")
+async def accept_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Accept a proposed rule, converting it to an active AutomatedRule in the engine."""
+    try:
+        from .models import ProposedRule
+        proposal = db.query(ProposedRule).filter(ProposedRule.id == proposal_id).first()
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+        if proposal.status != "pending":
+            raise HTTPException(status_code=400, detail=f"Proposal already {proposal.status}")
+
+        # Convert to AutomatedRule
+        conditions = []
+        for cond in proposal.conditions:
+            conditions.append(RuleCondition(
+                metric=cond.get("metric", "ctr"),
+                operator=cond.get("operator", "gt"),
+                value=cond.get("value", 0),
+                consecutive_days=cond.get("consecutive_days", 1)
+            ))
+
+        action = RuleAction(
+            type=RuleType(proposal.action_type),
+            adjustment_percent=proposal.adjustment_percent
+        )
+
+        rule = AutomatedRule(
+            name=proposal.name,
+            description=f"AI-proposed: {proposal.reasoning}",
+            conditions=conditions,
+            action=action
+        )
+
+        automated_rules_engine.add_rule(rule)
+
+        # Update proposal status
+        proposal.status = "accepted"
+        proposal.accepted_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Rule '{rule.name}' accepted and activated",
+            "rule_id": rule.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/rules/proposals/{proposal_id}/reject")
+async def reject_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Reject a proposed rule."""
+    try:
+        from .models import ProposedRule
+        proposal = db.query(ProposedRule).filter(ProposedRule.id == proposal_id).first()
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Proposal not found")
+
+        proposal.status = "rejected"
+        proposal.rejected_at = datetime.utcnow()
+        db.commit()
+
+        return {"success": True, "message": f"Proposal '{proposal.name}' rejected"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/rules/propose/{campaign_id}")
+async def trigger_rule_proposal(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Manually trigger the LLM to propose optimization rules for a campaign."""
+    try:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        # Get performance data
+        metrics = db.query(PerformanceMetrics).filter(
+            PerformanceMetrics.campaign_id == campaign_id
+        ).all()
+
+        performance_data = [{
+            "ad_id": str(m.ad_id) if m.ad_id else "N/A",
+            "impressions": m.impressions or 0,
+            "clicks": m.clicks or 0,
+            "ctr": m.ctr or 0,
+            "cpc": m.cpc or 0,
+            "conversions": m.conversions or 0,
+            "spend": m.spend or 0,
+            "roas": m.roas or 0
+        } for m in metrics]
+
+        # Get execution history
+        history = automated_rules_engine.get_execution_history(limit=20)
+
+        # Propose rules
+        agent = MonitorOptimizerAgent()
+        proposals = await agent.propose_rules(
+            campaign=campaign,
+            performance_data=performance_data,
+            current_rules=automated_rules_engine.rules,
+            execution_history=history
+        )
+
+        return {
+            "success": True,
+            "proposals_generated": len(proposals),
+            "proposals": proposals
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Rule proposal failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Meta-Learner & AI Decision Endpoints ============
+
+@agents_router.get("/meta-learner/status/{ad_account_id}")
+async def get_meta_learner_status(ad_account_id: str):
+    """Get data maturity level and meta-learner stats for an ad account."""
+    try:
+        from .meta_learner import MetaLearner
+        ml = MetaLearner()
+        maturity, days = ml.check_data_maturity(ad_account_id)
+        return {
+            "success": True,
+            "ad_account_id": ad_account_id,
+            "data_maturity": maturity,
+            "days_of_data": days,
+            "features_enabled": {
+                "rule_execution": maturity in ("basic", "intermediate", "full"),
+                "outcome_measurement": maturity in ("basic", "intermediate", "full"),
+                "proposal_backtesting": maturity in ("intermediate", "full"),
+                "auto_tune_thresholds": maturity == "full",
+                "auto_retire_rules": maturity == "full"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/meta-learner/run/{ad_account_id}")
+async def run_meta_learner(ad_account_id: str):
+    """Manually trigger a meta-learner cycle."""
+    try:
+        from .meta_learner import MetaLearner
+        ml = MetaLearner()
+        result = await ml.run_meta_learner_cycle(ad_account_id)
+        return {"success": True, **result}
+    except Exception as e:
+        logger.error(f"Meta-learner cycle failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/meta-learner/backtest-results")
+async def get_backtest_results(
+    ad_account_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """View backtest history."""
+    try:
+        from .models import BacktestResult
+        query = db.query(BacktestResult).order_by(BacktestResult.created_at.desc())
+        if ad_account_id:
+            query = query.filter(BacktestResult.ad_account_id == ad_account_id)
+        results = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(results),
+            "results": [
+                {
+                    "id": str(r.id),
+                    "rule_id": r.rule_id,
+                    "days_tested": r.days_tested,
+                    "total_triggers": r.total_triggers,
+                    "good_outcomes": r.good_outcomes,
+                    "bad_outcomes": r.bad_outcomes,
+                    "success_rate": r.success_rate,
+                    "avg_cpa_change": r.avg_cpa_change,
+                    "verdict": r.verdict,
+                    "created_at": r.created_at.isoformat() if r.created_at else None
+                }
+                for r in results
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/meta-learner/backtest-rule")
+async def backtest_rule_manually(
+    ad_account_id: str,
+    conditions: List[dict] = [],
+    action_type: str = "scale_up",
+    days: int = Query(30, ge=7, le=90)
+):
+    """Manually backtest a rule against historical data."""
+    try:
+        from .meta_learner import MetaLearner
+        ml = MetaLearner()
+        result = ml.backtest_rule(conditions, action_type, ad_account_id, days)
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/ai-decisions")
+async def get_ai_decisions(
+    decision_type: Optional[str] = Query(None, description="Filter by type"),
+    agent_name: Optional[str] = Query(None, description="Filter by agent"),
+    ad_account_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db)
+):
+    """Query the AI decision audit log. Each entry is a (context, decision, outcome) triple for fine-tuning."""
+    try:
+        from .models import AIDecisionLog
+        query = db.query(AIDecisionLog).order_by(AIDecisionLog.created_at.desc())
+        if decision_type:
+            query = query.filter(AIDecisionLog.decision_type == decision_type)
+        if agent_name:
+            query = query.filter(AIDecisionLog.agent_name == agent_name)
+        if ad_account_id:
+            query = query.filter(AIDecisionLog.ad_account_id == ad_account_id)
+        logs = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(logs),
+            "decisions": [
+                {
+                    "id": str(l.id),
+                    "decision_type": l.decision_type,
+                    "agent_name": l.agent_name,
+                    "input_context": l.input_context,
+                    "decision": l.decision,
+                    "reasoning": l.reasoning,
+                    "outcome_measured": l.outcome_measured,
+                    "outcome_data": l.outcome_data,
+                    "outcome_score": l.outcome_score,
+                    "confidence": l.confidence,
+                    "data_maturity_level": l.data_maturity_level,
+                    "created_at": l.created_at.isoformat() if l.created_at else None,
+                    "outcome_measured_at": l.outcome_measured_at.isoformat() if l.outcome_measured_at else None
+                }
+                for l in logs
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/ai-decisions/stats")
+async def get_ai_decision_stats(
+    ad_account_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get aggregate stats on AI decisions — success rates by type and agent."""
+    try:
+        from .models import AIDecisionLog
+        from sqlalchemy import func
+
+        query = db.query(
+            AIDecisionLog.decision_type,
+            AIDecisionLog.agent_name,
+            func.count(AIDecisionLog.id).label("total"),
+            func.avg(AIDecisionLog.outcome_score).label("avg_score"),
+            func.count(AIDecisionLog.outcome_score).label("measured")
+        ).group_by(AIDecisionLog.decision_type, AIDecisionLog.agent_name)
+
+        if ad_account_id:
+            query = query.filter(AIDecisionLog.ad_account_id == ad_account_id)
+
+        rows = query.all()
+        return {
+            "success": True,
+            "stats": [
+                {
+                    "decision_type": r.decision_type,
+                    "agent_name": r.agent_name,
+                    "total_decisions": r.total,
+                    "avg_outcome_score": round(float(r.avg_score), 3) if r.avg_score else None,
+                    "outcomes_measured": r.measured
+                }
+                for r in rows
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/ai-decisions/outcomes")
+async def get_ai_decision_outcomes(
+    min_score: Optional[float] = Query(None, description="Min outcome score (-1 to 1)"),
+    max_score: Optional[float] = Query(None, description="Max outcome score (-1 to 1)"),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get decisions with measured outcomes — the fine-tuning dataset."""
+    try:
+        from .models import AIDecisionLog
+        query = db.query(AIDecisionLog).filter(
+            AIDecisionLog.outcome_measured == True,
+            AIDecisionLog.outcome_score.isnot(None)
+        ).order_by(AIDecisionLog.outcome_measured_at.desc())
+
+        if min_score is not None:
+            query = query.filter(AIDecisionLog.outcome_score >= min_score)
+        if max_score is not None:
+            query = query.filter(AIDecisionLog.outcome_score <= max_score)
+
+        logs = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(logs),
+            "dataset": [
+                {
+                    "input": l.input_context,
+                    "decision": l.decision,
+                    "reasoning": l.reasoning,
+                    "outcome_score": l.outcome_score,
+                    "outcome_data": l.outcome_data,
+                    "decision_type": l.decision_type,
+                    "agent_name": l.agent_name,
+                    "created_at": l.created_at.isoformat() if l.created_at else None
+                }
+                for l in logs
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/rules/performance")
+async def get_rule_performance(db: Session = Depends(get_db)):
+    """Get per-rule performance stats from the tracker."""
+    try:
+        from .models import RulePerformanceTracker
+        trackers = db.query(RulePerformanceTracker).order_by(
+            RulePerformanceTracker.success_rate.desc()
+        ).all()
+        return {
+            "success": True,
+            "total": len(trackers),
+            "rules": [
+                {
+                    "rule_id": t.rule_id,
+                    "rule_name": t.rule_name,
+                    "total_triggers": t.total_triggers,
+                    "success_rate": t.success_rate,
+                    "good_outcomes": t.good_outcomes,
+                    "bad_outcomes": t.bad_outcomes,
+                    "times_tightened": t.times_tightened,
+                    "times_loosened": t.times_loosened,
+                    "auto_disabled": t.auto_disabled,
+                    "disabled_reason": t.disabled_reason,
+                    "last_triggered_at": t.last_triggered_at.isoformat() if t.last_triggered_at else None,
+                    "last_evaluated_at": t.last_evaluated_at.isoformat() if t.last_evaluated_at else None
+                }
+                for t in trackers
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Marketing Events & Calendar Endpoints ============
+
+@agents_router.get("/marketing-events/{store_id}")
+async def list_marketing_events(
+    store_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """List all custom marketing events for a store."""
+    try:
+        from .models import MarketingEvent
+        events = db.query(MarketingEvent).filter(
+            MarketingEvent.store_id == store_id
+        ).order_by(MarketingEvent.start_date).all()
+        return {
+            "success": True,
+            "total": len(events),
+            "events": [
+                {
+                    "id": str(e.id),
+                    "name": e.name,
+                    "event_type": e.event_type,
+                    "start_date": e.start_date.isoformat() if e.start_date else None,
+                    "end_date": e.end_date.isoformat() if e.end_date else None,
+                    "budget_multiplier": e.budget_multiplier,
+                    "is_active": e.is_active,
+                    "notes": e.notes
+                }
+                for e in events
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/marketing-events/{store_id}")
+async def create_marketing_event(
+    store_id: uuid.UUID,
+    name: str = Query(..., description="Event name"),
+    event_type: str = Query("custom", description="sale, launch, seasonal, holiday, custom"),
+    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    budget_multiplier: float = Query(1.0, description="Budget multiplier (e.g., 1.3 = +30%)"),
+    notes: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Add a custom marketing event for a store."""
+    try:
+        from .models import MarketingEvent
+        event = MarketingEvent(
+            store_id=store_id,
+            name=name,
+            event_type=event_type,
+            start_date=datetime.fromisoformat(start_date),
+            end_date=datetime.fromisoformat(end_date),
+            budget_multiplier=budget_multiplier,
+            notes=notes,
+            is_active=True
+        )
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+        return {
+            "success": True,
+            "message": f"Event '{name}' created",
+            "event_id": str(event.id)
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.put("/marketing-events/{event_id}")
+async def update_marketing_event(
+    event_id: uuid.UUID,
+    name: Optional[str] = None,
+    event_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    budget_multiplier: Optional[float] = None,
+    is_active: Optional[bool] = None,
+    notes: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Update a custom marketing event."""
+    try:
+        from .models import MarketingEvent
+        event = db.query(MarketingEvent).filter(MarketingEvent.id == event_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if name is not None:
+            event.name = name
+        if event_type is not None:
+            event.event_type = event_type
+        if start_date is not None:
+            event.start_date = datetime.fromisoformat(start_date)
+        if end_date is not None:
+            event.end_date = datetime.fromisoformat(end_date)
+        if budget_multiplier is not None:
+            event.budget_multiplier = budget_multiplier
+        if is_active is not None:
+            event.is_active = is_active
+        if notes is not None:
+            event.notes = notes
+        db.commit()
+        return {"success": True, "message": f"Event '{event.name}' updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.delete("/marketing-events/{event_id}")
+async def delete_marketing_event(event_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Delete a custom marketing event."""
+    try:
+        from .models import MarketingEvent
+        event = db.query(MarketingEvent).filter(MarketingEvent.id == event_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        db.delete(event)
+        db.commit()
+        return {"success": True, "message": f"Event '{event.name}' deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/marketing-events/{store_id}/upcoming")
+async def get_upcoming_events_for_store(
+    store_id: uuid.UUID,
+    days_ahead: int = Query(14, ge=1, le=90),
+    db: Session = Depends(get_db)
+):
+    """Get all upcoming events (public holidays + retail calendar + custom) for a store."""
+    try:
+        from .calendar_engine import get_upcoming_events
+        from modules.stores.models import Store
+
+        store = db.query(Store).filter(Store.id == store_id).first()
+        country = store.country_code or "US" if store else "US"
+
+        events = get_upcoming_events(country, str(store_id), days_ahead)
+        return {
+            "success": True,
+            "country_code": country,
+            "days_ahead": days_ahead,
+            "total": len(events),
+            "events": events
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/calendar/retail-events/{store_id}/overrides")
+async def get_retail_event_overrides(store_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get all retail calendar overrides for a store."""
+    try:
+        from .models import StoreCalendarOverride
+        overrides = db.query(StoreCalendarOverride).filter(
+            StoreCalendarOverride.store_id == store_id
+        ).all()
+        return {
+            "success": True,
+            "total": len(overrides),
+            "overrides": [
+                {
+                    "id": str(o.id),
+                    "event_key": o.event_key,
+                    "is_enabled": o.is_enabled,
+                    "custom_name": o.custom_name,
+                    "custom_start_month": o.custom_start_month,
+                    "custom_start_day": o.custom_start_day,
+                    "custom_duration_days": o.custom_duration_days,
+                    "custom_budget_multiplier": o.custom_budget_multiplier,
+                    "custom_impact": o.custom_impact,
+                }
+                for o in overrides
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.put("/calendar/retail-events/{store_id}/{event_key}")
+async def update_retail_event_override(
+    store_id: uuid.UUID,
+    event_key: str,
+    is_enabled: Optional[bool] = None,
+    custom_name: Optional[str] = None,
+    custom_start_month: Optional[int] = Query(None, ge=1, le=12),
+    custom_start_day: Optional[int] = Query(None, ge=1, le=31),
+    custom_duration_days: Optional[int] = Query(None, ge=1, le=60),
+    custom_budget_multiplier: Optional[float] = Query(None, ge=0.5, le=3.0),
+    custom_impact: Optional[str] = Query(None, description="high, medium, or low"),
+    db: Session = Depends(get_db)
+):
+    """
+    Create or update a store's override for a built-in retail calendar event.
+    Use this to toggle events on/off, adjust dates, budget impact, etc.
+    """
+    try:
+        from .models import StoreCalendarOverride
+        from .calendar_engine import RETAIL_CALENDAR
+
+        if event_key not in RETAIL_CALENDAR:
+            raise HTTPException(status_code=404, detail=f"Unknown retail event: {event_key}")
+
+        # Get or create override
+        override = db.query(StoreCalendarOverride).filter(
+            StoreCalendarOverride.store_id == store_id,
+            StoreCalendarOverride.event_key == event_key
+        ).first()
+
+        if not override:
+            override = StoreCalendarOverride(store_id=store_id, event_key=event_key)
+            db.add(override)
+
+        if is_enabled is not None:
+            override.is_enabled = is_enabled
+        if custom_name is not None:
+            override.custom_name = custom_name
+        if custom_start_month is not None:
+            override.custom_start_month = custom_start_month
+        if custom_start_day is not None:
+            override.custom_start_day = custom_start_day
+        if custom_duration_days is not None:
+            override.custom_duration_days = custom_duration_days
+        if custom_budget_multiplier is not None:
+            override.custom_budget_multiplier = custom_budget_multiplier
+        if custom_impact is not None:
+            override.custom_impact = custom_impact
+
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Override for '{event_key}' saved",
+            "event_key": event_key,
+            "original": {
+                "name": RETAIL_CALENDAR[event_key]["name"],
+                "impact": RETAIL_CALENDAR[event_key].get("impact"),
+                "budget_multiplier": RETAIL_CALENDAR[event_key].get("budget_multiplier")
+            },
+            "override": {
+                "is_enabled": override.is_enabled,
+                "custom_name": override.custom_name,
+                "custom_budget_multiplier": override.custom_budget_multiplier,
+                "custom_impact": override.custom_impact
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/calendar/holidays/{country_code}")
+async def get_public_holidays(
+    country_code: str,
+    year: Optional[int] = None
+):
+    """Get public holidays for a country from Nager.Date API."""
+    try:
+        from .calendar_engine import fetch_public_holidays
+        holidays = fetch_public_holidays(country_code.upper(), year)
+        return {
+            "success": True,
+            "country_code": country_code.upper(),
+            "year": year or datetime.utcnow().year,
+            "total": len(holidays),
+            "holidays": holidays
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/calendar/retail-events/{country_code}")
+async def get_retail_events(
+    country_code: str,
+    year: Optional[int] = None,
+    store_id: Optional[str] = Query(None, description="Store ID to apply overrides")
+):
+    """Get built-in retail calendar events for a country. Pass store_id to include user overrides."""
+    try:
+        from .calendar_engine import compute_retail_events
+        events = compute_retail_events(country_code.upper(), year, store_id=store_id)
+        return {
+            "success": True,
+            "country_code": country_code.upper(),
+            "year": year or datetime.utcnow().year,
+            "total": len(events),
+            "events": events
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Creative Test Endpoints ============
+
+@agents_router.get("/creative-tests")
+async def list_creative_tests(
+    status_filter: Optional[str] = Query(None, description="Filter by status: running, completed, failed"),
+    ad_account_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """List all multi-variant creative tests."""
+    try:
+        from .models import CreativeTest
+        query = db.query(CreativeTest).order_by(CreativeTest.created_at.desc())
+        if status_filter:
+            query = query.filter(CreativeTest.status == status_filter)
+        if ad_account_id:
+            query = query.filter(CreativeTest.ad_account_id == ad_account_id)
+        tests = query.limit(limit).all()
+        return {
+            "success": True,
+            "total": len(tests),
+            "tests": [
+                {
+                    "id": str(t.id),
+                    "adset_id": t.adset_id,
+                    "original_ad_id": t.original_ad_id,
+                    "status": t.status,
+                    "num_variants": t.num_variants,
+                    "winner_ad_id": t.winner_ad_id,
+                    "results": t.results,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "completed_at": t.completed_at.isoformat() if t.completed_at else None
+                }
+                for t in tests
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.get("/creative-tests/{test_id}")
+async def get_creative_test_detail(test_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get creative test details with all variant performance data."""
+    try:
+        from .models import CreativeTest, CreativeTestVariant
+        test = db.query(CreativeTest).filter(CreativeTest.id == test_id).first()
+        if not test:
+            raise HTTPException(status_code=404, detail="Creative test not found")
+
+        variants = db.query(CreativeTestVariant).filter(
+            CreativeTestVariant.test_id == test_id
+        ).order_by(CreativeTestVariant.variant_number).all()
+
+        return {
+            "success": True,
+            "test": {
+                "id": str(test.id),
+                "adset_id": test.adset_id,
+                "original_ad_id": test.original_ad_id,
+                "status": test.status,
+                "num_variants": test.num_variants,
+                "min_impressions_per_variant": test.min_impressions_per_variant,
+                "prune_threshold": test.prune_threshold,
+                "winner_ad_id": test.winner_ad_id,
+                "results": test.results,
+                "created_at": test.created_at.isoformat() if test.created_at else None,
+                "completed_at": test.completed_at.isoformat() if test.completed_at else None
+            },
+            "variants": [
+                {
+                    "id": str(v.id),
+                    "ad_id": v.ad_id,
+                    "variant_number": v.variant_number,
+                    "headline": v.headline,
+                    "primary_text": v.primary_text,
+                    "image_url": v.image_url,
+                    "is_original": v.is_original,
+                    "status": v.status,
+                    "final_impressions": v.final_impressions,
+                    "final_ctr": v.final_ctr,
+                    "final_cpc": v.final_cpc,
+                    "final_conversions": v.final_conversions
+                }
+                for v in variants
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/creative-tests/{adset_id}/start")
+async def start_creative_test(adset_id: str):
+    """Manually trigger a multi-variant creative test for an ad set."""
+    try:
+        # Find an active ad in this ad set to use as the basis
+        from database import SessionLocal as StartDB
+        from modules.marketing.models import MetaAdSet, MetaAd
+        sdb = StartDB()
+        try:
+            adset = sdb.query(MetaAdSet).filter(MetaAdSet.adset_id == adset_id).first()
+            if not adset:
+                raise HTTPException(status_code=404, detail=f"Ad set {adset_id} not found")
+
+            # Find an active ad in this ad set
+            active_ad = sdb.query(MetaAd).filter(
+                MetaAd.adset_id == adset.id,
+                MetaAd.status == "ACTIVE"
+            ).first()
+
+            if not active_ad:
+                raise HTTPException(status_code=400, detail="No active ads found in this ad set")
+
+            entity_id = active_ad.ad_id
+        finally:
+            sdb.close()
+
+        result = await automated_rules_engine._refresh_creative_multi_variant(entity_id, "ad")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Creative test start failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@agents_router.post("/creative-tests/{test_id}/finalize")
+async def finalize_creative_test(test_id: uuid.UUID):
+    """Force-finalize a running creative test (picks winner immediately)."""
+    try:
+        from .models import CreativeTest
+        from database import SessionLocal as FinalDB
+        fdb = FinalDB()
+        try:
+            test = fdb.query(CreativeTest).filter(CreativeTest.id == test_id).first()
+            if not test:
+                raise HTTPException(status_code=404, detail="Creative test not found")
+            if test.status != "running":
+                raise HTTPException(status_code=400, detail=f"Test already {test.status}")
+            # Set min impressions to 0 to force evaluation
+            test.min_impressions_per_variant = 0
+            fdb.commit()
+        finally:
+            fdb.close()
+
+        results = await automated_rules_engine.evaluate_creative_tests()
+        return {
+            "success": True,
+            "message": f"Force-finalized test {test_id}",
+            "results": results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ Competitive Intelligence Endpoints ============
+
+@agents_router.post("/competitive-intelligence")
+async def competitive_intelligence(
+    request: CompetitiveIntelligenceRequest
+):
+    """
+    Run a full competitive intelligence pipeline for a domain.
+
+    4-step process:
+    1. Categorize the domain's business verticals (DataForSEO Labs)
+    2. Discover top competitors by keyword overlap (DataForSEO Labs)
+    3. Analyze competitor keyword strategies - high CPC / commercial intent (DataForSEO Labs)
+    4. Expand top opportunity keywords for campaign ideas (DataForSEO Keyword Data)
+
+    Optionally enriched with Tavily web scraping for qualitative competitor insights.
+    """
+    try:
+        from .competitive_intelligence_agent import CompetitiveIntelligenceAgent
+        agent = CompetitiveIntelligenceAgent()
+        result = await agent.run_pipeline(
+            domain=request.domain,
+            country_code=request.country_code,
+            language_code=request.language_code,
+            top_competitors=request.top_competitors,
+            enrich_with_tavily=request.enrich_with_tavily,
+            expand_keywords=request.expand_keywords
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Competitive intelligence failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Competitive intelligence failed: {str(e)}"
+        )
+
+
+# ============ Weekly Report Endpoints ============
+
+@agents_router.post("/weekly-report/{ad_account_id}")
+async def generate_weekly_report(
+    ad_account_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a weekly performance report for an ad account.
+
+    Aggregates 7 days of insights data with LLM narrative summary,
+    top/worst performers, and week-over-week trends.
+    """
+    try:
+        from .report_generator import WeeklyReportGenerator
+        from modules.marketing.models import MetaAdAccount
+
+        # Find account for access token
+        account = db.query(MetaAdAccount).filter(
+            MetaAdAccount.ad_account_id == ad_account_id
+        ).first()
+
+        generator = WeeklyReportGenerator()
+        report = await generator.generate_weekly_report(
+            ad_account_id=ad_account_id,
+            access_token=account.access_token if account else None
+        )
+
+        return report
+
+    except Exception as e:
+        logger.error(f"Weekly report failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Weekly report failed: {str(e)}"
+        )
+
+
+@agents_router.post("/dayparting/recommend")
+async def recommend_dayparting_schedule(
+    industry: str = Query(..., description="Business industry (e.g., technology, restaurant, ecommerce)"),
+    business_type: str = Query(None, description="Optional business type for more specific matching"),
+    business_description: str = Query(None, description="Brief business description for AI-powered scheduling"),
+    countries: str = Query(None, description="Comma-separated target countries (e.g., ZW,ZA,US)"),
+    use_ai: bool = Query(False, description="Use AI to generate schedule (slower but more precise)")
+):
+    """
+    Get recommended ad schedule (dayparting) for a business.
+
+    Returns optimal time blocks for Meta ad delivery based on industry.
+    Used by the agent pipeline to automatically schedule lifetime budget campaigns.
+    """
+    try:
+        from modules.marketing.dayparting_service import (
+            get_schedule_for_industry,
+            generate_schedule_with_ai,
+            INDUSTRY_SCHEDULES,
+            INDUSTRY_MAPPING
+        )
+
+        country_list = [c.strip() for c in countries.split(",")] if countries else None
+
+        if use_ai and business_description:
+            result = await generate_schedule_with_ai(
+                industry=industry,
+                business_type=business_type or "",
+                business_description=business_description,
+                target_countries=country_list
+            )
+        else:
+            schedule = get_schedule_for_industry(industry, business_type)
+            result = {
+                "schedule": schedule,
+                "reasoning": f"Rule-based schedule for {industry}" + (f"/{business_type}" if business_type else ""),
+                "profile_used": "rule_based",
+                "method": "rule_based"
+            }
+
+        # Add human-readable summary
+        schedule = result.get("schedule", [])
+        day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        readable_blocks = []
+        for block in schedule:
+            days = ", ".join(day_names[d] for d in block.get("days", []))
+            readable_blocks.append(
+                f"{days}: {block.get('start_hour', 0):02d}:00 - {block.get('end_hour', 0):02d}:00"
+            )
+        result["readable_schedule"] = readable_blocks
+        result["total_blocks"] = len(schedule)
+        result["available_profiles"] = list(INDUSTRY_SCHEDULES.keys())
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Dayparting recommendation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Dayparting recommendation failed: {str(e)}"
         )

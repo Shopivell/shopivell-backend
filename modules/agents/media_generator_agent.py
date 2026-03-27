@@ -140,6 +140,17 @@ class MediaGeneratorAgent:
         "tilted Dutch angle for intrigue"
     ]
 
+    LENS_CHOICES = [
+        "shot on Canon 5D Mark IV with 85mm f/1.4 lens, creamy bokeh, soft focus background",
+        "shot on Sony A7R IV with 50mm f/1.8 lens, natural perspective, smooth background separation",
+        "shot on Nikon Z9 with 105mm f/2.8 macro lens, razor-sharp detail, buttery background blur",
+        "shot on Hasselblad X2D with 90mm f/3.2 lens, medium format richness, silky depth of field",
+        "shot on Canon R5 with 70-200mm f/2.8 at 135mm, compressed perspective, painterly bokeh",
+        "shot on Fujifilm GFX 100S with 80mm f/1.7 lens, medium format depth, velvety soft focus background",
+        "shot on Leica SL2 with 75mm f/1.25 Noctilux, ultra-shallow depth of field, dreamy soft focus background",
+        "shot on Phase One IQ4 with 120mm f/4 macro lens, tack-sharp focus, gentle background falloff"
+    ]
+
     OVERLAY_TEXT_STYLES = [
         {"type": "cta", "examples": ["Discover Elegance", "Experience Luxury", "Elevate Your World", "Indulge Now"]},
         {"type": "launch", "examples": ["Now Available", "Introducing", "The New Standard", "Unveiled"]},
@@ -473,6 +484,138 @@ class MediaGeneratorAgent:
             providers.append(VideoProvider.REPLICATE)
         return providers
 
+    # ==================== BRAND ASSETS ====================
+
+    def _get_brand_assets(self, store_id: str) -> Dict[str, Any]:
+        """
+        Retrieve brand assets for a store to inform image generation.
+
+        Checks for uploaded assets like logos, uniforms, vehicles, workplace photos,
+        and brand colors to incorporate into generated ad images.
+
+        Args:
+            store_id: UUID of the store
+
+        Returns:
+            Dict with brand_assets info (URLs, descriptions, brand colors)
+        """
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            from modules.assets.models import Asset
+            from modules.stores.models import Store
+
+            # Get store info for brand colors/name
+            store = db.query(Store).filter(Store.id == store_id).first()
+            brand_info = {
+                "store_name": store.name if store else "Unknown",
+                "store_description": store.description if store else "",
+                "brand_colors": getattr(store, 'brand_colors', None),
+                "logo_url": getattr(store, 'logo_url', None),
+            }
+
+            # Get relevant brand assets
+            assets = db.query(Asset).filter(
+                Asset.store_id == store_id,
+                Asset.is_active == True,
+                Asset.source == "upload"  # Only user-uploaded assets
+            ).order_by(Asset.created_at.desc()).limit(20).all()
+
+            categorized = {
+                "logos": [],
+                "products": [],
+                "brand_photos": [],  # Uniforms, vehicles, workplace
+                "all_urls": []
+            }
+
+            brand_keywords = ["logo", "brand", "uniform", "vehicle", "car", "truck", "van",
+                              "office", "workplace", "shop", "store", "team", "staff"]
+
+            for asset in assets:
+                asset_url = asset.cloudinary_secure_url or asset.cloudinary_url
+                if not asset_url:
+                    continue
+
+                asset_info = {
+                    "name": asset.name,
+                    "url": asset_url,
+                    "tags": asset.tags or [],
+                    "description": asset.description or ""
+                }
+
+                name_lower = (asset.name or "").lower()
+                desc_lower = (asset.description or "").lower()
+                tags_lower = " ".join([str(t).lower() for t in (asset.tags or [])])
+                combined = f"{name_lower} {desc_lower} {tags_lower}"
+
+                if "logo" in combined:
+                    categorized["logos"].append(asset_info)
+                elif any(kw in combined for kw in brand_keywords):
+                    categorized["brand_photos"].append(asset_info)
+                else:
+                    categorized["products"].append(asset_info)
+
+                categorized["all_urls"].append(asset_url)
+
+            brand_info["assets"] = categorized
+            brand_info["has_assets"] = len(categorized["all_urls"]) > 0
+            brand_info["asset_count"] = len(categorized["all_urls"])
+
+            logger.info(
+                f"[MediaGeneratorAgent] Brand assets for store {store_id}: "
+                f"{len(categorized['logos'])} logos, {len(categorized['brand_photos'])} brand photos, "
+                f"{len(categorized['products'])} product images"
+            )
+
+            return brand_info
+
+        except Exception as e:
+            logger.error(f"[MediaGeneratorAgent] Error getting brand assets: {e}")
+            return {"store_name": "Unknown", "has_assets": False, "assets": {}}
+        finally:
+            db.close()
+
+    def _build_brand_context_prompt(self, brand_assets: Dict[str, Any]) -> str:
+        """
+        Build a brand context string to prepend to image generation prompts.
+
+        Incorporates brand colors, existing assets references, and brand identity.
+        """
+        parts = []
+
+        store_name = brand_assets.get("store_name", "")
+        if store_name:
+            parts.append(f"Brand: {store_name}")
+
+        # Brand colors
+        brand_colors = brand_assets.get("brand_colors")
+        if brand_colors:
+            if isinstance(brand_colors, list):
+                parts.append(f"Brand colors: {', '.join(brand_colors)}")
+            elif isinstance(brand_colors, dict):
+                colors = [f"{k}: {v}" for k, v in brand_colors.items()]
+                parts.append(f"Brand colors: {', '.join(colors)}")
+            elif isinstance(brand_colors, str):
+                parts.append(f"Brand colors: {brand_colors}")
+
+        # Asset context
+        assets = brand_assets.get("assets", {})
+        if assets.get("logos"):
+            parts.append("Brand has a logo — maintain visual consistency")
+        if assets.get("brand_photos"):
+            photo_types = [p.get("name", "") for p in assets["brand_photos"][:3]]
+            parts.append(f"Brand photos available: {', '.join(photo_types)}")
+        if assets.get("products"):
+            parts.append(f"Has {len(assets['products'])} product images — reference brand aesthetic")
+
+        store_desc = brand_assets.get("store_description", "")
+        if store_desc:
+            parts.append(f"Business: {store_desc[:100]}")
+
+        if parts:
+            return "BRAND CONTEXT: " + " | ".join(parts) + ". "
+        return ""
+
     # ==================== CLOUDINARY UPLOAD ====================
 
     def upload_to_cloudinary(
@@ -591,7 +734,8 @@ class MediaGeneratorAgent:
         aspect_ratio: str = "1:1",
         provider: Optional[ImageProvider] = None,
         upload_to_cloud: bool = True,
-        cloudinary_folder: str = "shopivell/generated/ads"
+        cloudinary_folder: str = "shopivell/generated/ads",
+        store_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate an image using available providers with automatic fallback.
@@ -603,10 +747,22 @@ class MediaGeneratorAgent:
             provider: Specific provider to use, or None for auto-selection
             upload_to_cloud: Whether to upload to Cloudinary (default: True)
             cloudinary_folder: Folder path in Cloudinary
+            store_id: Optional store UUID to fetch brand assets for context
 
         Returns:
             Dict with image_base64, cloudinary_url, provider_used, and metadata
         """
+        # Prepend brand context if store_id is provided
+        if store_id:
+            try:
+                brand_assets = self._get_brand_assets(store_id)
+                if brand_assets.get("has_assets"):
+                    brand_context = self._build_brand_context_prompt(brand_assets)
+                    prompt = brand_context + prompt
+                    logger.info(f"[MediaGeneratorAgent] Brand context added for store {store_id}")
+            except Exception as e:
+                logger.warning(f"[MediaGeneratorAgent] Could not load brand assets: {e}")
+
         # Enhance prompt with style
         enhanced_prompt = self._enhance_image_prompt(prompt, style)
 
@@ -730,19 +886,23 @@ class MediaGeneratorAgent:
         return placeholder
 
     def _enhance_image_prompt(self, prompt: str, style: str) -> str:
-        """Enhance the prompt with style modifiers"""
+        """Enhance the prompt with style modifiers, lens spec, and soft focus background"""
+        import random
+
+        lens = random.choice(self.LENS_CHOICES)
+
         style_modifiers = {
-            "professional": "professional commercial photography, high quality, clean composition, studio lighting",
-            "vibrant": "vibrant colors, eye-catching, dynamic composition, energetic",
-            "minimal": "minimalist design, clean white background, simple elegant composition",
-            "luxury": "luxury aesthetic, premium feel, sophisticated lighting, elegant composition",
-            "lifestyle": "authentic lifestyle photography, natural lighting, relatable setting",
-            "bold": "bold graphic design, high contrast, striking visual impact",
-            "cinematic": "cinematic quality, dramatic lighting, movie-like composition"
+            "professional": f"Photorealistic commercial photography, {lens}, soft diffused key light from upper-left with gentle fill, clean composition, soft focus background",
+            "vibrant": f"Photorealistic vibrant commercial photography, {lens}, bright saturated key light with colorful rim accents, dynamic composition, soft focus background with color bokeh",
+            "minimal": f"Photorealistic minimalist product photography, {lens}, clean even studio softbox lighting from above, white background, smooth soft focus falloff",
+            "luxury": f"Photorealistic luxury editorial photography, {lens}, dramatic spotlight with deep shadows and golden rim light, elegant composition, velvety soft focus background",
+            "lifestyle": f"Photorealistic authentic lifestyle photography, {lens}, natural window light with warm ambient fill, relatable setting, soft focus background with environmental bokeh",
+            "bold": f"Photorealistic bold commercial photography, {lens}, high-contrast directional key light with hard shadows, striking visual impact, soft focus background",
+            "cinematic": f"Cinematic photorealistic photography, {lens}, dramatic rim lighting with moody fill, anamorphic-style composition, cinematic soft focus background with oval bokeh"
         }
 
         modifier = style_modifiers.get(style, style_modifiers["professional"])
-        return f"{prompt}. Style: {modifier}. No text or watermarks."
+        return f"{prompt}. Style: {modifier}. 8K resolution. No text or watermarks."
 
     async def _generate_dalle(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate image using OpenAI DALL-E 3"""
@@ -1484,19 +1644,28 @@ Requirements:
         return result
 
     def _build_ad_image_prompt(self, product_info: Dict, ad_angle: Dict) -> str:
-        """Build an optimized prompt for ad image generation"""
+        """Build an optimized prompt for ad image generation with full visual specification"""
+        import random
+
+        lighting = random.choice(self.LIGHTING_STYLES)
+        lens = random.choice(self.LENS_CHOICES)
+        camera = random.choice(self.CAMERA_ANGLES)
+
         prompt_parts = [
-            f"Professional advertisement for {product_info.get('product_name', 'product')}.",
-            f"Product: {product_info.get('product_description', '')[:200]}.",
+            "Photorealistic commercial advertisement photography.",
+            f"SUBJECT: {product_info.get('product_name', 'product')} as the hero of the image.",
+            f"DETAILS: {product_info.get('product_description', '')[:200]}.",
         ]
 
         if ad_angle.get("visual_direction"):
-            prompt_parts.append(f"Visual direction: {ad_angle['visual_direction']}.")
+            prompt_parts.append(f"ACTION & DIRECTION: {ad_angle['visual_direction']}.")
 
         if ad_angle.get("emotion_target"):
-            prompt_parts.append(f"Evoke feeling of: {ad_angle['emotion_target']}.")
+            prompt_parts.append(f"MOOD: {ad_angle['emotion_target']} — the viewer should feel drawn to the product.")
 
-        prompt_parts.append("High quality commercial photography, clean composition, no text.")
+        prompt_parts.append(f"LIGHTING: {lighting}.")
+        prompt_parts.append(f"LENS & CAMERA: {lens}. {camera}. Soft focus background with creamy bokeh.")
+        prompt_parts.append("Photorealistic commercial photography, clean composition, 8K resolution, 4:5 portrait format. No text.")
 
         return " ".join(prompt_parts)
 
@@ -1539,6 +1708,7 @@ Requirements:
         accents = random.sample(self.ACCENT_PROPS, min(num_assets, len(self.ACCENT_PROPS)))
         lightings = random.sample(self.LIGHTING_STYLES, min(num_assets, len(self.LIGHTING_STYLES)))
         angles = random.sample(self.CAMERA_ANGLES, min(num_assets, len(self.CAMERA_ANGLES)))
+        lenses = random.sample(self.LENS_CHOICES, min(num_assets, len(self.LENS_CHOICES)))
 
         assets = []
         used_combinations = set()
@@ -1550,6 +1720,7 @@ Requirements:
             accent = accents[i % len(accents)]
             lighting = lightings[i % len(lightings)]
             angle = angles[i % len(angles)]
+            lens = lenses[i % len(lenses)]
 
             # Generate overlay text
             text_style = random.choice(self.OVERLAY_TEXT_STYLES)
@@ -1564,6 +1735,7 @@ Requirements:
                 accent_prop=accent,
                 lighting=lighting,
                 camera_angle=angle,
+                lens_spec=lens,
                 brand_colors=brand_colors
             )
 
@@ -1575,6 +1747,7 @@ Requirements:
                     "accentProp": accent,
                     "lighting": lighting,
                     "cameraAngle": angle,
+                    "lensSpec": lens,
                     "overlayText": {
                         "type": text_style["type"],
                         "text": overlay_text
@@ -1598,15 +1771,23 @@ Requirements:
         accent_prop: str,
         lighting: str,
         camera_angle: str,
+        lens_spec: str = "shot on Hasselblad X2D with 90mm f/3.2 lens, medium format richness, silky depth of field",
         brand_colors: Optional[List[str]] = None
     ) -> str:
-        """Build a detailed luxury product photography prompt"""
+        """Build a detailed luxury product photography prompt with full visual specification"""
 
         color_instruction = ""
         if brand_colors:
             color_instruction = f"Incorporate brand colors: {', '.join(brand_colors)}. "
 
-        prompt = f"""Ultra-premium luxury product photography of {product_name}.
+        mood = self._determine_mood(background_tone, lighting)
+
+        prompt = f"""Photorealistic ultra-premium luxury product photography of {product_name}.
+
+ART STYLE: High-end editorial product photography, magazine-worthy advertising still life.
+
+SUBJECT: {product_name} as the hero, positioned as the clear focal point of the composition.
+ACTION: The product rests elegantly on the surface, with the accent prop placed to create visual flow and guide the eye toward the product.
 
 SCENE SETUP:
 - Background: {background_tone}
@@ -1615,17 +1796,20 @@ SCENE SETUP:
 - Lighting: {lighting}
 - Camera: {camera_angle}
 
+LENS & CAMERA: {lens_spec}. Soft focus background with creamy bokeh separating the product from the environment.
+
 PRODUCT CONTEXT:
 {product_description}
 
+MOOD: {mood} — the viewer should feel desire and aspiration when looking at this image.
+
 STYLE REQUIREMENTS:
-- High-end editorial quality, magazine-worthy composition
 - {color_instruction}Tasteful, intentional styling with premium feel
 - Clean, uncluttered composition with breathing room
 - Product as hero, accent props complement but don't distract
-- Luxurious texture emphasis on materials
+- Luxurious texture emphasis on materials — show tactile quality
 - No text, watermarks, or logos in the image
-- Photorealistic, 8K quality, professional product photography"""
+- Photorealistic, 8K resolution, 1:1 square format for social media"""
 
         return prompt
 
@@ -1800,6 +1984,18 @@ STYLE REQUIREMENTS:
         # Get industry-specific instructions, default to retail if not found
         industry_info = industry_scene_instructions.get(industry, industry_scene_instructions["retail_ecommerce"])
 
+        import random
+
+        # Pick varied lighting, lens, and camera for each generation
+        lighting = random.choice(self.LIGHTING_STYLES)
+        lens = random.choice(self.LENS_CHOICES)
+        camera_position = random.choice([
+            "shot from eye-level, medium shot framing the main subject from waist up",
+            "shot from slightly above at a 30-degree angle, showing the full scene with context",
+            "shot from a low angle looking slightly up for an empowering perspective",
+            "shot from a three-quarter view, medium-close framing the subject with environmental depth"
+        ])
+
         # Build dynamic scene instruction based on target_audience and INDUSTRY
         if target_audience:
             audience_context = f"Target audience: {target_audience}. Create a DEMONSTRATIVE scene showing {industry_info['scene']} that would appeal to this audience."
@@ -1808,11 +2004,20 @@ STYLE REQUIREMENTS:
 
         # Build the prompt - dynamically generates scene based on INDUSTRY and ad set audience
         prompt_parts = [
-            f"Professional advertisement image for a {industry.replace('_', ' ')} company: {product_name}.",
+            # Art style declaration
+            "Photorealistic commercial advertisement photography.",
+            f"Professional marketing image for a {industry.replace('_', ' ')} company: {product_name}.",
+            # Subject and action
+            f"SUBJECT: {industry_info['subject']} as the focal point of the composition.",
+            f"ACTION: The scene is demonstrative — {industry_info['scene']}.",
             audience_context,
-            f"The scene must show {industry_info['subject']}.",
+            # Lighting
+            f"LIGHTING: {lighting}.",
+            # Lens and camera
+            f"LENS & CAMERA: {lens}. {camera_position}. Soft focus background with smooth bokeh separating the subject from the environment.",
+            # Color and mood
             f"IMPORTANT COLOR THEME: Use {brand_colors if brand_colors else 'brand-appropriate colors'} as accent color throughout the image.",
-            f"Mood: {mood}.",
+            f"MOOD: {mood} — the viewer should feel confident choosing this company.",
             "All products and props must be plain with NO competitor logos, NO random text visible on them.",
         ]
 
@@ -1825,7 +2030,7 @@ STYLE REQUIREMENTS:
             prompt_parts.append(f"Add headline text: \"{include_text}\" - positioned prominently and legibly.")
 
         # Add quality and style requirements
-        prompt_parts.append("High-quality commercial photography, clean composition, professional lighting, 8K quality.")
+        prompt_parts.append("Photorealistic commercial photography, clean composition, 8K resolution, 4:5 portrait format.")
 
         # Add explicit avoidance instructions for Meta compliance
         if avoid_items:
@@ -1883,12 +2088,13 @@ STYLE REQUIREMENTS:
 
     def _strip_text_overlay_from_prompt(self, prompt: str) -> str:
         """
-        Remove text-overlay directives from an AdCreativeAgent-generated prompt.
+        Remove text-overlay directives AND in-scene text references from
+        an AdCreativeAgent-generated prompt.
 
-        AdCreativeAgent embeds TEXT OVERLAY, BULLET POINTS, and CTA BUTTON
-        instructions for image generators that render text natively.
-        Since generate_store_ad uses AdImageComposer (PIL) for text rendering,
-        we strip those directives so Gemini generates only the scene/background.
+        Strips:
+        - TEXT OVERLAY / bullet-point / CTA button overlay directives
+        - Quoted in-scene text (e.g. "SYSTEM ARMED", "WARNING ... FENCE")
+        - Background people/personnel references (causes distorted faces)
         """
         import re
 
@@ -1896,20 +2102,18 @@ STYLE REQUIREMENTS:
         cleaned = re.sub(r"TEXT OVERLAY:\s*[^.]*\.?\s*", "", prompt)
 
         # Remove bullet-point overlay instructions
-        # e.g. "On the left side of the image, display 3 bullet points in white text: • ... • ... • ..."
         cleaned = re.sub(
             r"On the left side of the image,?\s*display\s+\d*\s*bullet\s+points?[^.]*\.\s*",
             "", cleaned, flags=re.IGNORECASE
         )
 
         # Remove CTA button instructions
-        # e.g. "Include a blue #0066CC colored button on the right side with white text reading: 'GET STARTED'."
         cleaned = re.sub(
             r"Include\s+a\s+[\w\s#]+colored\s+button[^.]*\.\s*",
             "", cleaned, flags=re.IGNORECASE
         )
 
-        # Remove LOGO placement instructions (logo comes from screenshot reference)
+        # Remove LOGO placement instructions
         cleaned = re.sub(
             r"LOGO:\s*[^.]*\.\s*", "", cleaned, flags=re.IGNORECASE
         )
@@ -1920,20 +2124,67 @@ STYLE REQUIREMENTS:
             "", cleaned, flags=re.IGNORECASE
         )
 
-        # Remove "Subject positioned center-right" (PIL composer handles layout)
+        # Remove "Subject positioned center-right"
         cleaned = re.sub(
             r"Subject\s+positioned\s+center-right\.?\s*",
             "", cleaned, flags=re.IGNORECASE
         )
 
-        # Collapse multiple spaces / leading whitespace
+        # ---- NEW: Strip in-scene text references ----
+
+        # Remove ALL quoted strings (text on signs, screens, vehicles, etc.)
+        # e.g. "SYSTEM ARMED - ALL SECURE", 'WARNING SAFEGUARD ELECTRIC FENCE'
+        # Also remove the verb phrases leading up to them
+        cleaned = re.sub(
+            r"""(?:reading|showing|displaying|saying|with text|with the text|that reads|that says|stating)\s*[:.]?\s*["'][^"']*["']""",
+            "", cleaned, flags=re.IGNORECASE
+        )
+        # Remaining standalone quoted strings (3+ chars)
+        cleaned = re.sub(r"""["'][A-Z][^"']{2,}["']""", "", cleaned)
+        cleaned = re.sub(r"""'[A-Z][^']{2,}'""", "", cleaned)
+
+        # Remove "with 'SAFEGUARD' clearly visible on the side" type phrases
+        cleaned = re.sub(
+            r"with\s+[\"'][^\"']+[\"']\s+(?:clearly\s+)?visible[^.]*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove background people/personnel (they get distorted faces)
+        # e.g. "with uniformed security personnel visible in the background"
+        # Also catches "with uniformed security personnel visible" (no "in the background")
+        cleaned = re.sub(
+            r",?\s*(?:with\s+)?(?:uniformed\s+)?(?:security\s+)?(?:personnel|officers?|guards?|staff)\s+(?:visible\s+)?(?:in\s+the\s+background)?[.,]?\s*",
+            ". ", cleaned, flags=re.IGNORECASE
+        )
+        # "... visible in the background" for any people reference (family member, people, etc.)
+        cleaned = re.sub(
+            r",?\s*(?:with\s+)?(?:\w+\s+){0,3}(?:people|persons?|figures?|workers?|family\s+members?|members?)\s+(?:is\s+|are\s+)?(?:visible\s+)?(?:in\s+the\s+background)?[.,]?\s*",
+            ". ", cleaned, flags=re.IGNORECASE
+        )
+        # Catch "A [person] is visible in the background" pattern
+        cleaned = re.sub(
+            r"[A-Z][^.]*(?:visible|seen|standing)\s+in\s+the\s+background[^.]*\.\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # Remove "to allow space for bullet points" leftover
+        cleaned = re.sub(
+            r"to\s+allow\s+space\s+for\s+(?:bullet\s+points?|text\s+overlay)\.?\s*",
+            "", cleaned, flags=re.IGNORECASE
+        )
+
+        # ---- END NEW ----
+
+        # Collapse multiple spaces / dots / leading whitespace
+        cleaned = re.sub(r"\.\s*\.", ".", cleaned)
         cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
 
         # Append instruction telling Gemini to produce a clean scene only
         cleaned += (
-            " Do NOT include any headlines, paragraph text, bullet text, buttons, "
-            "or text overlays of any kind in the generated image. "
-            "Generate ONLY the photorealistic scene and background."
+            " Do NOT include any text, words, letters, numbers, signs with text, "
+            "labels, headlines, buttons, or text overlays of any kind. "
+            "Do NOT place any small people or faces in the background. "
+            "Generate ONLY the photorealistic scene."
         )
 
         return cleaned
@@ -1950,7 +2201,11 @@ STYLE REQUIREMENTS:
         Maps business_type to INDUSTRY_TEMPLATES where possible.
         When a screenshot reference is provided, instructs Gemini to extract
         and incorporate brand assets (logos, icons, color identity) from it.
+        Now includes full visual specification: art style, lighting, lens,
+        camera position, action, mood, and aspect ratio.
         """
+        import random
+
         # Try to match business_type to an industry template
         template = None
         business_lower = (business_type or "").lower().replace(" ", "_")
@@ -1965,7 +2220,20 @@ STYLE REQUIREMENTS:
                     template = tmpl
                     break
 
+        # Pick varied lighting and lens for each generation
+        lighting = random.choice(self.LIGHTING_STYLES)
+        lens = random.choice(self.LENS_CHOICES)
+        camera_angle = random.choice([
+            "shot from eye-level, straight-on perspective",
+            "shot from slightly above at a 30-degree angle",
+            "shot from a low angle looking slightly up",
+            "shot from a three-quarter perspective"
+        ])
+
         prompt_parts = []
+
+        # Art style declaration upfront
+        prompt_parts.append("Photorealistic commercial photography.")
 
         if template:
             # Use template backgrounds and subjects
@@ -1974,9 +2242,18 @@ STYLE REQUIREMENTS:
             mood = template.get("mood", "professional")
             color_scheme = template["color_schemes"][0] if template.get("color_schemes") else "professional colors"
 
+            # Pick a random prop as an action element
+            prop = random.choice(template.get("props", ["professional equipment"])) if template.get("props") else "professional equipment"
+
             prompt_parts.append(
-                f"Photorealistic scene of a {bg} featuring {subject}. "
-                f"Mood: {mood}. Color palette: {color_scheme}."
+                f"SUBJECT: A {bg} featuring {subject} as the focal point."
+            )
+            prompt_parts.append(
+                f"ACTION: The scene is alive — {prop} is prominently placed suggesting active use, "
+                f"with environmental details implying ongoing business activity."
+            )
+            prompt_parts.append(
+                f"MOOD: {mood} — the viewer should feel trust and confidence. Color palette: {color_scheme}."
             )
 
             # Add avoidance items
@@ -1987,20 +2264,31 @@ STYLE REQUIREMENTS:
         else:
             # Generic scene based on business_type
             prompt_parts.append(
-                f"Photorealistic professional scene for a {business_type} business. "
-                f"Clean, modern setting with professional lighting."
+                f"SUBJECT: A professional {business_type} business environment as the focal point."
             )
+            prompt_parts.append(
+                "ACTION: The scene conveys active business operations — equipment in use, "
+                "workspace showing signs of current activity."
+            )
+            prompt_parts.append(
+                "MOOD: Professional, trustworthy, modern — the viewer should feel this is a reliable business."
+            )
+
+        # Lighting specification
+        prompt_parts.append(f"LIGHTING: {lighting}.")
+
+        # Lens and camera specification
+        prompt_parts.append(f"LENS & CAMERA: {lens}. {camera_angle}. Soft focus background with gentle bokeh separating foreground subjects from the environment.")
 
         # Incorporate products/services context
         if products_or_services:
             services_str = ", ".join(products_or_services[:5])
             prompt_parts.append(
-                f"The scene should visually relate to these services: {services_str}."
+                f"DETAILS: The scene should visually relate to these services: {services_str}."
             )
 
         # Incorporate store description for context
         if store_description:
-            # Use first 200 chars of description for context
             desc_short = store_description[:200]
             prompt_parts.append(
                 f"Business context: {desc_short}."
@@ -2023,7 +2311,7 @@ STYLE REQUIREMENTS:
             )
 
         prompt_parts.append(
-            "High-quality commercial photography, clean composition, professional lighting, 8K quality. "
+            "Photorealistic commercial photography, clean composition, 8K resolution, 4:5 portrait format. "
             "No AI-generated human faces."
         )
 
@@ -2526,9 +2814,11 @@ SCENE TO GENERATE:
 {prompt}
 
 RULES:
-- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no signs with text. The image must contain ZERO readable text.
-- Do NOT reproduce any text you see in the screenshot reference images. Only copy visual/physical elements.
-- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
+- ABSOLUTELY NO TEXT of any kind in the generated image. No headlines, no labels, no company names, no product names, no slogans, no buttons, no bullet text, no watermarks, no review cards, no testimonials, no sign text, no screen text, no vehicle text. The image must contain ZERO readable characters.
+- If the scene mentions text on signs, screens, tablets, or vehicles - DO NOT render that text. Leave those surfaces blank, blurred, or use abstract colored shapes instead.
+- Do NOT reproduce any text you see in the screenshot reference images. Only copy PHYSICAL/VISUAL elements (colors, shapes, uniforms, vehicles, equipment).
+- NEVER place small people or faces in the background - they will appear distorted. Only 1-3 main foreground subjects with clear, large faces are allowed.
+- No background figures, no crowd scenes, no distant personnel. Keep the background clean with buildings, vehicles, or equipment only.
 - ONLY generate the photorealistic scene with NO text whatsoever
 """
         else:
@@ -2542,8 +2832,8 @@ STYLE REQUIREMENTS:
 - Photorealistic, high-quality commercial photography
 - Color scheme: primary {primary_color}, accent {accent_color}
 - Professional advertising look, suitable for social media ads
-- People can be in the FOREGROUND as main subjects, but NEVER place small people or faces in the background - they will appear distorted
-- ABSOLUTELY NO TEXT of any kind. No headlines, no labels, no company names, no slogans, no buttons, no watermarks, no signs with text. ZERO readable text.
+- NEVER place small people or faces in the background. Only 1-3 main foreground subjects with large clear faces. Keep backgrounds clean.
+- ABSOLUTELY NO TEXT of any kind. No headlines, no labels, no company names, no slogans, no buttons, no watermarks, no signs with text, no screen text. ZERO readable characters.
 - {"NO standalone logos" if has_pil_logo else "Include subtle company branding"}
 - Clean composition with space for text overlay at the bottom
 - 1:1 square aspect ratio

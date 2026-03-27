@@ -1,473 +1,348 @@
-# Fully Autonomous Ad Creative System - Implementation Plan
+# Shopivell AI Ad Engine - System Architecture
 
-## Vision
+## Overview
 
-Given **only a website URL**, the system should:
-1. **Fully understand** the company (brand, products, services, visual identity)
-2. **Extract everything** (logos, colors, uniforms, vehicles, products, style)
-3. **Create ad images** that look like they belong to the website - as if made by the same designer
-4. **Zero hardcoding** - works for any business type automatically
+Shopivell's AI Ad Engine is a fully autonomous advertising system. Given a website URL, it scrapes the site, understands the business, generates ad creatives with brand-matched visuals, publishes to Meta Ads, and optimizes 24/7 with automated rules, creative refresh, lead scoring, and audience refinement.
 
 ---
 
-## Current State vs Target State
-
-### What We Have Now
-
-| Component | Status | Limitation |
-|-----------|--------|------------|
-| Website scraping | WORKING | Text content only, limited image extraction |
-| Logo extraction | WORKING | Basic - may miss logos on some sites |
-| Brand color extraction | WORKING | From logo only, misses full color palette |
-| Uniform detection | PARTIAL | Identifies uniforms but doesn't capture style details |
-| Vehicle detection | PARTIAL | Identifies vehicles but doesn't capture branding details |
-| Product extraction | NOT DONE | No product catalog extraction |
-| Visual style understanding | NOT DONE | Doesn't understand design style, typography, tone |
-| Image generation | WORKING | Generic - doesn't match website's visual style |
-
-### What We Need (Target State)
-
-| Component | Target |
-|-----------|--------|
-| Deep brand analysis | Extract complete brand identity (colors, fonts, tone, style) |
-| Visual asset extraction | All images categorized (team, products, vehicles, office, etc.) |
-| Product catalog | Extract all products/services with images and descriptions |
-| Style DNA | Understand the visual style (modern, traditional, luxury, etc.) |
-| Reference image selection | Intelligently select best reference images for each ad |
-| Style-matched generation | Generate images that match website's exact visual style |
-
----
-
-## The Problem
-
-**Current:** We pass reference images to Gemini, but:
-- Gemini creates **new** images inspired by references
-- Generated images look **AI-generated**, not like the website
-- No understanding of the **brand's visual DNA**
-
-**Target:** Generated images should:
-- Look like they were **taken from the website** or made by the **same designer**
-- Match the exact **style, colors, quality, and feel**
-- Be indistinguishable from the company's actual marketing materials
-
----
-
-## Implementation Plan
-
-### Phase 1: Deep Brand Analysis (Foundation)
-
-**Goal:** Extract complete brand identity from website
-
-#### 1.1 Enhanced Image Extraction
-```
-Current: Extract ~20 images, basic categorization
-Target:  Extract ALL images, smart categorization
-```
-
-**Implementation:**
-- Crawl multiple pages (home, about, services, gallery, team)
-- Extract all images above 200x200px
-- Categorize using Vision AI:
-  - `hero_images` - Main banner/hero images
-  - `team_images` - Staff photos, group shots
-  - `product_images` - Products/services
-  - `vehicle_images` - Company vehicles/fleet
-  - `office_images` - Office/facility photos
-  - `logo_variations` - All logo versions (color, white, icon)
-  - `lifestyle_images` - Lifestyle/context images
-  - `icon_graphics` - Icons, graphics, illustrations
-
-#### 1.2 Brand DNA Extraction
-```
-New component: BrandDNAExtractor
-```
-
-**Extract:**
-```python
-{
-    "brand_identity": {
-        "primary_colors": ["#005B5C", "#FFFFFF"],
-        "secondary_colors": ["#4B7F99", "#F5F5F5"],
-        "accent_colors": ["#FF6B00"],
-        "color_usage": "Primary green for headers, white backgrounds, orange CTAs"
-    },
-    "visual_style": {
-        "style_category": "professional_corporate",  # or: modern_minimal, luxury_elegant, friendly_casual, bold_vibrant
-        "photography_style": "professional_studio",  # or: lifestyle_candid, product_focused, documentary
-        "image_treatment": "high_contrast_saturated",  # or: soft_muted, black_white, warm_tones
-        "composition": "centered_subjects",  # or: rule_of_thirds, asymmetric, full_bleed
-    },
-    "typography_style": {
-        "heading_style": "bold_sans_serif",
-        "body_style": "clean_readable",
-        "tone": "professional_authoritative"  # or: friendly_casual, luxury_refined, technical_precise
-    },
-    "brand_elements": {
-        "logo_placement": "top_left",
-        "badge_style": "shield_emblem",
-        "graphic_elements": ["diagonal_lines", "shield_shapes"]
-    }
-}
-```
-
-#### 1.3 Product/Service Extraction
-```
-New component: ProductExtractor
-```
-
-**Extract:**
-```python
-{
-    "products": [
-        {
-            "name": "Armed Response",
-            "description": "24/7 armed security response service",
-            "image_urls": ["url1", "url2"],
-            "category": "security_services",
-            "key_features": ["24/7 availability", "Armed personnel", "Rapid response"]
-        },
-        ...
-    ],
-    "service_categories": ["guarding", "armed_response", "monitoring", "investigations"]
-}
-```
-
----
-
-### Phase 2: Visual Asset Intelligence
-
-**Goal:** Intelligently select and use reference images
-
-#### 2.1 Reference Image Scoring
-```
-New component: ReferenceImageScorer
-```
-
-**Score images on:**
-- **Quality** (resolution, clarity, professional look)
-- **Relevance** (matches ad set topic)
-- **Brand representation** (shows uniforms, vehicles, branding)
-- **Composition** (usable as reference for ad creation)
-
-**Output:** Ranked list of best reference images per ad set
-
-#### 2.2 Asset-to-AdSet Matching
-```
-For each ad set, select most relevant references:
-
-Ad Set: "Security Guards for Retail"
-→ Select: team photos showing guards in retail environment
-→ Select: uniform close-ups showing badges/branding
-→ Select: any retail-related images
-
-Ad Set: "Vehicle Patrol Services"
-→ Select: vehicle images showing branded cars/trucks
-→ Select: patrol/mobile response images
-→ Select: action shots of vehicles
-```
-
----
-
-### Phase 3: Style-Matched Image Generation
-
-**Goal:** Generate images that match the website's exact style
-
-#### 3.1 Style Transfer Prompt Engineering
-```
-Current prompt: "Create an ad for security company with green uniforms"
-Target prompt:  "Create an image matching THIS EXACT STYLE..."
-```
-
-**Enhanced prompt structure:**
-```
-VISUAL STYLE REQUIREMENTS:
-- Match the professional corporate photography style seen in the reference images
-- Use the exact color palette: primary #005B5C, accents white and orange
-- Photography should be high-contrast, saturated, professional studio quality
-- Subjects should be centered with clean backgrounds
-- Lighting: Professional studio lighting with soft shadows
-
-BRAND ELEMENTS TO INCLUDE:
-- Staff wearing EXACT uniforms from reference (dark green tactical, company badges)
-- If vehicles shown, match EXACT branding (white base, green logo placement)
-- Logo placement: bottom-right corner, use provided logo exactly
-
-COMPOSITION:
-- 1:1 square format for social media
-- Subject fills 60-70% of frame
-- Clean, uncluttered background matching brand colors
-- Professional, trustworthy feel
-
-DO NOT:
-- Create cartoon or illustrated styles
-- Use generic stock photo aesthetics
-- Modify the uniform colors or vehicle branding
-- Add elements not seen in the reference images
-```
-
-#### 3.2 Multi-Reference Image Strategy
-```
-Pass to Gemini:
-1. Logo (exact, for placement)
-2. Best uniform image (for staff appearance)
-3. Best vehicle image (if relevant to ad)
-4. Hero/style image (for overall visual style)
-5. Product image (if relevant to ad)
-```
-
-#### 3.3 Style Consistency Verification
-```
-New component: StyleConsistencyChecker
-```
-
-After generation, verify:
-- Color palette matches (within tolerance)
-- Style category matches (professional, casual, etc.)
-- Brand elements present (logo, colors)
-- Quality meets standards
-
-If verification fails → regenerate with adjusted prompt
-
----
-
-### Phase 4: Autonomous Decision Making
-
-**Goal:** System makes all decisions without hardcoding
-
-#### 4.1 Business Type Auto-Detection
-```
-Current: Hardcoded industry mapping
-Target:  AI-determined business classification
-```
-
-**Use LLM to determine:**
-```python
-{
-    "business_type": "security_services",
-    "business_model": "B2B",
-    "target_market": "commercial_properties",
-    "service_delivery": "on_site_personnel",
-    "visual_requirements": {
-        "must_show": ["uniformed_staff", "professional_equipment"],
-        "should_show": ["branded_vehicles", "monitoring_technology"],
-        "avoid": ["weapons_focus", "aggressive_imagery"]
-    }
-}
-```
-
-#### 4.2 Ad Strategy Auto-Generation
-```
-Based on business analysis, automatically determine:
-- Best ad angles (what to highlight)
-- Target audiences (who to reach)
-- Visual approaches (what to show)
-- Messaging tone (how to communicate)
-```
-
-#### 4.3 Self-Improving Feedback Loop
-```
-Future: Track ad performance → adjust generation strategy
-```
-
----
-
-## Technical Architecture
-
-### New Components to Build
-
-```
-modules/
-├── brand_intelligence/
-│   ├── brand_dna_extractor.py      # Extract complete brand identity
-│   ├── visual_style_analyzer.py    # Analyze visual style (photography, colors, composition)
-│   ├── product_extractor.py        # Extract products/services catalog
-│   └── asset_categorizer.py        # Categorize all extracted images
-│
-├── reference_intelligence/
-│   ├── reference_scorer.py         # Score and rank reference images
-│   ├── asset_matcher.py            # Match assets to ad sets
-│   └── style_consistency.py        # Verify generated images match style
-│
-├── autonomous_generation/
-│   ├── style_prompt_builder.py     # Build style-matched prompts
-│   ├── multi_reference_generator.py # Generate with multiple references
-│   └── quality_verifier.py         # Verify output quality
-```
-
-### Enhanced Data Flow
+## End-to-End Pipeline
 
 ```
 URL Input
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 1: Deep Brand Analysis                            │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │ Image       │  │ Brand DNA   │  │ Product     │      │
-│  │ Extraction  │→ │ Extractor   │→ │ Extractor   │      │
-│  │ (All pages) │  │ (Style,     │  │ (Catalog)   │      │
-│  └─────────────┘  │ colors,tone)│  └─────────────┘      │
-│                   └─────────────┘                        │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 2: Visual Asset Intelligence                      │
-│  ┌─────────────┐  ┌─────────────┐                       │
-│  │ Asset       │  │ Reference   │                       │
-│  │ Categorizer │→ │ Scorer      │                       │
-│  │ (team,      │  │ (quality,   │                       │
-│  │ products,   │  │ relevance)  │                       │
-│  │ vehicles)   │  └─────────────┘                       │
-│  └─────────────┘                                         │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  PHASE 3: Style-Matched Generation                       │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
-│  │ Style       │  │ Multi-Ref   │  │ Quality     │      │
-│  │ Prompt      │→ │ Generator   │→ │ Verifier    │      │
-│  │ Builder     │  │ (Gemini)    │  │ (Style      │      │
-│  └─────────────┘  └─────────────┘  │ match check)│      │
-│                                     └─────────────┘      │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-Final Ad Images (Style-matched, brand-consistent)
+    |
+    v
+[1. Scrape & Analyze]
+    Website scraping (Tavily) -> Brand DNA extraction -> Vision AI analysis
+    Extracts: logo, colors, uniforms, vehicles, products, visual style
+    |
+    v
+[2. Market Research]
+    MarketResearchAgent conducts research + Ad Library competitor analysis
+    Outputs: industry analysis, competitor insights, target audience data
+    |
+    v
+[3. Audience Generation]
+    CreativeStrategistAgent generates Meta audience targeting via LLM
+    -> Interest tags validated against Meta Interest Search API
+    -> If <30% valid, auto-retries with broader terms (up to 2 retries)
+    -> Reach estimation via Meta Reach Estimate API
+    |
+    v
+[4. Ad Content Generation]
+    Ad copy (AdCopyAgent) + Image prompts + Media generation (Gemini/FLUX)
+    Brand-aware images using store assets (logo, colors, product photos)
+    |
+    v
+[5. Publish to Meta Ads]
+    Campaign -> Ad Sets -> Ads created via Meta Marketing API
+    Lifetime budget with dayparting (industry-optimized ad schedule)
+    Top-performing Facebook Page auto-selected from historical data
+    |
+    v
+[6. 24/7 Optimization]
+    Automated Rules Scheduler runs tiered cycles:
+    - Every 15 min: Rules engine (scale/kill/pause based on performance)
+    - Every 6 hr:  Sync insights from Meta API
+    - Every 24 hr: Daily performance summary + lead quality check + notifications
+    - Every 7 days: Audience refinement + weekly report + creative fatigue check
 ```
 
 ---
 
-## Implementation Priority
+## Core Components
 
-### Sprint 1: Foundation (Brand DNA) - COMPLETED
+### Quick Launch (`POST /api/url-campaigns/quick-launch`)
 
-1. [x] Build `BrandDNAExtractor` - extract complete brand identity
-2. [x] Enhance image extraction - crawl all pages, extract all images
-3. [x] Build `AssetCategorizer` - categorize images by type
-4. [x] Build `VisualStyleAnalyzer` - analyze photography/design style
-5. [x] Integrate with campaign service
+Single endpoint that executes the entire pipeline:
 
-**Files Created:**
-- `modules/brand_intelligence/__init__.py`
-- `modules/brand_intelligence/brand_dna_extractor.py`
-- `modules/brand_intelligence/asset_categorizer.py`
-- `modules/brand_intelligence/visual_style_analyzer.py`
-- `test_brand_dna.py`
+1. Scrapes URL and creates campaign with brand analysis
+2. Generates ad content (headlines, descriptions, buyer personas, images)
+3. Publishes to Meta Ads Manager (campaign + ad sets + ads)
+4. Registers with the 24/7 optimizer scheduler
 
-**Integration:**
-- Updated `modules/campaigns/service.py` to use `BrandDNAExtractor`
-- Style prompt now included in Gemini image generation
+**Budget Handling:**
+- Default: `lifetime` budget with automatic dayparting
+- Converts daily budget to lifetime: `daily x duration_days x 100` (cents)
+- Ad schedule auto-determined from business industry
 
-### Sprint 2: Intelligence (Reference Selection) - PENDING
-1. [ ] Build `ReferenceScorer` - score images on quality/relevance
-2. [ ] Build `AssetMatcher` - match best assets to each ad set
-3. [ ] Improve Vision AI prompts for better analysis
-
-### Sprint 3: Generation (Style Matching) - PENDING
-1. [ ] Build `StylePromptBuilder` - create detailed style-matched prompts
-2. [ ] Implement multi-reference strategy (5+ images per generation)
-3. [ ] Build `QualityVerifier` - verify style consistency
-
-### Sprint 4: Autonomy (Self-Deciding) - PENDING
-1. [ ] Remove all hardcoded industry mappings
-2. [ ] LLM-based business type detection
-3. [ ] Auto-generate ad strategies based on analysis
+**Page Selection:**
+- Queries historical MetaAdInsight data across all connected Facebook Pages
+- Scores pages by weighted performance: 60% CTR + 40% conversion rate
+- Falls back to business_id or first connected page if no history
 
 ---
 
-## Success Metrics
+### Dayparting Service (`modules/marketing/dayparting_service.py`)
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| Brand color accuracy | ~70% | 95%+ |
-| Uniform accuracy | ~50% | 90%+ |
-| Style consistency | Low | High (human-indistinguishable) |
-| Manual intervention needed | Often | Never |
-| Works for any business | No (security-focused) | Yes (fully autonomous) |
+Automatically schedules ad delivery based on business type:
 
----
+| Industry Profile | Schedule | Rationale |
+|-----------------|----------|-----------|
+| B2B Default | Mon-Fri 8AM-6PM | Business hours |
+| B2B Tech/SaaS | Mon-Fri 7AM-9PM, Sat 9AM-2PM | Decision makers browse evenings |
+| E-commerce | Mon-Fri 9AM-10PM, Weekends 10AM-9PM | Peak shopping windows |
+| Food/Restaurant | Lunch 10AM-2PM, Dinner 4PM-9PM, Weekends all day | Meal decision times |
+| Local Services | Mon-Fri 7AM-7PM, Sat 8AM-4PM, Sun 9AM-2PM | When customers call |
+| Real Estate | Mon-Fri 12PM-9PM, Weekends 9AM-8PM | When people browse listings |
+| Fashion | Lunch + evenings + weekends | Browsing patterns |
+| Health/Fitness | Early morning + evenings | Gym-goer schedules |
+| Entertainment | Evenings + weekends | Leisure time |
 
-## Example: Fully Autonomous Flow
-
-**Input:** `https://securico.co.zw`
-
-**Step 1: Brand DNA Extraction**
-```json
-{
-  "company_name": "Securico Security Services",
-  "industry": "security_services",
-  "brand_colors": {
-    "primary": "#005B5C",
-    "secondary": "#FFFFFF",
-    "accent": "#4B7F99"
-  },
-  "visual_style": "professional_corporate",
-  "photography_style": "professional_studio",
-  "brand_elements": {
-    "logo_type": "shield_emblem",
-    "uniform_style": "tactical_green_with_badges",
-    "vehicle_branding": "white_base_green_logo"
-  }
-}
-```
-
-**Step 2: Asset Extraction & Categorization**
-```json
-{
-  "team_images": [
-    {"url": "...", "quality_score": 0.9, "shows": ["uniformed_staff", "professional_pose"]},
-    {"url": "...", "quality_score": 0.7, "shows": ["group_photo", "office_setting"]}
-  ],
-  "vehicle_images": [
-    {"url": "...", "quality_score": 0.85, "shows": ["branded_truck", "fleet_view"]}
-  ],
-  "service_images": [
-    {"url": "...", "quality_score": 0.8, "shows": ["guard_at_gate", "access_control"]}
-  ]
-}
-```
-
-**Step 3: Ad Set Generation (Autonomous)**
-```
-Ad Set 1: "Property Management Security"
-- Selected references: team_image[0], vehicle_image[0], logo
-- Generated image: Guard in exact Securico uniform at property entrance
-- Style: Matches website's professional photography style
-
-Ad Set 2: "24/7 Armed Response"
-- Selected references: vehicle_image[0], team_image[1], logo
-- Generated image: Securico vehicle responding, exact branding
-- Style: Action shot matching website's dynamic imagery
-```
-
-**Output:** 5 ad images that look like they came from Securico's own marketing team
+79 industry keywords map to 11 schedule profiles. Optional AI-powered schedule generation via LLM with rule-based fallback.
 
 ---
 
-## Files to Create
+### Audience Generation & Validation
 
-| File | Purpose |
-|------|---------|
-| `modules/brand_intelligence/brand_dna_extractor.py` | Extract complete brand identity |
-| `modules/brand_intelligence/visual_style_analyzer.py` | Analyze photography and design style |
-| `modules/brand_intelligence/product_extractor.py` | Extract product/service catalog |
-| `modules/brand_intelligence/asset_categorizer.py` | Categorize all images |
-| `modules/reference_intelligence/reference_scorer.py` | Score reference image quality |
-| `modules/reference_intelligence/asset_matcher.py` | Match assets to ad sets |
-| `modules/autonomous_generation/style_prompt_builder.py` | Build style-matched prompts |
-| `modules/autonomous_generation/quality_verifier.py` | Verify output quality |
+**CreativeStrategistAgent** generates Meta audience targeting:
+
+1. LLM generates 25-40 interest tags across categories (core, tech, business, consumer, behavioral, complementary)
+2. Each tag validated against Meta's Interest Search API (`GET /search?type=adinterest`)
+3. **Retry loop**: If <30% of interests validate, regenerates with feedback about which tags failed, requesting broader terms. Up to 2 retries.
+4. Validated interests used to build targeting spec
+5. Reach estimated via Meta Reach Estimate API
+
+**Performance Feedback Loop** (runs weekly):
+- Fetches demographic breakdown from Meta API (`breakdowns=age,gender`)
+- LLM refines targeting based on which demographics convert best
+- Updates audience recommendations (age narrowing, gender focus, new interests)
 
 ---
 
-## Conclusion
+### Automated Rules Engine (`modules/agents/monitor_optimizer_agent.py`)
 
-The key to fully autonomous, style-matched ad generation is:
+24/7 optimization via configurable rules:
 
-1. **Deep Understanding** - Extract complete brand DNA, not just colors
-2. **Smart Selection** - Choose the best reference images for each ad
-3. **Style Matching** - Generate images that match the exact visual style
-4. **Zero Hardcoding** - Let AI make all decisions based on analysis
+| Rule Template | Trigger Condition | Action |
+|--------------|-------------------|--------|
+| `scale_winning_ads` | ROAS >= target x 1.25 for 3 days | Increase budget +20% |
+| `kill_underperformers` | CPA > 2x target AND 0 purchases after 2000+ impressions | Cut budget 50% |
+| `creative_fatigue` | Frequency > 3 AND CTR decline > 30% for 3 days | Pause ad |
+| `creative_fatigue_refresh` | Same as fatigue | Auto-refresh: new copy + new image + new ad |
+| `scale_high_lead_quality` | Lead quality score > 70 AND hot leads > 5 | Increase budget +15% |
 
-This transforms the system from "AI that generates ads" to "AI that extends the brand's visual identity."
+**Computed Metrics:**
+- `ctr_decline_pct`: Compares last 3 days CTR vs previous 3 days
+- `lead_quality_score`: Weighted average from WhatsApp lead scores
+
+---
+
+### Creative Refresh (`_refresh_creative`)
+
+When creative fatigue is detected:
+
+1. **Pause** the fatigued ad
+2. **Generate new copy** via AdCopyAgent (new headline, primary text, description)
+3. **Generate new image** via MediaGeneratorAgent (brand-aware with store assets)
+4. **Create new Meta ad** in the same ad set with fresh creative + image
+5. New ad set to ACTIVE, old ad stays PAUSED
+
+---
+
+### Lead Scoring Integration
+
+**WhatsApp Lead Scoring** (`GET /api/whatsapp/leads/analytics`):
+- Queries WhatsAppLead model for 7-day window
+- Categorizes: HOT (70+), WARM (40-69), COOL (20-39), COLD (<20)
+- Returns: total leads, category counts, average score, conversion rate
+
+**Scheduler Integration:**
+- Every 24 hours: `get_lead_quality_signal()` computes average scores
+- High lead quality signal triggers `scale_high_lead_quality` rule
+- Daily notification includes lead quality metrics
+
+---
+
+### Tiered Scheduler (`modules/agents/scheduler.py`)
+
+Background scheduler using `_run_count` modular arithmetic:
+
+| Cycle | Frequency | What Runs |
+|-------|-----------|-----------|
+| Every cycle | 15 min | `run_all_rules()` for all ad accounts + micro-strategy checks |
+| Every 24th | ~6 hr | `sync_insights_for_all_accounts(days=3)` |
+| Every 96th | ~24 hr | Performance summary + lead quality check + daily notification |
+| Every 672nd | ~7 days | `refine_audience_from_performance()` + `generate_weekly_report()` + weekly notification |
+
+Auto-starts on app boot via `@app.on_event("startup")`. Registers all connected ad accounts.
+
+---
+
+### Weekly Report Generator (`modules/agents/report_generator.py`)
+
+Aggregates 7 days of MetaAdInsight data:
+- Total spend, impressions, clicks, CTR, CPC, conversions, ROAS
+- Top 5 and worst 5 performing ads
+- Daily breakdown with trend analysis
+- Week-over-week comparison
+- LLM-generated narrative summary with recommendations
+- Creates system notification with key metrics
+
+---
+
+### Interest Validation & Reach Estimation (`modules/marketing/meta_targeting_service.py`)
+
+- `validate_interests()`: Searches Meta's ad interest taxonomy for each tag
+- `get_reach_estimate()`: Sizes audience with targeting spec
+- `build_targeting_spec()`: Constructs Meta-compatible targeting JSON
+- `create_custom_audience()`: SHA256 hashes phone numbers, uploads to Meta
+- `create_lookalike_audience()`: Creates lookalike from source audience (configurable ratio 1%-20%)
+
+---
+
+### Keyword Intelligence (`modules/agents/keyword_intelligence_agent.py`)
+
+- Primary: DataForSEO API for search volume, CPC, competition data
+- Fallback: Google Autocomplete suggestions
+- LLM clusters keywords by intent: informational, commercial, transactional, navigational
+- Endpoint: `POST /api/agents/keyword-research`
+
+---
+
+### Brand Asset Awareness (`modules/agents/media_generator_agent.py`)
+
+When `store_id` is provided:
+1. Queries Asset model for logos, brand photos, product images
+2. Gets store brand colors and description
+3. Builds brand context prompt (colors, asset descriptions, style guidance)
+4. Prepends to image generation prompt for brand-consistent output
+
+---
+
+### Ad Library Integration (`modules/agents/market_research_agent.py`)
+
+During `conduct_research()`:
+1. Extracts search keywords from products/services
+2. Calls `fetch_ads_library()` with keywords + country
+3. Injects competitor ad data into LLM research prompt
+4. Research output includes competitor creative analysis
+
+---
+
+### Insights Sync Service (`modules/marketing/insights_service.py`)
+
+Extracted from marketing router for reuse:
+- `sync_ad_insights()`: Fetches insights for a single ad from Meta API
+- `sync_insights_background()`: Background task for bulk sync
+- `sync_insights_for_all_accounts()`: Iterates all connected accounts
+- `get_demographic_breakdown()`: Age/gender performance breakdown for audience refinement
+
+---
+
+## API Endpoints
+
+### Campaign Pipeline
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/url-campaigns/quick-launch` | Full end-to-end pipeline |
+| POST | `/api/agents/campaigns/{id}/run-pipeline` | Run pipeline for existing campaign |
+
+### Audience & Targeting
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/agents/validate-interests` | Validate interest tags against Meta |
+| POST | `/api/agents/audience-from-url-validated` | Generate + validate audience from URL |
+| POST | `/api/agents/dayparting/recommend` | Get optimal ad schedule for industry |
+
+### Audiences
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/marketing/custom-audiences/upload` | Upload phone list as custom audience |
+| POST | `/api/marketing/lookalike-audiences/create` | Create lookalike from source |
+
+### Intelligence
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/agents/keyword-research` | Keyword research with clustering |
+| POST | `/api/agents/weekly-report/{account_id}` | Generate weekly performance report |
+
+### Scheduler
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/agents/scheduler/start` | Start optimization scheduler |
+| POST | `/api/agents/scheduler/stop` | Stop scheduler |
+| POST | `/api/agents/scheduler/add-account` | Register ad account |
+| POST | `/api/agents/scheduler/run-now` | Trigger immediate cycle |
+| GET | `/api/agents/scheduler/status` | Get scheduler status |
+
+### Lead Scoring
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/whatsapp/leads/analytics` | Lead scoring analytics dashboard |
+
+---
+
+## Frontend Pages
+
+| Page | Route | Purpose |
+|------|-------|---------|
+| Quick Launch | `/:userId/marketing/quick-launch` | URL-to-campaign form with progress indicators |
+| Lead Scoring | `/:userId/marketing/lead-scoring` | Lead funnel visualization + scores table |
+| Insights | `/:userId/marketing/insights` | Ad performance insights dashboard |
+| Micro-Strategy | `/:userId/marketing/micro-strategy` | Micro-strategy management |
+| Pixel Tracker | `/:userId/marketing/pixel-tracker` | Conversion tracking pixels |
+
+---
+
+## Data Flow Diagram
+
+```
+                    +------------------+
+                    |   Quick Launch   |
+                    |   (URL + Config) |
+                    +--------+---------+
+                             |
+                    +--------v---------+
+                    |  Website Scraper  |
+                    |  + Brand DNA      |
+                    +--------+---------+
+                             |
+              +--------------+--------------+
+              |                             |
+    +---------v----------+     +-----------v-----------+
+    | Market Research     |     | Ad Content Generator  |
+    | + Ad Library        |     | (Copy + Images)       |
+    +-----+---------+----+     +----------+------------+
+          |         |                     |
+          |    +----v-----+               |
+          |    | Audience  |               |
+          |    | Generator |               |
+          |    | + Validate|               |
+          |    | + Retry   |               |
+          |    +----+------+               |
+          |         |                      |
+          +---------+----------+-----------+
+                               |
+                    +----------v-----------+
+                    |  Meta Ads Publisher   |
+                    |  + Dayparting         |
+                    |  + Top Page Selection |
+                    +----------+-----------+
+                               |
+                    +----------v-----------+
+                    |  24/7 Scheduler       |
+                    |  Tiered Optimization  |
+                    +----------+-----------+
+                               |
+              +----------------+----------------+
+              |                |                |
+    +---------v------+  +-----v------+  +------v--------+
+    | Rules Engine   |  | Insights   |  | Weekly Report |
+    | Scale/Kill/    |  | Sync       |  | + Audience    |
+    | Refresh        |  | Lead Score |  | Refinement    |
+    +----------------+  +------------+  +---------------+
+```
+
+---
+
+## Environment Requirements
+
+| Requirement | Purpose | Fallback |
+|-------------|---------|----------|
+| Meta Access Token | Publishing ads, insights sync | Simulated mode |
+| OpenRouter API Key | LLM for all agents | OpenAI fallback |
+| Google Gemini API Key | Image generation | FLUX fallback |
+| Cloudinary | Image hosting | Local storage |
+| DataForSEO Login/Password | Keyword research | Google Autocomplete |
+| Redis | Response caching | Disabled (non-blocking) |

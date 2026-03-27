@@ -57,3 +57,4 @@ test_*.py
 # Uploads (keep directory structure but ignore contents)
 uploads/
 !uploads/.gitkeep
+nul

@@ -16,6 +16,9 @@ import logging
 from sqlalchemy import text
 from database import get_db
 from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer, MultiTenantSalesBot
+from modules.whatsapp.flow_completion import handle_flow_completion
+from modules.whatsapp.flow_token import encode_flow_token
+from modules.whatsapp.interactive_messages import build_flow_message, build_text_message, build_button_message
 from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation, WhatsAppConversationMessage, CRMTask
 from .store_router import StoreRouter
 from .profile_service import get_customer_name_from_contacts, generate_avatar_url, should_update_profile_picture
@@ -993,6 +996,60 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         if message_type == "text":
             text_data = message.get("text", {})
             message_text = text_data.get("body")
+        elif message_type == "interactive":
+            interactive_data = message.get("interactive", {})
+            interactive_type = interactive_data.get("type")
+            if interactive_type == "list_reply":
+                message_text = interactive_data["list_reply"]["title"]
+            elif interactive_type == "button_reply":
+                message_text = interactive_data["button_reply"]["title"]
+            elif interactive_type == "nfm_reply":
+                # WhatsApp Flow completed — handle order submission
+                nfm_data = interactive_data.get("nfm_reply", {})
+                response_json_str = nfm_data.get("response_json", "{}")
+                nfm_flow_token = nfm_data.get("body", "")
+                try:
+                    response_json = json.loads(response_json_str) if isinstance(response_json_str, str) else response_json_str
+                    # Save message first
+                    save_message_to_db(
+                        db=db, whatsapp_account_id=whatsapp_account.id,
+                        message_id=message_id, from_number=from_number_clean,
+                        to_number=whatsapp_account.phone_number,
+                        message_type="interactive", direction="inbound",
+                        status="received", message_text="[Flow completed]",
+                        meta_data=message,
+                    )
+                    result_messages = handle_flow_completion(
+                        response_json=response_json,
+                        flow_token=nfm_flow_token,
+                        whatsapp_account=whatsapp_account,
+                        from_number=from_number_clean,
+                        db=db,
+                        access_token=access_token,
+                    )
+                    if result_messages:
+                        for resp in result_messages:
+                            send_whatsapp_message_request(
+                                phone_number_id=whatsapp_account.phone_number_id,
+                                access_token=access_token,
+                                to=from_number_clean,
+                                message_type=resp["type"],
+                                message_data=resp["data"],
+                            )
+                            save_message_to_db(
+                                db=db, whatsapp_account_id=whatsapp_account.id,
+                                message_id=f"flow_confirm_{datetime.utcnow().timestamp()}",
+                                from_number=whatsapp_account.phone_number,
+                                to_number=from_number_clean,
+                                message_type=resp["type"], direction="outbound",
+                                status="sent",
+                                message_text=resp["data"].get("text", {}).get("body") or "[interactive message]",
+                            )
+                except Exception as nfm_err:
+                    logger.error(f"nfm_reply processing error: {nfm_err}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                continue  # Skip further processing for nfm_reply
 
         # Save incoming message to database
         new_message_db = save_message_to_db(
@@ -1029,10 +1086,196 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         logger.info(f"Incoming message from {from_number_clean}: {message_text}")
         logger.info(f"Message saved successfully, proceeding to auto-respond check")
 
+        # POST-FLOW PAYMENT: Handle EcoCash payment polling after Flow completes
+        if message_text and access_token and message_type in ("text", "interactive"):
+            try:
+                active_conv = db.query(WhatsAppConversation).filter(
+                    WhatsAppConversation.whatsapp_account_id == whatsapp_account.id,
+                    WhatsAppConversation.phone_number == from_number_clean,
+                    WhatsAppConversation.order_flow_active == True,
+                ).first()
+                if active_conv and active_conv.order_flow_state:
+                    state = active_conv.order_flow_state
+
+                    # Handle order choice: "Order on Website" vs "Order in WhatsApp"
+                    if state.get("awaiting_order_choice"):
+                        btn_id = None
+                        if message_type == "interactive":
+                            idata = message.get("interactive", {})
+                            if idata.get("type") == "button_reply":
+                                btn_id = idata["button_reply"].get("id")
+
+                        if btn_id == "order_website":
+                            # Send storefront link
+                            order_link = state.get("order_link", "")
+                            active_conv.order_flow_state = None
+                            active_conv.order_flow_active = False
+                            db.commit()
+                            send_whatsapp_message_request(
+                                phone_number_id=whatsapp_account.phone_number_id,
+                                access_token=access_token, to=from_number_clean,
+                                message_type="text",
+                                message_data={"text": {"body": f"Here's your order link 🛒\n{order_link}\n\nBrowse our products and place your order!", "preview_url": True}},
+                            )
+                            continue
+
+                        elif btn_id == "order_whatsapp":
+                            # Launch WhatsApp Flow
+                            from .models import WhatsAppFlow
+                            wa_flow = db.query(WhatsAppFlow).filter(
+                                WhatsAppFlow.store_id == store_id,
+                                WhatsAppFlow.status == "published",
+                            ).first()
+
+                            if wa_flow:
+                                flow_token = encode_flow_token(
+                                    store_id=str(store_id),
+                                    phone=from_number_clean,
+                                    conv_id=str(active_conv.id),
+                                )
+                                flow_msg = build_flow_message(
+                                    flow_id=wa_flow.flow_id,
+                                    flow_token=flow_token,
+                                )
+                                send_whatsapp_message_request(
+                                    phone_number_id=whatsapp_account.phone_number_id,
+                                    access_token=access_token, to=from_number_clean,
+                                    message_type=flow_msg["type"], message_data=flow_msg["data"],
+                                )
+                                active_conv.order_flow_active = True
+                                active_conv.order_flow_state = {"flow_sent": True}
+                                db.commit()
+                            else:
+                                # No flow — fall back to storefront link
+                                order_link = state.get("order_link", "")
+                                active_conv.order_flow_state = None
+                                active_conv.order_flow_active = False
+                                db.commit()
+                                send_whatsapp_message_request(
+                                    phone_number_id=whatsapp_account.phone_number_id,
+                                    access_token=access_token, to=from_number_clean,
+                                    message_type="text",
+                                    message_data={"text": {"body": f"WhatsApp ordering isn't set up yet, but you can order here 🛒\n{order_link}", "preview_url": True}},
+                                )
+                            continue
+
+                        elif btn_id == "get_more_info":
+                            # Clear state so bot resumes normal chat
+                            active_conv.order_flow_state = None
+                            active_conv.order_flow_active = False
+                            db.commit()
+                            send_whatsapp_message_request(
+                                phone_number_id=whatsapp_account.phone_number_id,
+                                access_token=access_token, to=from_number_clean,
+                                message_type="text",
+                                message_data={"text": {"body": "Sure! What would you like to know? I can tell you about our products, services, pricing, or anything else. Just ask! 😊", "preview_url": False}},
+                            )
+                            continue
+
+                        else:
+                            # Unrecognized reply while awaiting choice — resend buttons
+                            choice_msg = build_button_message(
+                                body="Please choose how I can help you:",
+                                buttons=[
+                                    {"id": "order_website", "title": "Order on Website"},
+                                    {"id": "order_whatsapp", "title": "Order in WhatsApp"},
+                                    {"id": "get_more_info", "title": "Get More Info"},
+                                ],
+                            )
+                            send_whatsapp_message_request(
+                                phone_number_id=whatsapp_account.phone_number_id,
+                                access_token=access_token, to=from_number_clean,
+                                message_type=choice_msg["type"], message_data=choice_msg["data"],
+                            )
+                            continue
+
+                    if state.get("awaiting_payment"):
+                        # Handle "Check Payment" or "Cancel" button replies
+                        btn_id = None
+                        if message_type == "interactive":
+                            idata = message.get("interactive", {})
+                            if idata.get("type") == "button_reply":
+                                btn_id = idata["button_reply"].get("id")
+
+                        if btn_id == "cancel_payment" or (message_text and message_text.lower() == "cancel"):
+                            active_conv.order_flow_active = False
+                            active_conv.order_flow_state = None
+                            db.commit()
+                            send_whatsapp_message_request(
+                                phone_number_id=whatsapp_account.phone_number_id,
+                                access_token=access_token, to=from_number_clean,
+                                message_type="text",
+                                message_data={"text": {"body": "Payment cancelled. Your order is saved — contact us to arrange payment.", "preview_url": False}},
+                            )
+                            continue
+
+                        if btn_id == "check_payment" or (message_text and "check" in message_text.lower()):
+                            # Poll PayNow for status
+                            poll_url = state.get("payment_poll_url")
+                            order_number = state.get("order_number", "")
+                            if poll_url:
+                                try:
+                                    from utils.payment_service import PaymentService
+                                    ps = PaymentService()
+                                    result = ps.check_payment_status(poll_url)
+                                    if result and result.get("paid"):
+                                        # Update order
+                                        from modules.orders.models import CustomerOrder
+                                        order_id = state.get("order_id")
+                                        if order_id:
+                                            order = db.query(CustomerOrder).filter(CustomerOrder.id == order_id).first()
+                                            if order:
+                                                order.payment_status = "paid"
+                                                db.commit()
+                                        active_conv.order_flow_active = False
+                                        active_conv.order_flow_state = None
+                                        db.commit()
+                                        send_whatsapp_message_request(
+                                            phone_number_id=whatsapp_account.phone_number_id,
+                                            access_token=access_token, to=from_number_clean,
+                                            message_type="text",
+                                            message_data={"text": {"body": f"Payment confirmed! ✅\nOrder *{order_number}* is now paid.\nThank you! 🙏", "preview_url": False}},
+                                        )
+                                    else:
+                                        # Still pending
+                                        resp = build_button_message(
+                                            body=f"Payment for order {order_number} is still pending. Please approve the EcoCash prompt on your phone.",
+                                            buttons=[
+                                                {"id": "check_payment", "title": "Check Again"},
+                                                {"id": "cancel_payment", "title": "Cancel"},
+                                            ],
+                                        )
+                                        send_whatsapp_message_request(
+                                            phone_number_id=whatsapp_account.phone_number_id,
+                                            access_token=access_token, to=from_number_clean,
+                                            message_type=resp["type"], message_data=resp["data"],
+                                        )
+                                except Exception as pay_err:
+                                    logger.error(f"Payment check error: {pay_err}")
+                            continue
+                        # Any other message while awaiting payment — remind them
+                        resp = build_button_message(
+                            body="You have a pending payment. Please check your payment or cancel.",
+                            buttons=[
+                                {"id": "check_payment", "title": "Check Payment"},
+                                {"id": "cancel_payment", "title": "Cancel"},
+                            ],
+                        )
+                        send_whatsapp_message_request(
+                            phone_number_id=whatsapp_account.phone_number_id,
+                            access_token=access_token, to=from_number_clean,
+                            message_type=resp["type"], message_data=resp["data"],
+                        )
+                        continue
+            except Exception as of_err:
+                logger.error(f"Post-flow payment error: {of_err}")
+                import traceback
+                logger.error(traceback.format_exc())
+
         # AUTO-RESPOND: If it's a text message, use AI chatbot to respond
         logger.info(f"AUTO-RESPOND CHECK: message_type={message_type}, message_text={bool(message_text)}, access_token={bool(access_token)}")
         logger.info(f"Access token value (first 20 chars): {access_token[:20] if access_token else 'NONE'}")
-        if message_type == "text" and message_text and access_token:
+        if message_type in ("text", "interactive") and message_text and access_token:
             logger.info("AUTO-RESPOND: Conditions met, starting response generation")
             try:
                 # === MULTI-STORE ROUTING ===
@@ -1200,6 +1443,48 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                 if ai_response is None:
                     logger.info(f"Bot has no knowledge match for query from {from_number_clean}, staying silent")
                     continue
+
+                # WHATSAPP FLOWS: If chatbot detects purchase intent, ask how they want to order
+                if "ORDER_FLOW_START" in ai_response:
+                    logger.info(f"ORDER CHOICE: Purchase intent detected for {from_number_clean}, asking preference")
+                    try:
+                        storefront_url = os.getenv('STOREFRONT_URL', 'https://shopivell.com')
+                        order_link = f"{storefront_url}/store/{store_id}/order"
+
+                        # Send button message asking what they'd like to do
+                        choice_msg = build_button_message(
+                            body="Great! How can I help you today?",
+                            buttons=[
+                                {"id": "order_website", "title": "Order on Website"},
+                                {"id": "order_whatsapp", "title": "Order in WhatsApp"},
+                                {"id": "get_more_info", "title": "Get More Info"},
+                            ],
+                        )
+                        send_whatsapp_message_request(
+                            phone_number_id=whatsapp_account.phone_number_id,
+                            access_token=access_token,
+                            to=from_number_clean,
+                            message_type=choice_msg["type"],
+                            message_data=choice_msg["data"],
+                        )
+                        save_message_to_db(
+                            db=db, whatsapp_account_id=whatsapp_account.id,
+                            message_id=f"order_choice_{datetime.utcnow().timestamp()}",
+                            from_number=whatsapp_account.phone_number,
+                            to_number=from_number_clean,
+                            message_type="interactive", direction="outbound",
+                            status="sent", message_text="[Order choice buttons sent]",
+                        )
+                        # Mark conversation as awaiting order choice
+                        if conversation:
+                            conversation.order_flow_state = {"awaiting_order_choice": True, "order_link": order_link}
+                            db.commit()
+                        continue
+                    except Exception as flow_err:
+                        logger.error(f"Order choice error: {flow_err}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        ai_response = "I'd love to help you order! Let me check our products for you."
 
                 logger.info(f"AI Response for {from_number_clean}: {ai_response[:100]}...")
 
@@ -3015,3 +3300,59 @@ def debug_test_autorespond(
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+
+
+# ==================== Lead Scoring Analytics ====================
+
+@whatsapp_router.get("/leads/analytics")
+def get_leads_analytics(
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db)
+):
+    """
+    Get lead scoring analytics — scores, categories, funnel data.
+
+    Returns aggregated lead quality data for the dashboard.
+    """
+    from .models import WhatsAppLead
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    leads = db.query(WhatsAppLead).filter(
+        WhatsAppLead.created_at >= cutoff
+    ).order_by(WhatsAppLead.lead_score.desc()).all()
+
+    hot = [l for l in leads if (l.lead_score or 0) >= 70]
+    warm = [l for l in leads if 40 <= (l.lead_score or 0) < 70]
+    cool = [l for l in leads if 20 <= (l.lead_score or 0) < 40]
+    cold = [l for l in leads if (l.lead_score or 0) < 20]
+
+    scores = [l.lead_score or 0 for l in leads]
+    avg_score = sum(scores) / len(scores) if scores else 0
+
+    return {
+        "total_leads": len(leads),
+        "hot_leads": len(hot),
+        "warm_leads": len(warm),
+        "cool_leads": len(cool),
+        "cold_leads": len(cold),
+        "average_score": round(avg_score, 1),
+        "conversion_rate": round((len(hot) / len(leads) * 100), 1) if leads else 0,
+        "leads": [
+            {
+                "id": str(l.id),
+                "phone_number": l.phone_number,
+                "lead_score": l.lead_score or 0,
+                "lead_status": l.lead_status or "new",
+                "scoring_reason": l.scoring_reason,
+                "total_messages": l.total_messages or 0,
+                "last_message": l.last_message,
+                "interests": l.interests,
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "updated_at": l.updated_at.isoformat() if l.updated_at else None
+            }
+            for l in leads[:100]  # Limit to 100 leads
+        ]
+    }

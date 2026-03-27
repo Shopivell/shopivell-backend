@@ -32,12 +32,18 @@ class PaymentService:
         """Initialize PayNow integration"""
         try:
             from paynow import Paynow
-            
-            integration_id = os.getenv("PAYNOW_INTEGRATION_ID", "INTEGRATION_ID")
-            integration_key = os.getenv("PAYNOW_INTEGRATION_KEY", "INTEGRATION_KEY")
+
+            integration_id = os.getenv("PAYNOW_INTEGRATION_ID", "")
+            integration_key = os.getenv("PAYNOW_INTEGRATION_KEY", "")
             return_url = os.getenv("PAYNOW_RETURN_URL", "")
             result_url = os.getenv("PAYNOW_RESULT_URL", "")
-            
+
+            # Don't initialize with placeholder/empty credentials
+            if not integration_id or not integration_key or integration_id == "INTEGRATION_ID" or integration_key == "INTEGRATION_KEY":
+                logger.warning("PayNow credentials not configured. Running in simulation mode.")
+                self.paynow = None
+                return
+
             self.paynow = Paynow(
                 integration_id,
                 integration_key,
@@ -88,7 +94,7 @@ class PaymentService:
             
             # Apply token discount if tokens provided
             token_discount = 0.0
-            actual_amount = amount
+            actual_amount = float(amount)
             if tokens_to_redeem > 0:
                 # Validate token balance
                 token_balance = self.db.query(UserTokenBalance).filter(
@@ -135,7 +141,7 @@ class PaymentService:
                 billing_period=billing_period,
                 mobile_number=mobile_number,
                 status=PaymentStatus.PENDING,
-                payment_metadata={"token_discount": token_discount, "original_amount": amount},
+                payment_metadata={"token_discount": float(token_discount), "original_amount": float(amount)},
                 initiated_at=datetime.utcnow(),
                 expires_at=datetime.utcnow() + timedelta(hours=24)
             )
@@ -393,6 +399,27 @@ class PaymentService:
             if not transaction.poll_url:
                 return transaction, "No poll URL available for this transaction"
 
+            # Auto-complete simulated payments after ~10 seconds
+            is_simulated = transaction.paynow_reference and (
+                transaction.paynow_reference.startswith("PNW-SIM-") or
+                transaction.paynow_reference.startswith("INB-SIM-")
+            )
+            if is_simulated:
+                elapsed = (datetime.utcnow() - transaction.initiated_at).total_seconds()
+                if elapsed >= 10:
+                    transaction.status = PaymentStatus.COMPLETED
+                    transaction.completed_at = datetime.utcnow()
+                    self._activate_subscription(transaction)
+                    self.db.commit()
+                    self.db.refresh(transaction)
+                    print(f"[PAYMENT] Simulated payment {reference} auto-completed after {elapsed:.0f}s - SENDING EMAIL NOW")
+                    logger.info(f"Simulated payment {reference} auto-completed after {elapsed:.0f}s")
+                    self._send_receipt_email(transaction)
+                    return transaction, None
+                else:
+                    logger.info(f"Simulated payment {reference} waiting ({elapsed:.0f}s / 10s)")
+                    return transaction, None
+
             # Check status with PayNow
             status_result = self.check_payment_status(transaction.poll_url)
 
@@ -415,6 +442,7 @@ class PaymentService:
                 self.db.commit()
                 self.db.refresh(transaction)
                 logger.info(f"Payment {reference} marked as COMPLETED after polling")
+                self._send_receipt_email(transaction)
                 return transaction, None
 
             elif status_result.get("failed"):
@@ -501,9 +529,11 @@ class PaymentService:
                 subscription.current_period_start = datetime.utcnow()
                 subscription.current_period_end = period_end
                 subscription.is_active = True
+                subscription.cancelled_at = None
+                subscription.trial_ends_at = None  # Clear trial on paid upgrade
                 subscription.last_payment_id = subscription.current_payment_id
                 subscription.current_payment_id = transaction.id
-                
+
                 # Update enabled features
                 self._update_subscription_features(subscription)
             else:
@@ -634,7 +664,7 @@ class PaymentService:
             ).scalar() or 0.0
 
             # Get package info
-            if subscription:
+            if subscription and subscription.is_active:
                 package = self.db.query(PackagePricing).filter(
                     PackagePricing.package_name == subscription.package_name,
                     PackagePricing.is_active == True
@@ -642,6 +672,14 @@ class PaymentService:
 
                 next_payment_date = subscription.current_period_end
                 next_payment_amount = package.monthly_price if subscription.billing_period == "monthly" else package.annual_price if package else 0
+            elif subscription:
+                # Cancelled subscription — treat as free
+                package = self.db.query(PackagePricing).filter(
+                    PackagePricing.package_name == SubscriptionPlan.FREE,
+                    PackagePricing.is_active == True
+                ).first()
+                next_payment_date = None
+                next_payment_amount = 0
             else:
                 package = self.db.query(PackagePricing).filter(
                     PackagePricing.package_name == SubscriptionPlan.FREE,
@@ -652,7 +690,7 @@ class PaymentService:
 
             return {
                 "store_id": str(store_id),
-                "current_package": subscription.package_name.value if subscription else SubscriptionPlan.FREE.value,
+                "current_package": subscription.package_name.value if subscription and subscription.is_active else SubscriptionPlan.FREE.value,
                 "billing_period": subscription.billing_period if subscription else "monthly",
                 "is_active": subscription.is_active if subscription else True,
                 "auto_renew": subscription.auto_renew if subscription else False,
@@ -744,6 +782,129 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error generating receipt: {str(e)}")
             return None
+
+    def _send_receipt_email(self, transaction: PaymentTransaction):
+        """Auto-send receipt email with PDF invoice attachment after payment completion"""
+        print(f"[RECEIPT EMAIL] _send_receipt_email CALLED for {transaction.reference}")
+        logger.info(f"[RECEIPT EMAIL] _send_receipt_email CALLED for {transaction.reference}")
+        try:
+            import smtplib
+            import base64 as b64_mod
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            from email.mime.application import MIMEApplication
+            from modules.stores.models import Store
+            from modules.agency.models import Agency
+
+            store = self.db.query(Store).filter(Store.id == transaction.store_id).first()
+            if not store:
+                logger.warning(f"No store found for receipt email: {transaction.store_id}")
+                return
+
+            # Get agency email first, fall back to store owner email, then store email
+            recipient_email = None
+            if store.agency_id:
+                agency = self.db.query(Agency).filter(Agency.id == store.agency_id).first()
+                if agency and agency.email:
+                    recipient_email = agency.email
+
+            if not recipient_email and store.store_email:
+                recipient_email = store.store_email
+
+            if not recipient_email and store.owner:
+                recipient_email = store.owner.email
+
+            if not recipient_email:
+                recipient_email = "farairhato@gmail.com"
+
+            receipt = self.generate_receipt(transaction.reference)
+            if not receipt:
+                return
+
+            # Load logo as base64 for email embedding
+            logo_b64 = ""
+            try:
+                logo_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "shopivell_logo.png")
+                if os.path.exists(logo_path):
+                    with open(logo_path, "rb") as f:
+                        logo_b64 = b64_mod.b64encode(f.read()).decode()
+            except Exception:
+                pass
+
+            logo_html = f'<img src="data:image/png;base64,{logo_b64}" alt="Shopivell" style="width: 80px; height: 80px; margin-bottom: 10px;" /><br />' if logo_b64 else ""
+
+            body = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    {logo_html}
+                    <h1 style="color: #111; margin-bottom: 5px;">Shopivell</h1>
+                    <p style="color: #666;">Payment Receipt</p>
+                </div>
+                <div style="background: #f9f9f9; border-radius: 12px; padding: 24px; margin-bottom: 20px;">
+                    <h2 style="color: #111; margin-top: 0;">Payment Successful</h2>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr><td style="padding: 8px 0; color: #666;">Receipt #</td><td style="padding: 8px 0; text-align: right; font-weight: 600;">{receipt['receipt_number']}</td></tr>
+                        <tr><td style="padding: 8px 0; color: #666;">Store</td><td style="padding: 8px 0; text-align: right; font-weight: 600;">{receipt.get('store_name', '')}</td></tr>
+                        <tr><td style="padding: 8px 0; color: #666;">Package</td><td style="padding: 8px 0; text-align: right; font-weight: 600;">{receipt['package_name'].capitalize()}</td></tr>
+                        <tr><td style="padding: 8px 0; color: #666;">Billing</td><td style="padding: 8px 0; text-align: right;">{receipt.get('billing_period', 'monthly').capitalize()}</td></tr>
+                        <tr><td style="padding: 8px 0; color: #666;">Method</td><td style="padding: 8px 0; text-align: right;">{receipt['payment_method'].upper()}</td></tr>
+                        <tr><td style="padding: 8px 0; color: #666;">Date</td><td style="padding: 8px 0; text-align: right;">{receipt.get('completed_at', '')[:10] if receipt.get('completed_at') else ''}</td></tr>
+                        <tr style="border-top: 2px solid #ddd;"><td style="padding: 12px 0; font-weight: 700; font-size: 18px;">Total</td><td style="padding: 12px 0; text-align: right; font-weight: 700; font-size: 18px;">${receipt['amount']:.2f} {receipt['currency']}</td></tr>
+                    </table>
+                </div>
+                <p style="color: #666; font-size: 14px; text-align: center;">Thank you for your subscription! Your invoice is attached.</p>
+            </body>
+            </html>
+            """
+
+            # Generate PDF invoice
+            pdf_bytes = None
+            try:
+                from utils.invoice_pdf import generate_invoice_pdf
+                pdf_bytes = generate_invoice_pdf(receipt)
+                logger.info(f"Generated PDF invoice for {receipt['receipt_number']} ({len(pdf_bytes)} bytes)")
+            except Exception as e:
+                logger.error(f"Failed to generate PDF invoice: {e}")
+
+            # Send email with PDF attachment directly via SMTP
+            from dotenv import load_dotenv
+            load_dotenv()
+            email_user = os.getenv("EMAIL_USERNAME")
+            email_pass = os.getenv("EMAIL_PASSWORD")
+            smtp_server = os.getenv("SMTP_SERVER", "mail.privateemail.com")
+            smtp_port = int(os.getenv("SMTP_PORT", "465"))
+
+            if not email_user or not email_pass:
+                logger.warning("Email credentials not configured, simulating receipt email")
+                logger.info(f"[SIMULATED] Receipt email to {recipient_email}")
+                return
+
+            subject = f"Shopivell Payment Receipt - {receipt['receipt_number']}"
+
+            msg = MIMEMultipart()
+            msg["From"] = email_user
+            msg["To"] = recipient_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "html", "utf-8"))
+
+            # Attach PDF invoice
+            if pdf_bytes:
+                pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
+                pdf_filename = f"Shopivell-Invoice-{receipt['receipt_number']}.pdf"
+                pdf_attachment.add_header("Content-Disposition", "attachment", filename=pdf_filename)
+                msg.attach(pdf_attachment)
+
+            with smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15) as s:
+                s.login(email_user, email_pass)
+                s.sendmail(email_user, recipient_email, msg.as_string())
+
+            logger.info(f"Receipt email with invoice sent to {recipient_email} for {transaction.reference}")
+
+        except Exception as e:
+            print(f"[RECEIPT EMAIL] ERROR: {str(e)}")
+            import traceback; traceback.print_exc()
+            logger.error(f"Error sending receipt email: {str(e)}")
 
     def initiate_innbucks_payment(
         self,

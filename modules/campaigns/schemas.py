@@ -30,6 +30,12 @@ class AdContentResponse(AdContentBase):
     is_primary: bool = False
     is_active: bool = True
     generated_image_base64: Optional[str] = None  # AI-generated image
+    meta_ad_id: Optional[str] = None
+    variation_label: Optional[str] = None
+    copy_variation_index: int = 0
+    image_variation_index: int = 0
+    fatigue_score: float = 0.0
+    last_refreshed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -80,6 +86,9 @@ class CampaignBase(BaseModel):
     gender: str = "all"
     interests: List[str] = []
     platforms: List[str] = ["facebook"]
+    sales_type: Optional[str] = None
+    destination_url: Optional[str] = None
+    lead_form_fields: Optional[List[Dict[str, Any]]] = None
 
 
 class CampaignCreate(CampaignBase):
@@ -104,6 +113,9 @@ class CampaignUpdate(BaseModel):
     interests: Optional[List[str]] = None
     platforms: Optional[List[str]] = None
     status: Optional[CampaignStatus] = None
+    sales_type: Optional[str] = None
+    destination_url: Optional[str] = None
+    lead_form_fields: Optional[List[Dict[str, Any]]] = None
 
 
 class CampaignResponse(CampaignBase):
@@ -152,6 +164,8 @@ class ScrapeUrlResponse(BaseModel):
 class GenerateAdsRequest(BaseModel):
     campaign_id: uuid.UUID
     num_ad_sets: int = 1  # Default to 1 ad set to save tokens
+    num_copies: int = 1  # Copy variations per ad set (1-5)
+    num_images: int = 1  # Image variations per ad set (1-3)
     regenerate: bool = False
 
 
@@ -169,3 +183,107 @@ class CreateCampaignFromStoreResponse(BaseModel):
     status: str
     message: str
     store_data_used: Dict[str, Any]  # Shows what store data was used
+
+
+# Quick Launch - paste URL → 5 ad sets live on Meta
+class QuickLaunchRequest(BaseModel):
+    url: str
+    store_id: uuid.UUID
+    ad_account_id: uuid.UUID
+    daily_budget: float = 10.0  # USD per ad set (used when budget_type is "daily")
+    budget_type: str = "lifetime"  # "daily" or "lifetime" — lifetime enables dayparting
+    campaign_duration_days: int = 30  # Duration for lifetime budget campaigns
+    countries: List[str] = ["ZW"]
+    goal: CampaignGoal = CampaignGoal.TRAFFIC
+    age_range: Dict[str, int] = {"min": 18, "max": 65}
+    gender: str = "all"
+    campaign_name: Optional[str] = None
+    page_id: Optional[uuid.UUID] = None  # Facebook page for ads
+    num_copies: int = 1  # Copy variations per ad set (1-5)
+    num_images: int = 1  # Image variations per ad set (1-3)
+    auto_start_scheduler: bool = True  # Auto-register with scheduler
+
+
+class QuickLaunchResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    success: bool
+    campaign_id: uuid.UUID
+    campaign_name: str
+    meta_campaign_id: Optional[str] = None
+    ad_sets_created: int = 0
+    ads_created: int = 0
+    scheduler_registered: bool = False
+    dayparting_enabled: bool = False
+    dayparting_schedule: Optional[List[Dict[str, Any]]] = None
+    dayparting_reasoning: Optional[str] = None
+    budget_type: str = "daily"
+    pipeline_results: Optional[Dict[str, Any]] = None
+    publish_results: Optional[Dict[str, Any]] = None
+    errors: List[str] = []
+    message: str
+
+
+# --- Optimization & Fatigue Schemas ---
+
+class OptimizeRequest(BaseModel):
+    min_impressions: int = 1000
+    dry_run: bool = False
+
+
+class VariantEvaluation(BaseModel):
+    ad_content_id: uuid.UUID
+    variation_label: Optional[str] = None
+    impressions: int = 0
+    ctr: float = 0.0
+    cpc: float = 0.0
+    spend: float = 0.0
+    status: str = "active"  # active, paused, winner, loser
+
+
+class OptimizeResponse(BaseModel):
+    campaign_id: uuid.UUID
+    evaluated: bool = False
+    reason: Optional[str] = None
+    variants: List[VariantEvaluation] = []
+    paused_count: int = 0
+    scaled_count: int = 0
+    budget_changes: List[Dict[str, Any]] = []
+    dry_run: bool = False
+
+
+class FatigueVariant(BaseModel):
+    ad_content_id: uuid.UUID
+    variation_label: Optional[str] = None
+    fatigue_score: float = 0.0
+    frequency: float = 0.0
+    ctr_trend: str = "stable"  # stable, declining, dropped
+    action: Optional[str] = None  # refresh_copy, refresh_both, none
+
+
+class FatigueCheckResponse(BaseModel):
+    campaign_id: uuid.UUID
+    total_checked: int = 0
+    fatigued_count: int = 0
+    refreshed_count: int = 0
+    variants: List[FatigueVariant] = []
+
+
+class AdContentMetricsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    ad_content_id: uuid.UUID
+    campaign_id: uuid.UUID
+    impressions: int = 0
+    reach: int = 0
+    clicks: int = 0
+    conversions: int = 0
+    spend: float = 0.0
+    ctr: float = 0.0
+    cpc: float = 0.0
+    cpm: float = 0.0
+    frequency: float = 0.0
+    roas: float = 0.0
+    date: datetime
+    collected_at: datetime

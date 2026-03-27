@@ -6,7 +6,7 @@ Admin models for the admin dashboard.
 import uuid
 from datetime import datetime, timedelta
 from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from db_compat import UUID
 from sqlalchemy.orm import relationship
 import enum
 

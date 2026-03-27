@@ -280,6 +280,46 @@ Return ONLY valid JSON.
         except json.JSONDecodeError:
             return {"error": "Failed to parse short-form copy", "raw": cleaned}
 
+    async def generate_copy_variations_for_url_ad(
+        self,
+        business_name: str,
+        product_description: str,
+        target_audience: str,
+        base_headline: str,
+        base_primary_text: str,
+        features: List[str],
+        cta: str = "Learn More",
+        num_variations: int = 3,
+        store_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate copy variations for URL-based campaigns.
+        Delegates to AdCopyAgent which has structured output + performance feedback.
+        """
+        try:
+            from .ad_copy_agent import AdCopyAgent
+            agent = AdCopyAgent()
+            return await agent.generate_copy_variations_for_url_ad(
+                business_name=business_name,
+                product_description=product_description,
+                target_audience=target_audience,
+                base_headline=base_headline,
+                base_primary_text=base_primary_text,
+                features=features,
+                cta=cta,
+                num_variations=num_variations,
+                store_id=store_id
+            )
+        except Exception as e:
+            logger.error(f"[CopywriterAgent] Delegation to AdCopyAgent failed: {e}")
+            return [{
+                "headline": base_headline,
+                "primary_text": base_primary_text,
+                "description": "",
+                "call_to_action": cta,
+                "strategy": "fallback",
+            }]
+
     async def generate_all_copy(
         self,
         campaign: Campaign,

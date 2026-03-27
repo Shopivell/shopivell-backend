@@ -212,7 +212,7 @@ async def initiate_payment(
         
         # Initialize payment service
         payment_service = PaymentService(db)
-        
+
         # Create payment transaction
         transaction, error = payment_service.create_payment_transaction(
             store_id=payment_request.store_id,
@@ -466,6 +466,70 @@ async def get_payment_receipt(
         )
 
 
+@payment_router.post("/send-receipt", response_model=Dict[str, Any])
+async def send_receipt_email(
+    data: Dict[str, str],
+    db: Session = Depends(get_db)
+):
+    """Send payment receipt via email"""
+    try:
+        reference = data.get("reference")
+        email = data.get("email")
+
+        if not reference or not email:
+            raise HTTPException(status_code=400, detail="Reference and email are required")
+
+        payment_service = PaymentService(db)
+        receipt = payment_service.generate_receipt(reference)
+
+        if not receipt:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
+        # Build email body
+        body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="color: #111; margin-bottom: 5px;">Shopivell</h1>
+                <p style="color: #666;">Payment Receipt</p>
+            </div>
+            <div style="background: #f9f9f9; border-radius: 12px; padding: 24px; margin-bottom: 20px;">
+                <h2 style="color: #111; margin-top: 0;">Payment Successful</h2>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="padding: 8px 0; color: #666;">Receipt #</td><td style="padding: 8px 0; text-align: right; font-weight: 600;">{receipt['receipt_number']}</td></tr>
+                    <tr><td style="padding: 8px 0; color: #666;">Package</td><td style="padding: 8px 0; text-align: right; font-weight: 600;">{receipt['package_name'].capitalize()}</td></tr>
+                    <tr><td style="padding: 8px 0; color: #666;">Billing</td><td style="padding: 8px 0; text-align: right;">{receipt.get('billing_period', 'monthly').capitalize()}</td></tr>
+                    <tr><td style="padding: 8px 0; color: #666;">Method</td><td style="padding: 8px 0; text-align: right;">{receipt['payment_method'].upper()}</td></tr>
+                    <tr><td style="padding: 8px 0; color: #666;">Date</td><td style="padding: 8px 0; text-align: right;">{receipt.get('completed_at', '')[:10] if receipt.get('completed_at') else ''}</td></tr>
+                    <tr style="border-top: 2px solid #ddd;"><td style="padding: 12px 0; font-weight: 700; font-size: 18px;">Total</td><td style="padding: 12px 0; text-align: right; font-weight: 700; font-size: 18px;">${receipt['amount']:.2f} {receipt['currency']}</td></tr>
+                </table>
+            </div>
+            <p style="color: #666; font-size: 14px; text-align: center;">Thank you for your subscription!</p>
+        </body>
+        </html>
+        """
+
+        from utils.Verification_Codes_Services import VerificationCodeService
+        VerificationCodeService.initialize()
+        success = VerificationCodeService.send_email(
+            to_email=email,
+            subject=f"Shopivell Payment Receipt - {receipt['receipt_number']}",
+            body=body,
+            content_type='html'
+        )
+
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to send email")
+
+        return {"message": "Receipt sent successfully", "email": email}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending receipt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error sending receipt: {str(e)}")
+
+
 @payment_router.get("/store/{store_id}/transactions", response_model=List[PaymentTransactionResponse])
 async def get_store_transactions(
     store_id: uuid.UUID,
@@ -675,24 +739,36 @@ async def get_store_subscription(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Store not found"
                 )
-            
-            # Create default subscription response
-            return StoreSubscriptionResponse(
-                id=uuid.uuid4(),
+
+            # Create a real trial subscription in DB so it persists
+            from datetime import timedelta
+            trial_end = datetime.utcnow() + timedelta(days=30)
+            subscription = StoreSubscription(
                 store_id=store_id,
                 package_name=SubscriptionPlan.FREE,
                 billing_period="monthly",
                 is_active=True,
                 auto_renew=False,
-                enabled_features={},
-                usage_limits={},
                 subscribed_at=datetime.utcnow(),
                 current_period_start=datetime.utcnow(),
-                current_period_end=datetime.utcnow(),
-                cancelled_at=None,
-                trial_ends_at=None
+                current_period_end=trial_end,
+                trial_ends_at=trial_end,
+                enabled_features={
+                    "max_products": 10,
+                    "max_orders": 50,
+                    "analytics": False,
+                    "custom_domain": False,
+                    "priority_support": False
+                },
+                usage_limits={
+                    "api_calls_per_day": 100,
+                    "storage_mb": 100
+                }
             )
-        
+            db.add(subscription)
+            db.commit()
+            db.refresh(subscription)
+
         return subscription
         
     except HTTPException:
@@ -1024,7 +1100,8 @@ async def cancel_subscription(
         subscription.is_active = False
         subscription.auto_renew = False
         subscription.cancelled_at = datetime.utcnow()
-        
+        subscription.package_name = SubscriptionPlan.FREE
+
         # Downgrade to free package features
         payment_service = PaymentService(db)
         subscription.enabled_features = payment_service._get_package_features(SubscriptionPlan.FREE)

@@ -126,13 +126,36 @@ class AdImageComposer:
             logger.warning(f"[AdImageComposer] Failed to fetch logo: {e}")
         return None
 
-    def _wrap_text(self, text: str, font: ImageFont, max_width: int, draw: ImageDraw) -> List[str]:
-        """Word-wrap text to fit within max_width pixels."""
+    # Platform aspect ratio presets
+    PLATFORM_SIZES = {
+        "facebook_feed": (1080, 1080),     # 1:1
+        "facebook_landscape": (1200, 628),  # ~1.91:1
+        "instagram_feed": (1080, 1350),     # 4:5
+        "instagram_square": (1080, 1080),   # 1:1
+        "instagram_story": (1080, 1920),    # 9:16
+        "tiktok": (1080, 1920),             # 9:16
+        "linkedin": (1200, 627),            # ~1.91:1
+    }
+
+    def _wrap_text(self, text: str, font: ImageFont, max_width: int, draw: ImageDraw, max_lines: int = 0) -> List[str]:
+        """Word-wrap text to fit within max_width pixels. Handles long words and overflow."""
         words = text.split()
         lines = []
         current_line = ""
 
         for word in words:
+            # Handle very long words that exceed max_width
+            word_w, _ = self._get_text_size(draw, word, font)
+            if word_w > max_width and len(word) > 10:
+                # Split long word with hyphen
+                if current_line:
+                    lines.append(current_line)
+                    current_line = ""
+                mid = len(word) // 2
+                lines.append(word[:mid] + "-")
+                current_line = word[mid:]
+                continue
+
             test_line = f"{current_line} {word}".strip()
             text_w, _ = self._get_text_size(draw, test_line, font)
             if text_w <= max_width:
@@ -145,7 +168,45 @@ class AdImageComposer:
         if current_line:
             lines.append(current_line)
 
+        # Truncate to max_lines if specified
+        if max_lines > 0 and len(lines) > max_lines:
+            lines = lines[:max_lines]
+            if lines[-1]:
+                # Add ellipsis to last line
+                lines[-1] = lines[-1].rstrip()
+                if len(lines[-1]) > 3:
+                    lines[-1] = lines[-1][:-3] + "..."
+
         return lines if lines else [text]
+
+    def resize_for_platform(self, base_image: bytes, platform: str = "instagram_feed") -> bytes:
+        """Resize/crop image to fit platform aspect ratio."""
+        target = self.PLATFORM_SIZES.get(platform)
+        if not target:
+            return base_image
+
+        target_w, target_h = target
+        target_ratio = target_w / target_h
+
+        img = Image.open(io.BytesIO(base_image))
+        img_ratio = img.width / img.height
+
+        if img_ratio > target_ratio:
+            # Image is wider — crop sides
+            new_w = int(img.height * target_ratio)
+            left = (img.width - new_w) // 2
+            img = img.crop((left, 0, left + new_w, img.height))
+        elif img_ratio < target_ratio:
+            # Image is taller — crop top/bottom
+            new_h = int(img.width / target_ratio)
+            top = (img.height - new_h) // 2
+            img = img.crop((0, top, img.width, top + new_h))
+
+        img = img.resize((target_w, target_h), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", quality=95)
+        return buf.getvalue()
 
     def compose_modern_ad_image(
         self,
@@ -465,6 +526,110 @@ class AdImageComposer:
                 "image_base64": None,
                 "error": str(e)
             }
+
+
+    def compose_from_ad_copy(
+        self,
+        base_image: bytes,
+        ad_copy: Dict[str, Any],
+        platform: str = "instagram_feed",
+        style: str = "modern",
+        logo_url: str = None,
+        brand_color: str = "#FFD700",
+        brand_name: str = None
+    ) -> Dict[str, Any]:
+        """
+        High-level method that accepts structured AdCopyAgent output and composes the final ad.
+
+        Args:
+            base_image: Raw image bytes (clean, no text)
+            ad_copy: Dict from AdCopyAgent with hooks, headlines, primary_text, descriptions, call_to_action
+            platform: Target platform for aspect ratio (instagram_feed, facebook_feed, etc.)
+            style: Layout style ("modern" or "classic")
+            logo_url: Optional logo URL
+            brand_color: Hex color string
+            brand_name: Optional brand name for modern layout
+
+        Returns:
+            Dict with success, image_base64, error
+        """
+        # Resize image for platform
+        try:
+            resized = self.resize_for_platform(base_image, platform)
+        except Exception:
+            resized = base_image
+
+        # Extract headline (try hooks first, then headlines list, then fallback)
+        headline = ""
+        if isinstance(ad_copy.get("hooks"), dict):
+            headline = (ad_copy["hooks"].get("pattern_interrupt") or
+                       ad_copy["hooks"].get("question") or
+                       ad_copy["hooks"].get("social_proof") or "")
+        if not headline and ad_copy.get("headlines"):
+            if isinstance(ad_copy["headlines"], list) and ad_copy["headlines"]:
+                first = ad_copy["headlines"][0]
+                headline = first.get("text", "") if isinstance(first, dict) else str(first)
+        if not headline:
+            headline = ad_copy.get("headline", "Discover More")
+
+        # Extract bullet points from descriptions or primary_text
+        bullet_points = []
+        if ad_copy.get("bullet_points"):
+            bullet_points = ad_copy["bullet_points"][:4]
+        elif ad_copy.get("descriptions"):
+            bullet_points = ad_copy["descriptions"][:3]
+
+        # Extract CTA
+        cta = ad_copy.get("call_to_action", ad_copy.get("cta_text", "Learn More"))
+
+        # Compose with selected style
+        if style == "modern":
+            return self.compose_modern_ad_image(
+                base_image=resized,
+                headline=headline,
+                bullet_points=bullet_points,
+                cta_text=cta,
+                brand_name=brand_name,
+                brand_color=brand_color,
+                logo_url=logo_url
+            )
+        else:
+            return self.compose_ad_image(
+                base_image=resized,
+                headline=headline,
+                bullet_points=bullet_points,
+                cta_text=cta,
+                logo_url=logo_url,
+                brand_color=brand_color
+            )
+
+    def compose_batch(
+        self,
+        base_image: bytes,
+        ad_copies: List[Dict[str, Any]],
+        platform: str = "instagram_feed",
+        style: str = "modern",
+        logo_url: str = None,
+        brand_color: str = "#FFD700",
+        brand_name: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Compose multiple ad variants from the same base image with different copy.
+        Used by the multi-variant creative test system.
+        """
+        results = []
+        for ad_copy in ad_copies:
+            result = self.compose_from_ad_copy(
+                base_image=base_image,
+                ad_copy=ad_copy,
+                platform=platform,
+                style=style,
+                logo_url=logo_url,
+                brand_color=brand_color,
+                brand_name=brand_name
+            )
+            results.append(result)
+        return results
 
 
 def compose_ad_from_base64(

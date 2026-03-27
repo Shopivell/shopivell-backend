@@ -1,16 +1,14 @@
 # modules/assets/service.py
 """
-Asset service for Cloudinary uploads and AI image generation.
+Asset service for MinIO uploads (primary) with Cloudinary fallback and AI image generation.
 """
 import os
+import io
 import uuid
 from typing import Optional, Dict, Any, Tuple, List
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -18,7 +16,53 @@ from .models import Asset, AssetType
 
 load_dotenv()
 
-# Check if Cloudinary is configured
+# ============================================
+# MinIO Configuration (Primary)
+# ============================================
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "shopivell-assets")
+MINIO_USE_SSL = os.getenv("MINIO_USE_SSL", "false").lower() == "true"
+MINIO_PUBLIC_URL = os.getenv("MINIO_PUBLIC_URL", "")
+
+MINIO_CONFIGURED = bool(MINIO_ACCESS_KEY and MINIO_SECRET_KEY)
+
+minio_client = None
+if MINIO_CONFIGURED:
+    try:
+        from minio import Minio
+        minio_client = Minio(
+            MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=MINIO_USE_SSL
+        )
+        # Ensure bucket exists
+        if not minio_client.bucket_exists(MINIO_BUCKET):
+            minio_client.make_bucket(MINIO_BUCKET)
+            # Set bucket policy for public read access
+            import json
+            policy = {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"AWS": "*"},
+                        "Action": ["s3:GetObject"],
+                        "Resource": [f"arn:aws:s3:::{MINIO_BUCKET}/*"]
+                    }
+                ]
+            }
+            minio_client.set_bucket_policy(MINIO_BUCKET, json.dumps(policy))
+        print(f"[AssetService] MinIO configured: endpoint={MINIO_ENDPOINT}, bucket={MINIO_BUCKET}")
+    except Exception as e:
+        print(f"[AssetService] MinIO init error: {e}")
+        minio_client = None
+
+# ============================================
+# Cloudinary Configuration (Fallback)
+# ============================================
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
@@ -31,18 +75,18 @@ CLOUDINARY_CONFIGURED = (
     CLOUDINARY_API_KEY != "your_api_key"
 )
 
-print(f"[AssetService] Cloudinary configured: {CLOUDINARY_CONFIGURED}")
-if not CLOUDINARY_CONFIGURED:
-    print(f"[AssetService] Cloudinary env vars - Cloud: {bool(CLOUDINARY_CLOUD_NAME)}, Key: {bool(CLOUDINARY_API_KEY)}, Secret: {bool(CLOUDINARY_API_SECRET)}")
-
 if CLOUDINARY_CONFIGURED:
-    # Initialize Cloudinary
+    import cloudinary
+    import cloudinary.uploader
+    import cloudinary.api
     cloudinary.config(
         cloud_name=CLOUDINARY_CLOUD_NAME,
         api_key=CLOUDINARY_API_KEY,
         api_secret=CLOUDINARY_API_SECRET,
         secure=True
     )
+
+print(f"[AssetService] Storage: MinIO={'yes' if minio_client else 'no'}, Cloudinary={'yes' if CLOUDINARY_CONFIGURED else 'no'}")
 
 # Local upload directory for fallback
 LOCAL_UPLOAD_DIR = Path("uploads/assets")
@@ -52,10 +96,58 @@ LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
 
+def _get_minio_url(object_name: str) -> str:
+    """Build the public URL for a MinIO object."""
+    if MINIO_PUBLIC_URL:
+        return f"{MINIO_PUBLIC_URL}/{MINIO_BUCKET}/{object_name}"
+    protocol = "https" if MINIO_USE_SSL else "http"
+    return f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{object_name}"
+
+
 class AssetService:
     def __init__(self, db: Session):
         self.db = db
         self.openai = OpenAI(api_key=openai_api_key) if openai_api_key else None
+
+    def upload_to_minio(
+        self,
+        file_data: bytes,
+        filename: str,
+        store_id: uuid.UUID,
+        content_type: str = "application/octet-stream"
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Upload a file to MinIO. Returns (result, error_message)."""
+        try:
+            # Build object path
+            file_ext = filename.rsplit('.', 1)[-1] if '.' in filename else 'bin'
+            object_name = f"stores/{store_id}/assets/{uuid.uuid4().hex}_{filename}"
+
+            # Upload
+            minio_client.put_object(
+                MINIO_BUCKET,
+                object_name,
+                io.BytesIO(file_data),
+                length=len(file_data),
+                content_type=content_type
+            )
+
+            url = _get_minio_url(object_name)
+
+            return {
+                "public_id": object_name,
+                "url": url,
+                "secure_url": url,
+                "thumbnail_url": url,
+                "width": None,
+                "height": None,
+                "format": file_ext,
+                "resource_type": "video" if content_type.startswith("video/") else "image",
+                "bytes": len(file_data)
+            }, None
+
+        except Exception as e:
+            print(f"[MinIO] Upload error: {e}")
+            return None, str(e)
 
     def upload_to_cloudinary(
         self,
@@ -64,15 +156,10 @@ class AssetService:
         store_id: uuid.UUID,
         resource_type: str = "auto"
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """
-        Upload a file to Cloudinary.
-        Returns (upload_result, error_message)
-        """
+        """Upload a file to Cloudinary. Returns (upload_result, error_message)."""
         try:
-            # Create folder structure
+            import cloudinary.uploader
             folder = f"shopivell/stores/{store_id}/assets"
-
-            # Upload to Cloudinary
             result = cloudinary.uploader.upload(
                 file_data,
                 folder=folder,
@@ -80,12 +167,11 @@ class AssetService:
                 public_id=f"{uuid.uuid4()}_{filename.split('.')[0]}",
                 overwrite=True,
                 eager=[
-                    {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}  # Thumbnail
+                    {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}
                 ],
                 eager_async=False
             )
 
-            # Extract thumbnail URL
             thumbnail_url = None
             if result.get("eager") and len(result["eager"]) > 0:
                 thumbnail_url = result["eager"][0].get("secure_url")
@@ -112,25 +198,18 @@ class AssetService:
         filename: str,
         store_id: uuid.UUID
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """
-        Save file locally when Cloudinary is not configured.
-        Returns (result, error_message)
-        """
+        """Save file locally when no cloud storage is configured."""
         try:
-            # Create store-specific folder
             store_folder = LOCAL_UPLOAD_DIR / str(store_id)
             store_folder.mkdir(parents=True, exist_ok=True)
 
-            # Generate unique filename
             file_ext = filename.split('.')[-1] if '.' in filename else 'bin'
             unique_filename = f"{uuid.uuid4().hex}_{filename}"
             file_path = store_folder / unique_filename
 
-            # Save file
             with open(file_path, 'wb') as f:
                 f.write(file_data)
 
-            # Generate URL (relative path for local development)
             local_url = f"/uploads/assets/{store_id}/{unique_filename}"
 
             return {
@@ -149,6 +228,23 @@ class AssetService:
             print(f"[Local] Save error: {e}")
             return None, str(e)
 
+    def _upload_file(
+        self,
+        file_data: bytes,
+        filename: str,
+        store_id: uuid.UUID,
+        content_type: str = "application/octet-stream",
+        resource_type: str = "auto"
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Upload using MinIO (primary), Cloudinary (fallback), or local storage."""
+        if minio_client:
+            return self.upload_to_minio(file_data, filename, store_id, content_type)
+        elif CLOUDINARY_CONFIGURED:
+            return self.upload_to_cloudinary(file_data, filename, store_id, resource_type)
+        else:
+            print("[Asset] No cloud storage configured, saving locally")
+            return self.save_locally(file_data, filename, store_id)
+
     def create_asset_from_upload(
         self,
         store_id: uuid.UUID,
@@ -159,34 +255,21 @@ class AssetService:
         name: Optional[str] = None,
         source_campaign_id: Optional[uuid.UUID] = None
     ) -> Tuple[Optional[Asset], Optional[str]]:
-        """
-        Upload file to Cloudinary (or locally if not configured) and create asset record.
-        Returns (asset, error_message)
-        """
+        """Upload file and create asset record."""
         try:
-            # Determine resource type for Cloudinary
             resource_type = "video" if file_type == AssetType.VIDEO else "image"
 
-            # Try Cloudinary first, fall back to local storage
-            if CLOUDINARY_CONFIGURED:
-                upload_result, error = self.upload_to_cloudinary(
-                    file_data=file_data,
-                    filename=filename,
-                    store_id=store_id,
-                    resource_type=resource_type
-                )
-            else:
-                print("[Asset] Cloudinary not configured, saving locally")
-                upload_result, error = self.save_locally(
-                    file_data=file_data,
-                    filename=filename,
-                    store_id=store_id
-                )
+            upload_result, error = self._upload_file(
+                file_data=file_data,
+                filename=filename,
+                store_id=store_id,
+                content_type=mime_type,
+                resource_type=resource_type
+            )
 
             if error:
                 return None, error
 
-            # Create asset record
             asset = Asset(
                 store_id=store_id,
                 name=name or filename,
@@ -226,15 +309,11 @@ class AssetService:
         color_scheme: Optional[str] = None,
         campaign_id: Optional[uuid.UUID] = None
     ) -> Tuple[Optional[Asset], Optional[str]]:
-        """
-        Generate an ad image using DALL-E and save to Cloudinary.
-        Returns (asset, error_message)
-        """
+        """Generate an ad image using DALL-E and upload."""
         if not self.openai:
             return None, "OpenAI API key not configured"
 
         try:
-            # Build image generation prompt
             features_text = ", ".join(features[:3]) if features else ""
             prompt = f"""Create a professional {style} advertisement image:
 - Headline: "{headline}"
@@ -247,7 +326,6 @@ class AssetService:
 - Make it suitable for Facebook/Instagram ads
 - 1024x1024, high quality, visually striking"""
 
-            # Generate image with DALL-E
             response = self.openai.images.generate(
                 model="dall-e-3",
                 prompt=prompt,
@@ -258,24 +336,23 @@ class AssetService:
 
             image_url = response.data[0].url
 
-            # Download the image
             import requests
             img_response = requests.get(image_url)
             if img_response.status_code != 200:
                 return None, "Failed to download generated image"
 
-            # Upload to Cloudinary
-            upload_result, error = self.upload_to_cloudinary(
+            filename = f"generated_{uuid.uuid4().hex[:8]}.png"
+            upload_result, error = self._upload_file(
                 file_data=img_response.content,
-                filename=f"generated_{uuid.uuid4().hex[:8]}.png",
+                filename=filename,
                 store_id=store_id,
+                content_type="image/png",
                 resource_type="image"
             )
 
             if error:
                 return None, error
 
-            # Create asset record
             asset = Asset(
                 store_id=store_id,
                 name=f"Generated: {headline[:50]}",
@@ -310,26 +387,29 @@ class AssetService:
             return None, str(e)
 
     def delete_asset(self, asset_id: uuid.UUID) -> Tuple[bool, Optional[str]]:
-        """
-        Delete asset from Cloudinary and database.
-        Returns (success, error_message)
-        """
+        """Delete asset from storage and database."""
         try:
             asset = self.db.query(Asset).filter(Asset.id == asset_id).first()
             if not asset:
                 return False, "Asset not found"
 
-            # Delete from Cloudinary
+            # Delete from storage
             if asset.cloudinary_public_id:
-                try:
-                    cloudinary.uploader.destroy(
-                        asset.cloudinary_public_id,
-                        resource_type="video" if asset.file_type == AssetType.VIDEO else "image"
-                    )
-                except Exception as e:
-                    print(f"[Cloudinary] Delete warning: {e}")
+                if minio_client and asset.cloudinary_public_id.startswith("stores/"):
+                    try:
+                        minio_client.remove_object(MINIO_BUCKET, asset.cloudinary_public_id)
+                    except Exception as e:
+                        print(f"[MinIO] Delete warning: {e}")
+                elif CLOUDINARY_CONFIGURED:
+                    try:
+                        import cloudinary.uploader
+                        cloudinary.uploader.destroy(
+                            asset.cloudinary_public_id,
+                            resource_type="video" if asset.file_type == AssetType.VIDEO else "image"
+                        )
+                    except Exception as e:
+                        print(f"[Cloudinary] Delete warning: {e}")
 
-            # Delete from database
             self.db.delete(asset)
             self.db.commit()
 

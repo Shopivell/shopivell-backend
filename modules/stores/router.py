@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Any, Dict, Optional, List
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from database import get_db
 from modules.users.models import User
@@ -336,6 +336,41 @@ async def complete_store_setup(
                     print(f"[Assets] Error creating asset {i}: {asset_err}")
                     # Continue with other assets if one fails
             print(f"[Assets] Successfully queued {len(extracted_images)} assets for creation")
+
+        # Create default FREE trial subscription (1 month trial)
+        try:
+            from modules.payment.models import StoreSubscription, SubscriptionPlan
+            existing_sub = db.query(StoreSubscription).filter(
+                StoreSubscription.store_id == db_store.id
+            ).first()
+            if not existing_sub:
+                trial_end = datetime.utcnow() + timedelta(days=30)
+                trial_sub = StoreSubscription(
+                    store_id=db_store.id,
+                    package_name=SubscriptionPlan.FREE,
+                    billing_period="monthly",
+                    is_active=True,
+                    auto_renew=False,
+                    subscribed_at=datetime.utcnow(),
+                    current_period_start=datetime.utcnow(),
+                    current_period_end=trial_end,
+                    trial_ends_at=trial_end,
+                    enabled_features={
+                        "max_products": 10,
+                        "max_orders": 50,
+                        "analytics": False,
+                        "custom_domain": False,
+                        "priority_support": False
+                    },
+                    usage_limits={
+                        "api_calls_per_day": 100,
+                        "storage_mb": 100
+                    }
+                )
+                db.add(trial_sub)
+                print(f"[Trial] Created 30-day trial subscription for store {db_store.id}, expires {trial_end}")
+        except Exception as trial_err:
+            print(f"[Trial] Error creating trial subscription: {trial_err}")
 
         # Deactivate the setup session
         setup_session.is_active = False

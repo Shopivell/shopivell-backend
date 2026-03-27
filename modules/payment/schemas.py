@@ -1,5 +1,5 @@
 # modules/payments/schemas.py
-from pydantic import BaseModel, ConfigDict, Field, validator, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, validator, EmailStr, model_validator
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import uuid
@@ -129,6 +129,20 @@ class StoreSubscriptionResponse(StoreSubscriptionBase):
     current_period_end: datetime
     cancelled_at: Optional[datetime] = None
     trial_ends_at: Optional[datetime] = None
+    trial_expired: bool = False
+    trial_days_remaining: int = 0
+
+    @model_validator(mode='after')
+    def compute_trial_status(self):
+        if self.trial_ends_at and self.package_name == SubscriptionPlan.FREE:
+            now = datetime.utcnow()
+            if now >= self.trial_ends_at:
+                self.trial_expired = True
+                self.trial_days_remaining = 0
+            else:
+                self.trial_expired = False
+                self.trial_days_remaining = max(0, (self.trial_ends_at - now).days)
+        return self
 
 class PaymentSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

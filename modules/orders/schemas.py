@@ -9,9 +9,9 @@ class CustomerOrderBase(BaseModel):
 
     store_id: uuid.UUID
     customer_id: Optional[uuid.UUID] = None
-    order_number: str
+    order_number: Optional[str] = None
     total_amount: float
-    status: str
+    status: Optional[str] = None
     customer_name: str
     phone: Optional[str] = None
     offered_price: Optional[float] = None
@@ -24,10 +24,12 @@ class CustomerOrderBase(BaseModel):
     delivery_status: Optional[str] = None
     payment_method: Optional[str] = None
     transaction_id: Optional[str] = None
+    tracking_info: Optional[str] = None
 
 # Create schema
 class CustomerOrderCreate(CustomerOrderBase):
-    pass
+    delivery_address: Optional[str] = None
+    delivery_city: Optional[str] = None
 
 # Update schema
 class CustomerOrderUpdate(BaseModel):

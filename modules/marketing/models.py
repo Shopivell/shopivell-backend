@@ -1,6 +1,6 @@
 # modules/marketing/models.py
 from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, UUID, Integer, JSON, Float
-from sqlalchemy.dialects.postgresql import UUID
+from db_compat import UUID
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime

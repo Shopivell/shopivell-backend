@@ -9,8 +9,10 @@ Uses OpenRouter to route to Claude or GPT-4o.
 
 import os
 import json
+import asyncio
 import logging
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # Import OpenAI client (used for OpenRouter's OpenAI-compatible API)
@@ -22,6 +24,17 @@ except ImportError:
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# --- Structured output model for ad creative ---
+
+class CreativeOutput(BaseModel):
+    """Structured output from ad creative generation"""
+    image_prompt: str = Field(..., description="Complete image generation prompt for clean base image (NO text baked in)")
+    ad_angle: str = Field(..., description="1-2 sentence compelling creative angle description")
+    headline: str = Field(..., description="Short punchy headline, 5-8 words, no emojis")
+    bullet_points: List[str] = Field(default_factory=list, description="3 key benefit bullet points")
+    cta_text: str = Field(default="Learn More", description="Call to action button text")
 
 
 class AdCreativeAgent:
@@ -50,49 +63,49 @@ class AdCreativeAgent:
         else:
             logger.warning("[AdCreativeAgent] No OpenRouter API key or OpenAI package not available!")
 
-        # STRUCTURED prompt template that generates high-quality image prompts
-        # This format produces prompts like a professional creative director would write
+        # Prompt template for CLEAN base image generation (NO text baked in)
+        # Text overlay is handled separately by AdImageComposer for professional results
         self.prompt_template = """You are an expert advertising creative director who writes EXCEPTIONAL image generation prompts for AI tools like Gemini and DALL-E.
 
 IMPORTANT: Be IMAGINATIVE and create REAL-WORLD SCENARIOS showing the product/service IN USE. Don't just show products - show PEOPLE experiencing the benefits in realistic situations. Think about WHO uses this service and WHAT they're doing when they use it.
 
-CRITICAL: YOU ARE CREATING A COMPLETE MARKETING AD IMAGE WITH TEXT BAKED IN.
-The final image must include ALL text elements rendered directly in the image:
-- HEADLINE at the top (dark banner/header area)
-- BULLET POINTS on the left side (with bullet markers)
-- CTA BUTTON (colored button with action text)
+CRITICAL: Generate a CLEAN base image with NO TEXT, NO HEADLINES, NO BUTTONS, NO BULLET POINTS.
+Text will be overlaid programmatically AFTER image generation for crisp, professional results.
+Instead, leave these areas clear for text overlay:
+- TOP 20% of image: Keep slightly darker/simpler for headline overlay
+- LEFT SIDE: Leave some visual space for bullet point overlay
+- BOTTOM-RIGHT: Leave space for CTA button overlay
 
-COMPOSITION RULES FOR MARKETING ADS WITH TEXT:
-1. TOP HEADER AREA: Dark semi-transparent banner at top 15-20% with large white headline text
-2. LEFT SIDE BULLETS: 3 benefit bullet points with bullet markers (•) on the left side of the image
-3. CTA BUTTON: Bright colored button (use brand color) with white text for the call-to-action, positioned on right side
+COMPOSITION RULES FOR CLEAN BASE IMAGES:
+1. TOP AREA: Slightly darker or gradient-friendly area for headline overlay (NO text in image)
+2. LEFT SIDE: Visual breathing room for bullet point overlay (NO text in image)
+3. BOTTOM-RIGHT: Clear space for CTA button overlay (NO button in image)
 4. DEVICE SHOWCASE: For SaaS/digital products - person HOLDING or POINTING TO a device showing the product interface
-5. SUBJECT POSITIONING: Main subjects positioned center-right to leave room for bullet text on left
+5. SUBJECT POSITIONING: Main subjects positioned center-right to leave room for text overlays on left
 
-Your prompts MUST follow this EXACT structure:
-1. SCENE SETUP: "Professional marketing advertisement image for a [industry] company: [business name]."
-2. TEXT OVERLAY - HEADLINE: "TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: '[HEADLINE TEXT]'"
-3. TEXT OVERLAY - BULLETS: "On the left side of the image, display 3 bullet points in white text: • [Benefit 1] • [Benefit 2] • [Benefit 3]"
-4. TEXT OVERLAY - CTA: "Include a [brand color] colored button on the right side with white text reading: '[CTA TEXT]'"
-5. SCENARIO: Create a REALISTIC scene showing the product/service being USED by real people
-6. PEOPLE & ACTION: Include people actively using/benefiting from the service with positive expressions
-7. DEVICE DISPLAY (for digital products): Show the product interface on a device being held/pointed to by the person
-8. COLOR THEME: "IMPORTANT COLOR THEME: Use [brand color] as accent color - on CTA button, device screen elements, clothing accents."
-9. MOOD: "Mood: [specific mood words]."
-10. TECHNICAL: "High-quality commercial photography, marketing advertisement style, professional lighting, 8K quality."
-11. COMPLIANCE: "AVOID: [things to avoid]. Ensure all text is crisp and readable."
+Your prompts MUST follow this EXACT structure (ALL 10 elements required):
+1. ART STYLE: "Photorealistic commercial advertisement" or "Cinematic photorealistic ad"
+2. SCENE SETUP: "Professional marketing image for a [industry] company: [business name]."
+3. SUBJECT: Clearly describe the main subject (person, product, or both) — the hero of the image
+4. ACTION: What the subject is DOING — a specific verb (holding, demonstrating, walking, interacting)
+5. SCENARIO: A REALISTIC scene showing the product/service being USED by real people
+6. LIGHTING: Be SPECIFIC — key light direction, quality, mood (e.g., "soft key light from upper-left with warm fill")
+7. LENS & CAMERA: Focal length, aperture, camera position (e.g., "85mm f/2.0 from waist-height, medium shot")
+8. COLOR THEME: "Use [brand color] as accent color in clothing, environment, device screens"
+9. MOOD: What the VIEWER should FEEL when they see this image
+10. TECHNICAL: "Photorealistic commercial photography, 8K resolution, [aspect ratio]. NO TEXT IN IMAGE. AVOID: text, words, letters, logos, watermarks, cluttered backgrounds."
 
 EXAMPLE for SaaS/digital service (Business Email Provider):
-"Professional marketing advertisement image for a business email service company: WEBZIM. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Professional Email From US$25/Year'. On the left side of the image, display 3 bullet points in white text: • Personalized emails (info@yourdomain) • Plans from US$25/year • Reliable storage and spam protection. Include a bright green #7CB342 colored button on the right side with white text reading: 'CREATE BUSINESS EMAIL'. SCENE: A friendly female business owner in a cafe setting wearing a black apron over a grey shirt, warmly smiling while holding a tablet and pointing to the screen. The tablet displays a professional email inbox interface with the WEBZIM logo at top, showing multiple business email conversations with contact avatars. A male colleague stands behind her slightly blurred, also smiling. The background shows a warm, inviting cafe interior with soft bokeh lighting. Subject positioned center-right. IMPORTANT COLOR THEME: Use #7CB342 bright green as accent color - on the CTA button, tablet screen interface elements, and subtle lighting accents. Mood: professional, approachable, successful, modern. High-quality commercial photography, marketing advertisement style, warm natural lighting, 8K quality. AVOID: cluttered interfaces, corporate sterile environments, stock photo poses. Ensure all text overlays are crisp, readable, and professionally designed."
+"Photorealistic commercial advertisement. Professional marketing advertisement image for a business email service company: WEBZIM. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Professional Email From US$25/Year'. On the left side of the image, display 3 bullet points in white text: • Personalized emails (info@yourdomain) • Plans from US$25/year • Reliable storage and spam protection. Include a bright green #7CB342 colored button on the right side with white text reading: 'CREATE BUSINESS EMAIL'. SUBJECT: A friendly female business owner as the hero, wearing a black apron over a grey shirt. ACTION: She is warmly smiling while holding a tablet in one hand and pointing to the screen with the other, actively demonstrating the email interface. SCENE: The tablet displays a professional email inbox interface with the WEBZIM logo at top, showing multiple business email conversations with contact avatars. A male colleague stands behind her slightly blurred, also smiling. The background shows a warm, inviting cafe interior with soft bokeh. Subject positioned center-right. LIGHTING: Soft natural window light from the upper-left as key, with warm ambient cafe light as fill creating gentle golden tones on subjects, subtle rim light from behind separating them from the bokeh background. LENS & CAMERA: Shot at 50mm f/2.8 from eye-level, medium shot framing subject from waist up, shallow depth of field blurring background patrons and cafe decor into creamy bokeh. IMPORTANT COLOR THEME: Use #7CB342 bright green as accent color - on the CTA button, tablet screen interface elements, and subtle lighting accents. Mood: professional, approachable, successful, modern — the viewer should feel empowered to start their own business email. Photorealistic commercial photography, marketing advertisement style, 8K resolution, 4:5 portrait format. AVOID: cluttered interfaces, corporate sterile environments, stock photo poses. Ensure all text overlays are crisp, readable, and professionally designed."
 
 EXAMPLE for fintech/payments company (Zimswitch):
-"Professional marketing advertisement image for a financial technology company: Zimswitch. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Seamless Payroll Processing'. On the left side of the image, display 3 bullet points in white text: • Bulk salary payments • Secure transactions • Nationwide coverage. Include a blue #0066CC colored button on the right side with white text reading: 'GET STARTED'. SCENE: A confident HR manager in a modern office, smiling while holding a tablet displaying a payroll dashboard with the Zimswitch logo and multiple employee salary transactions. She points at a successful transaction on screen. A Zimswitch-branded ATM is visible through the office window. Subject positioned center-right. IMPORTANT COLOR THEME: Use #0066CC blue as accent color - on the CTA button, the tablet screen UI, the ATM branding, and ambient office lighting. Mood: efficient, relieved, professional, empowering. High-quality commercial photography, marketing advertisement style, warm professional lighting, 8K quality. AVOID: stressed expressions, cluttered desks, outdated technology. Ensure all text overlays are crisp and readable."
+"Cinematic photorealistic advertisement. Professional marketing advertisement image for a financial technology company: Zimswitch. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Seamless Payroll Processing'. On the left side of the image, display 3 bullet points in white text: • Bulk salary payments • Secure transactions • Nationwide coverage. Include a blue #0066CC colored button on the right side with white text reading: 'GET STARTED'. SUBJECT: A confident female HR manager as the hero in a tailored navy blazer. ACTION: She is smiling while holding a tablet in her left hand and pointing at a successful salary transaction on screen with her right index finger, actively reviewing payroll results. SCENE: The tablet displays a payroll dashboard with the Zimswitch logo and multiple employee salary transactions showing green checkmarks. A Zimswitch-branded ATM is visible through the floor-to-ceiling office window. Subject positioned center-right. LIGHTING: Cool-toned key light from a large window on the right, with warm practical fill from overhead office fixtures creating a balanced corporate ambiance, soft edge light on subject's shoulders from the window. LENS & CAMERA: Shot at 85mm f/2.0 from slightly below eye-level (empowering angle), medium-close framing from chest up, background office and ATM softly out of focus at f/2.0. IMPORTANT COLOR THEME: Use #0066CC blue as accent color - on the CTA button, the tablet screen UI, the ATM branding, and ambient office lighting. Mood: efficient, relieved, professional, empowering — the viewer should feel that payroll is finally solved. Photorealistic commercial photography, marketing advertisement style, 8K resolution, 4:5 portrait format. AVOID: stressed expressions, cluttered desks, outdated technology. Ensure all text overlays are crisp and readable."
 
 EXAMPLE for fashion retail (Edgars):
-"Professional marketing advertisement image for a fashion retail company: Edgars. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Style That Defines You'. On the left side of the image, display 3 bullet points in white text: • Trendy fashion for all • Affordable prices • Quality brands you trust. Include a red #E31837 colored button on the right side with white text reading: 'SHOP NOW'. SCENE: A stylish young professional woman walking confidently out of a modern Edgars store entrance with the illuminated 'EDGARS' storefront sign visible above. She's carrying Edgars-branded shopping bags, wearing a chic outfit, checking her phone with a satisfied smile while her friend admires her new look. Subject positioned center-right. IMPORTANT COLOR THEME: Use #E31837 red as accent color - on the CTA button, Edgars signage, shopping bags, her accessories. Mood: aspirational, confident, social, successful. High-quality commercial photography, marketing advertisement style, golden hour lighting, 8K quality. AVOID: empty stores, bored expressions, cheap-looking items. Ensure all text overlays are crisp and readable."
+"Cinematic photorealistic advertisement. Professional marketing advertisement image for a fashion retail company: Edgars. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Style That Defines You'. On the left side of the image, display 3 bullet points in white text: • Trendy fashion for all • Affordable prices • Quality brands you trust. Include a red #E31837 colored button on the right side with white text reading: 'SHOP NOW'. SUBJECT: A stylish young professional woman as the hero in a chic contemporary outfit. ACTION: She is walking confidently out of a modern Edgars store entrance, carrying branded shopping bags in one hand and checking her phone with a satisfied smile, while her friend behind her admires the new look. SCENE: The illuminated 'EDGARS' storefront sign is visible above. The background shows a modern shopping district with warm evening light. Subject positioned center-right. LIGHTING: Golden hour sunlight from the left casting long warm shadows, with the illuminated storefront providing cool-toned fill from behind, creating a cinematic backlit glow on the subject's hair and shoulder. LENS & CAMERA: Shot at 70mm f/2.0 from knee-height (low angle, empowering), full-body framing with the storefront sign visible above, shallow depth of field melting the street background into smooth bokeh. IMPORTANT COLOR THEME: Use #E31837 red as accent color - on the CTA button, Edgars signage, shopping bags, her accessories. Mood: aspirational, confident, social, successful — the viewer should feel inspired to upgrade their wardrobe. Cinematic photorealistic commercial photography, marketing advertisement style, golden hour warmth, 8K resolution, 4:5 portrait format. AVOID: empty stores, bored expressions, cheap-looking items. Ensure all text overlays are crisp and readable."
 
 EXAMPLE for security company (SecureSights):
-"Professional marketing advertisement image for a security company: SecureSights. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Peace of Mind, Always'. On the left side of the image, display 3 bullet points in white text: • 24/7 monitoring • Smart home integration • Instant alerts. Include a navy blue #1E3A5F colored button on the right side with white text reading: 'PROTECT YOUR HOME'. SCENE: A relaxed father on a couch with his daughter, both smiling while he holds and points to a tablet showing the SecureSights home security app with all-clear status and the SecureSights logo visible. Through the window, a peaceful evening neighborhood is visible. A SecureSights-branded security camera in the corner of the room. Subject positioned center-right. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color - on CTA button, tablet screen UI, the security camera, cushion accents. Mood: peaceful, protected, family-focused, reassuring. High-quality commercial photography, marketing advertisement style, cozy evening lighting, 8K quality. AVOID: fear-based imagery, weapons, dark threatening scenes. Ensure all text overlays are crisp and readable."
+"Photorealistic commercial advertisement. Professional marketing advertisement image for a security company: SecureSights. TEXT OVERLAY: At the top of the image, include a dark semi-transparent header banner with large bold white text reading: 'Peace of Mind, Always'. On the left side of the image, display 3 bullet points in white text: • 24/7 monitoring • Smart home integration • Instant alerts. Include a navy blue #1E3A5F colored button on the right side with white text reading: 'PROTECT YOUR HOME'. SUBJECT: A relaxed father and his young daughter as the heroes, sitting close together on a modern couch. ACTION: The father is holding a tablet and pointing to the SecureSights home security app showing all-clear status with the SecureSights logo visible, while his daughter leans in curiously to look at the screen, both smiling warmly. SCENE: Through the large window behind them, a peaceful evening neighborhood with streetlights is visible. A sleek SecureSights-branded security camera is mounted in the upper corner of the room. Subject positioned center-right. LIGHTING: Cozy warm interior lighting from a floor lamp on the left as key, with cool blue evening light filtering through the window as fill, creating an intimate domestic atmosphere with gentle shadows. LENS & CAMERA: Shot at 35mm f/2.8 from seated eye-level, medium-wide shot capturing the full couch scene with environmental context of the room and window, moderate depth of field keeping subjects sharp while softening the window view. IMPORTANT COLOR THEME: Use #1E3A5F navy blue as accent color - on CTA button, tablet screen UI, the security camera, cushion accents. Mood: peaceful, protected, family-focused, reassuring — the viewer should feel their family is safe and connected. Photorealistic commercial photography, marketing advertisement style, cozy evening warmth, 8K resolution, 4:5 portrait format. AVOID: fear-based imagery, weapons, dark threatening scenes. Ensure all text overlays are crisp and readable."
 
 ---
 
@@ -110,30 +123,53 @@ Emotion Target: {angle_emotion}
 Visual Direction: {visual_direction}
 Logo URL: {logo_url}
 
-Generate output in this EXACT format:
+IMPORTANT: Return your response as valid JSON with this exact structure:
+{{
+  "image_prompt": "Complete image generation prompt following the 10-element format above. MUST generate a CLEAN image with NO TEXT, NO WORDS, NO LETTERS. Leave clear areas for programmatic text overlay.",
+  "ad_angle": "1-2 sentence compelling creative angle description",
+  "headline": "Short punchy headline, 5-8 words max, NO EMOJIS",
+  "bullet_points": ["Benefit 1", "Benefit 2", "Benefit 3"],
+  "cta_text": "{call_to_action}"
+}}
 
-IMAGE_PROMPT: [Write a COMPLETE marketing ad prompt following my exact format above. MUST INCLUDE:
-1. TEXT OVERLAY instructions with the HEADLINE text at the top in a dark banner
-2. BULLET POINTS (3 benefits) on the left side using the key_benefits provided
-3. CTA BUTTON with the call_to_action text in brand color
-4. SCENE description with people using the product/service
-5. Brand color theme and mood
-6. Technical specs
-The prompt must generate a COMPLETE AD IMAGE with all text baked in, not just a photo. If a Logo URL is provided above, ADD: "LOGO: Include the company logo from [logo_url] positioned subtly in the bottom-right corner."]
-
-AD_ANGLE: [Write a compelling 1-2 sentence ad description that captures the essence of this creative angle.]
-
-HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and professional. This MUST match the headline text you include in the IMAGE_PROMPT.]
+Return ONLY valid JSON, no other text.
 """
 
-    def _parse_creative_response(self, response_text: str) -> Dict[str, str]:
-        """Parse the AI response into structured creative data"""
-        result = {
-            "image_prompt": "",
-            "ad_angle": "",
-            "headline": ""
-        }
+    def _parse_creative_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse the AI response into structured creative data. JSON-first with prefix fallback."""
+        # Try JSON parsing first (Pydantic validation)
+        try:
+            cleaned = response_text.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            if cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
 
+            data = CreativeOutput.model_validate_json(cleaned)
+            return data.model_dump()
+        except Exception:
+            pass
+
+        # Try plain JSON
+        try:
+            data = json.loads(cleaned)
+            return {
+                "image_prompt": data.get("image_prompt", ""),
+                "ad_angle": data.get("ad_angle", ""),
+                "headline": data.get("headline", ""),
+                "bullet_points": data.get("bullet_points", []),
+                "cta_text": data.get("cta_text", "Learn More")
+            }
+        except Exception:
+            pass
+
+        logger.warning("[AdCreativeAgent] JSON parse failed, falling back to prefix parsing")
+
+        # Fallback: prefix-based parsing (backward compatibility)
+        result = {"image_prompt": "", "ad_angle": "", "headline": "", "bullet_points": [], "cta_text": "Learn More"}
         lines = response_text.strip().split('\n')
         current_key = None
         current_value = []
@@ -158,7 +194,6 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
             elif current_key and line:
                 current_value.append(line)
 
-        # Don't forget the last value
         if current_key and current_value:
             result[current_key] = ' '.join(current_value).strip()
 
@@ -240,11 +275,11 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
             "headline": f"Discover {product_name}"
         }
 
-    async def _generate_with_openrouter(self, prompt_text: str, model_name: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, str]:
-        """Generate creative using OpenRouter (routes to Claude, GPT-4o, etc.)"""
+    async def _generate_with_openrouter(self, prompt_text: str, model_name: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, Any]:
+        """Generate creative using OpenRouter with structured JSON output."""
         max_tokens = 800
 
-        print(f"[AdCreativeAgent] Using OpenRouter ({model_name}, max_tokens={max_tokens})...")
+        logger.info(f"[AdCreativeAgent] Using OpenRouter ({model_name}, max_tokens={max_tokens})")
 
         response = self.client.chat.completions.create(
             model=model_name,
@@ -252,7 +287,8 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
                 {"role": "user", "content": prompt_text}
             ],
             temperature=0.7,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"}
         )
 
         response_text = response.choices[0].message.content
@@ -300,10 +336,25 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         return result
 
     def _generate_fallback_prompt(self, product_name: str, visual_direction: str) -> str:
-        """Generate a structured fallback image prompt"""
+        """Generate a structured fallback image prompt with full visual specification"""
+        base = (
+            f"Photorealistic commercial advertisement. "
+            f"SUBJECT: {product_name} as the hero of the image. "
+        )
         if visual_direction:
-            return f"Professional advertisement image for {product_name}. {visual_direction}. IMPORTANT COLOR THEME: Use brand-appropriate accent colors throughout the composition. Mood: professional, inviting, aspirational. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos, low quality elements. No text in image."
-        return f"Professional advertisement image for {product_name}. Create a scene showing the product/service in an aspirational setting with clean, modern styling. IMPORTANT COLOR THEME: Use brand-appropriate accent colors on key elements and lighting. Mood: professional, trustworthy, inviting. High-quality commercial photography, clean composition, professional studio lighting, 8K quality. AVOID: cluttered backgrounds, competitor logos. No text in image."
+            base += f"ACTION & DIRECTION: {visual_direction}. "
+        else:
+            base += "ACTION: The product/service shown in active use in an aspirational modern setting. "
+
+        base += (
+            "LIGHTING: Soft key light from upper-left with warm fill and gentle rim light separating subject from background. "
+            "LENS & CAMERA: Shot on Canon 5D Mark IV with 85mm f/1.4 lens, medium shot from eye-level, shallow depth of field, creamy bokeh, soft focus background. "
+            "IMPORTANT COLOR THEME: Use brand-appropriate accent colors throughout the composition. "
+            "MOOD: Professional, inviting, aspirational — the viewer should feel drawn to explore the product. "
+            "Photorealistic commercial photography, clean composition, 8K resolution, 4:5 portrait format. "
+            "AVOID: cluttered backgrounds, competitor logos, low quality elements. No text in image."
+        )
+        return base
 
     async def generate_multiple_creatives(
         self,
@@ -324,9 +375,8 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
         Returns:
             List of creative dicts with image_prompt, ad_angle, headline, and original angle data
         """
-        creatives = []
-
-        for angle in creative_angles:
+        # Run all angle generations in parallel
+        async def _gen_single(angle: Dict) -> Dict[str, Any]:
             creative = await self.generate_ad_creative(
                 product_name=product_name,
                 product_description=product_description,
@@ -338,12 +388,28 @@ HEADLINE: [Write a short, punchy headline (5-8 words max) - NO EMOJIS, clean and
                 angle_emotion=angle.get("emotion_target", "Interest"),
                 visual_direction=angle.get("visual_direction", "")
             )
-
-            creatives.append({
+            return {
                 **creative,
                 "angle_name": angle.get("angle_name", "Default"),
                 "angle_data": angle
-            })
+            }
+
+        tasks = [_gen_single(angle) for angle in creative_angles]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        creatives = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"[AdCreativeAgent] Parallel generation error for angle {i}: {result}")
+                creatives.append({
+                    "image_prompt": self._generate_fallback_prompt(product_name, ""),
+                    "ad_angle": f"Discover {product_name}",
+                    "headline": f"Discover {product_name}",
+                    "angle_name": creative_angles[i].get("angle_name", "Default"),
+                    "angle_data": creative_angles[i]
+                })
+            else:
+                creatives.append(result)
 
         return creatives
 

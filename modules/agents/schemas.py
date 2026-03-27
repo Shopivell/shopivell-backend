@@ -201,3 +201,56 @@ class OptimizationResponse(BaseModel):
     campaign_id: uuid.UUID
     recommendations: List[OptimizationRecommendation]
     generated_at: datetime
+
+
+# ============ Competitive Intelligence Schemas ============
+
+class CompetitiveIntelligenceRequest(BaseModel):
+    """Request to run competitive intelligence pipeline"""
+    domain: str = Field(..., min_length=3, description="Target domain, e.g. 'example.com'")
+    country_code: str = Field(default="US", max_length=2)
+    language_code: str = Field(default="en", max_length=5)
+    top_competitors: int = Field(default=5, ge=1, le=20, description="Number of top competitors to analyze")
+    enrich_with_tavily: bool = Field(default=True, description="Scrape competitor sites for qualitative context")
+    expand_keywords: bool = Field(default=True, description="Run keyword expansion (Step 4)")
+
+
+class DomainCategory(BaseModel):
+    category: str
+    organic_traffic: Optional[int] = None
+    organic_count: Optional[int] = None
+    paid_traffic: Optional[int] = None
+    paid_count: Optional[int] = None
+
+
+class CompetitorDomain(BaseModel):
+    domain: str
+    competition_score: Optional[float] = None
+    intersections: Optional[int] = None
+    organic_keywords: Optional[int] = None
+    organic_traffic: Optional[int] = None
+    paid_keywords: Optional[int] = None
+    tavily_summary: Optional[str] = None
+
+
+class CompetitorKeyword(BaseModel):
+    keyword: str
+    search_volume: Optional[int] = None
+    cpc: Optional[float] = None
+    competition: Optional[float] = None
+    position: Optional[int] = None
+    source_domain: str = ""
+    opportunity_score: Optional[float] = None
+
+
+class CompetitiveIntelligenceResponse(BaseModel):
+    success: bool
+    domain: str
+    categories: List[DomainCategory] = Field(default_factory=list)
+    competitors: List[CompetitorDomain] = Field(default_factory=list)
+    competitor_keywords: List[CompetitorKeyword] = Field(default_factory=list)
+    top_opportunity_keywords: List[CompetitorKeyword] = Field(default_factory=list)
+    expanded_keywords: Optional[Dict[str, Any]] = None
+    strategic_summary: Optional[str] = None
+    errors: List[str] = Field(default_factory=list)
+    meta: Optional[Dict[str, Any]] = None

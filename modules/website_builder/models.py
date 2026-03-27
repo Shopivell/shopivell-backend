@@ -1,6 +1,7 @@
 # modules/website_builder/models.py
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Float, Boolean, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID, JSON
+from db_compat import UUID
+from sqlalchemy import JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid

@@ -103,6 +103,7 @@ class MultiTenantSalesBot:
             from modules.stores.models import Store
             store = self.db.query(Store).filter(Store.id == self.store_id).first()
             if store:
+                storefront_url = os.getenv('STOREFRONT_URL', 'https://shopivell.com')
                 return {
                     "name": getattr(store, 'name', 'Store'),
                     "business_type": getattr(store, 'business_type', 'general'),
@@ -111,7 +112,8 @@ class MultiTenantSalesBot:
                     "email": getattr(store, 'email', ''),
                     "address": getattr(store, 'address', ''),
                     "voice": getattr(store, 'store_voice', 'professional'),
-                    "tone": getattr(store, 'store_tone', 'friendly')
+                    "tone": getattr(store, 'store_tone', 'friendly'),
+                    "order_form_url": f"{storefront_url}/store/{store.id}/order"
                 }
         except Exception as e:
             logger.warning(f"Could not get store info: {e}")
@@ -132,6 +134,7 @@ class MultiTenantSalesBot:
         store_name = store_info.get("name", "Store")
         store_voice = store_info.get("voice", "professional")
         store_tone = store_info.get("tone", "friendly")
+        order_form_url = store_info.get("order_form_url", "")
 
         prompt = f"""You are {bot_name}, a sales assistant for {store_name}.
 
@@ -150,6 +153,13 @@ RESPONSE STYLE:
 - Use conversational language suitable for WhatsApp
 - Don't use markdown or special formatting
 - Keep responses brief and to the point
+
+ORDERING & SERVICES:
+- When a customer wants to order, buy, purchase, place an order, book a service, get a quote, or make an appointment, respond with exactly "ORDER_FLOW_START"
+- Also use "ORDER_FLOW_START" when a customer asks about services and seems interested (e.g. "I need your services", "how can I book", "I want a quote")
+- This will give the customer options to order, or get more info
+- Do NOT share a URL link — the system handles everything
+- ALWAYS respond with "ORDER_FLOW_START" when purchase or service interest is detected
 
 If asked about pricing, availability, or any specific detail not in the CONTEXT:
 - Respond with "NO_KNOWLEDGE_MATCH" (the system will handle this appropriately)

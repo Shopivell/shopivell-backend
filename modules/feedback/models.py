@@ -6,7 +6,7 @@ SQLAlchemy models for feedback, bug reports, and feature requests.
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, Text, Boolean, Integer, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from db_compat import UUID
 from sqlalchemy.orm import relationship
 
 from database import Base
