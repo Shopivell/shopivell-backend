@@ -52,7 +52,7 @@ def generate_unique_slug(db: Session, base_name: str) -> str:
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 # Google OAuth configuration
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "272390387474-pjmoiv7324dden6h6glu93d8pnapsnnl.apps.googleusercontent.com")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "664377144183-g2si02jr6d7ulhc101sd9e037dkkji0u.apps.googleusercontent.com")
 
 # Google Signup/Login
 @auth_router.post("/google", response_model=LoginResponse)
