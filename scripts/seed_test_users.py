@@ -4,17 +4,14 @@ Seed Test Users Script
 
 Creates test users for development and testing purposes.
 
+Reads credentials from environment variables:
+    SEED_USER_EMAIL     (default: testuser@shopivell.com)
+    SEED_USER_PASSWORD  (required)
+    SEED_ADMIN_EMAIL    (default: admin@shopivell.com)
+    SEED_ADMIN_PASSWORD (required)
+
 Usage:
-    python scripts/seed_test_users.py
-
-Test Credentials:
-    Regular User:
-        Email: testuser@shopivell.com
-        Password: Test@1234
-
-    Admin User:
-        Email: admin@shopivell.com
-        Password: Admin@1234
+    SEED_USER_PASSWORD=xxx SEED_ADMIN_PASSWORD=yyy python scripts/seed_test_users.py
 """
 
 import sys
@@ -95,6 +92,15 @@ def create_admin_profile(db: Session, user: User, admin_role: AdminRole) -> Admi
 
 def main():
     """Seed test users into the database."""
+    seed_user_email = os.environ.get("SEED_USER_EMAIL", "testuser@shopivell.com")
+    seed_user_password = os.environ.get("SEED_USER_PASSWORD")
+    seed_admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@shopivell.com")
+    seed_admin_password = os.environ.get("SEED_ADMIN_PASSWORD")
+
+    if not seed_user_password or not seed_admin_password:
+        print("ERROR: SEED_USER_PASSWORD and SEED_ADMIN_PASSWORD environment variables are required")
+        sys.exit(1)
+
     db: Session = SessionLocal()
 
     try:
@@ -106,13 +112,12 @@ def main():
         print("Creating regular test user...")
         test_user = create_test_user(
             db=db,
-            email="testuser@shopivell.com",
-            password="Test@1234",
+            email=seed_user_email,
+            password=seed_user_password,
             name="Test User",
             role=UserRole.OWNER
         )
-        print(f"  Email: testuser@shopivell.com")
-        print(f"  Password: Test@1234")
+        print(f"  Email: {seed_user_email}")
         print(f"  User ID: {test_user.id}")
         print()
 
@@ -120,8 +125,8 @@ def main():
         print("Creating admin user...")
         admin_user = create_test_user(
             db=db,
-            email="admin@shopivell.com",
-            password="Admin@1234",
+            email=seed_admin_email,
+            password=seed_admin_password,
             name="Admin User",
             role=UserRole.ADMIN
         )
@@ -133,8 +138,7 @@ def main():
             admin_role=AdminRole.SUPERADMIN
         )
 
-        print(f"  Email: admin@shopivell.com")
-        print(f"  Password: Admin@1234")
+        print(f"  Email: {seed_admin_email}")
         print(f"  User ID: {admin_user.id}")
         print(f"  Admin ID: {admin_profile.id}")
         print(f"  Admin Role: superadmin")
@@ -143,15 +147,10 @@ def main():
         print("="*50)
         print("TEST USERS CREATED SUCCESSFULLY!")
         print("="*50)
-        print("\nTest Credentials:")
+        print("\nSeeded accounts:")
         print("-"*50)
-        print("Regular User:")
-        print("  Email:    testuser@shopivell.com")
-        print("  Password: Test@1234")
-        print()
-        print("Admin User:")
-        print("  Email:    admin@shopivell.com")
-        print("  Password: Admin@1234")
+        print(f"Regular User: {seed_user_email}")
+        print(f"Admin User:   {seed_admin_email}")
         print("="*50 + "\n")
 
     except Exception as e:

@@ -253,15 +253,27 @@ async def seed_test_users():
     """
     Seed test users for development/testing.
 
-    Creates:
-    - Regular User: testuser@shopivell.com / Test@1234
-    - Admin User: admin@shopivell.com / Admin@1234
+    Reads credentials from environment variables:
+    - SEED_USER_EMAIL / SEED_USER_PASSWORD for regular user
+    - SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD for admin user
     """
+    import os
     import bcrypt
     from datetime import datetime
     from database import SessionLocal
     from modules.users.models import User, UserRole
     from modules.admin.models import AdminUser, AdminRole
+
+    seed_user_email = os.environ.get("SEED_USER_EMAIL", "testuser@shopivell.com")
+    seed_user_password = os.environ.get("SEED_USER_PASSWORD")
+    seed_admin_email = os.environ.get("SEED_ADMIN_EMAIL", "admin@shopivell.com")
+    seed_admin_password = os.environ.get("SEED_ADMIN_PASSWORD")
+
+    if not seed_user_password or not seed_admin_password:
+        return {
+            "success": False,
+            "message": "SEED_USER_PASSWORD and SEED_ADMIN_PASSWORD environment variables are required"
+        }
 
     def hash_password(password: str) -> str:
         salt = bcrypt.gensalt()
@@ -274,15 +286,15 @@ async def seed_test_users():
         # Test user credentials
         test_users = [
             {
-                "email": "testuser@shopivell.com",
-                "password": "Test@1234",
+                "email": seed_user_email,
+                "password": seed_user_password,
                 "name": "Test User",
                 "role": UserRole.OWNER,
                 "is_admin": False
             },
             {
-                "email": "admin@shopivell.com",
-                "password": "Admin@1234",
+                "email": seed_admin_email,
+                "password": seed_admin_password,
                 "name": "Admin User",
                 "role": UserRole.ADMIN,
                 "is_admin": True
@@ -341,12 +353,10 @@ async def seed_test_users():
             "results": results,
             "credentials": {
                 "regular_user": {
-                    "email": "testuser@shopivell.com",
-                    "password": "Test@1234"
+                    "email": seed_user_email
                 },
                 "admin_user": {
-                    "email": "admin@shopivell.com",
-                    "password": "Admin@1234"
+                    "email": seed_admin_email
                 }
             }
         }
