@@ -28,6 +28,30 @@ logger = logging.getLogger(__name__)
 
 payment_router = APIRouter(prefix="/api/payments", tags=["payments"])
 
+
+def _apply_store_discount(db: Session, store_id, amount: float, payment_method_label: str = "") -> float:
+    """Check for an active store discount and reduce the amount accordingly.
+    Returns the (possibly reduced) amount."""
+    subscription = db.query(StoreSubscription).filter(
+        StoreSubscription.store_id == store_id
+    ).first()
+    if subscription and subscription.usage_limits:
+        discount_info = subscription.usage_limits.get("discount")
+        if discount_info and discount_info.get("is_active"):
+            discount_percent = float(discount_info["discount_percent"])
+            original_amount = float(amount)
+            amount = round(original_amount * (1 - discount_percent / 100), 2)
+            if amount < 0:
+                amount = 0.0
+            logger.info(
+                f"Store discount applied{' for ' + payment_method_label if payment_method_label else ''} "
+                f"(store {store_id}): {discount_percent}% off, "
+                f"${original_amount:.2f} -> ${amount:.2f} "
+                f"(reason: {discount_info.get('reason', 'N/A')})"
+            )
+    return amount
+
+
 # Package Pricing Endpoints
 @payment_router.get("/packages", response_model=List[PackagePricingResponse])
 async def get_all_packages(
@@ -216,6 +240,9 @@ async def initiate_payment(
         if test_mode:
             logger.info(f"TEST_MODE enabled: overriding amount from ${amount} to $0.01 for package {payment_request.package_name}")
             amount = 0.01
+
+        # Apply store discount if one exists
+        amount = _apply_store_discount(db, payment_request.store_id, amount, "EcoCash/InnBucks")
 
         # Initialize payment service
         payment_service = PaymentService(db)
@@ -853,6 +880,9 @@ async def create_stripe_payment_intent(
         else:
             amount = package.monthly_price
 
+        # Apply store discount if one exists
+        amount = _apply_store_discount(db, payment_request.store_id, amount, "Stripe")
+
         payment_service = PaymentService(db)
 
         # Create transaction
@@ -989,6 +1019,9 @@ async def create_paypal_order(
             amount = package.annual_price
         else:
             amount = package.monthly_price
+
+        # Apply store discount if one exists
+        amount = _apply_store_discount(db, payment_request.store_id, amount, "PayPal")
 
         payment_service = PaymentService(db)
 

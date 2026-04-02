@@ -327,5 +327,45 @@ class UpdateUserStatusRequest(BaseModel):
     is_active: bool
 
 
+# ============ Audit Log Schemas ============
+
+class AuditLogItem(BaseModel):
+    id: UUID
+    admin_email: str
+    action: str
+    resource_type: str
+    resource_id: Optional[UUID] = None
+    details: Optional[Dict[str, Any]] = None
+    ip_address: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogListResponse(BaseModel):
+    items: List[AuditLogItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+# ============ Store Discount Schemas ============
+
+class SetStoreDiscountRequest(BaseModel):
+    discount_percent: float = Field(..., gt=0, le=100, description="Discount percentage (1-100)")
+    reason: str = Field(..., min_length=1, max_length=500, description="Reason for the discount")
+
+
+class StoreDiscountResponse(BaseModel):
+    store_id: UUID
+    discount_percent: float
+    reason: str
+    is_active: bool
+    created_by: Optional[UUID] = None
+    created_at: Optional[str] = None
+
+
 # Update forward reference
 AdminLoginResponse.model_rebuild()

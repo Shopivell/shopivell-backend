@@ -58,6 +58,17 @@ class PaymentService:
             logger.error(f"Failed to initialize PayNow: {str(e)}")
             self.paynow = None
     
+    @staticmethod
+    def _build_payment_metadata(token_discount: float, amount: float, subscription) -> dict:
+        """Build payment metadata dict, including store discount info if applicable."""
+        meta = {"token_discount": float(token_discount), "original_amount": float(amount)}
+        if subscription and subscription.usage_limits:
+            disc = subscription.usage_limits.get("discount")
+            if disc and disc.get("is_active"):
+                meta["store_discount_percent"] = float(disc["discount_percent"])
+                meta["store_discount_reason"] = disc.get("reason", "")
+        return meta
+
     def create_payment_transaction(
         self,
         store_id: uuid.UUID,
@@ -89,6 +100,17 @@ class PaymentService:
             else:
                 expected_amount = package.monthly_price
             
+            # Check for store discount and adjust expected amount accordingly
+            subscription = self.db.query(StoreSubscription).filter(
+                StoreSubscription.store_id == store_id
+            ).first()
+            if subscription and subscription.usage_limits:
+                discount_info = subscription.usage_limits.get("discount")
+                if discount_info and discount_info.get("is_active"):
+                    discount_percent = float(discount_info["discount_percent"])
+                    expected_amount = round(float(expected_amount) * (1 - discount_percent / 100), 2)
+                    logger.info(f"Store discount of {discount_percent}% applied, adjusted expected amount: ${expected_amount:.2f}")
+
             # In TEST_MODE, allow $0.01 payments for any valid package
             test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
             if test_mode:
@@ -145,7 +167,7 @@ class PaymentService:
                 billing_period=billing_period,
                 mobile_number=mobile_number,
                 status=PaymentStatus.PENDING,
-                payment_metadata={"token_discount": float(token_discount), "original_amount": float(amount)},
+                payment_metadata=self._build_payment_metadata(token_discount, amount, subscription),
                 initiated_at=datetime.utcnow(),
                 expires_at=datetime.utcnow() + timedelta(hours=24)
             )

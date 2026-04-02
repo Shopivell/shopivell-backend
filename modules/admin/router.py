@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import func, String
 
 from database import get_db
@@ -63,6 +64,10 @@ from .schemas import (
     UpdateStoreStatusRequest,
     CreateAgencyRequest,
     UpdateUserStatusRequest,
+    AuditLogItem,
+    AuditLogListResponse,
+    SetStoreDiscountRequest,
+    StoreDiscountResponse,
 )
 
 admin_router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -784,6 +789,60 @@ async def remove_admin(
     return {"message": "Admin removed"}
 
 
+# ============ Audit Log Endpoints ============
+
+@admin_router.get("/audit-logs", response_model=AuditLogListResponse)
+async def list_audit_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    action: Optional[str] = None,
+    resource_type: Optional[str] = None,
+    admin_user_id: Optional[str] = None,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """List audit logs with pagination and optional filters."""
+    query = db.query(AuditLog)
+
+    if action:
+        query = query.filter(AuditLog.action == action)
+
+    if resource_type:
+        query = query.filter(AuditLog.resource_type == resource_type)
+
+    if admin_user_id:
+        query = query.filter(AuditLog.admin_user_id == admin_user_id)
+
+    total = query.count()
+    total_pages = (total + page_size - 1) // page_size
+
+    logs = query.order_by(AuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    items = []
+    for log in logs:
+        admin_user = db.query(AdminUser).filter(AdminUser.id == log.admin_user_id).first() if log.admin_user_id else None
+        user = db.query(User).filter(User.id == admin_user.user_id).first() if admin_user else None
+
+        items.append(AuditLogItem(
+            id=log.id,
+            admin_email=user.email if user else "Unknown",
+            action=log.action.value if hasattr(log.action, 'value') else str(log.action),
+            resource_type=log.resource_type,
+            resource_id=log.resource_id,
+            details=log.details,
+            ip_address=log.ip_address,
+            created_at=log.created_at
+        ))
+
+    return AuditLogListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages
+    )
+
+
 # ============ Payment Endpoints ============
 
 @admin_router.get("/payments", response_model=PaymentListResponse)
@@ -1217,3 +1276,135 @@ async def update_plan(
         "features": plan.features,
         "is_active": plan.is_active,
     }
+
+
+# ============ Store Discount Endpoints ============
+
+@admin_router.post("/stores/{store_id}/discount", response_model=StoreDiscountResponse)
+async def set_store_discount(
+    store_id: uuid.UUID,
+    discount_request: SetStoreDiscountRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Set a payment discount for a specific store. Stored in the subscription's usage_limits JSON field."""
+    # Verify store exists
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Get or create subscription
+    subscription = db.query(StoreSubscription).filter(
+        StoreSubscription.store_id == store_id
+    ).first()
+
+    if not subscription:
+        raise HTTPException(
+            status_code=404,
+            detail="Store subscription not found. The store must have an active subscription first."
+        )
+
+    # Store discount info in usage_limits JSON field
+    usage_limits = subscription.usage_limits or {}
+    usage_limits["discount"] = {
+        "discount_percent": discount_request.discount_percent,
+        "reason": discount_request.reason,
+        "is_active": True,
+        "created_by": str(admin.id),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    subscription.usage_limits = usage_limits
+    flag_modified(subscription, "usage_limits")
+
+    db.commit()
+    db.refresh(subscription)
+
+    log_action(
+        db, admin, AuditAction.UPDATE, "store_discount", store_id,
+        {"discount_percent": discount_request.discount_percent, "reason": discount_request.reason}
+    )
+
+    discount_data = subscription.usage_limits.get("discount", {})
+    return StoreDiscountResponse(
+        store_id=store_id,
+        discount_percent=discount_data["discount_percent"],
+        reason=discount_data["reason"],
+        is_active=discount_data["is_active"],
+        created_by=uuid.UUID(discount_data["created_by"]) if discount_data.get("created_by") else None,
+        created_at=discount_data.get("created_at"),
+    )
+
+
+@admin_router.get("/stores/{store_id}/discount", response_model=StoreDiscountResponse)
+async def get_store_discount(
+    store_id: uuid.UUID,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get the current discount for a store."""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    subscription = db.query(StoreSubscription).filter(
+        StoreSubscription.store_id == store_id
+    ).first()
+
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Store subscription not found")
+
+    usage_limits = subscription.usage_limits or {}
+    discount_data = usage_limits.get("discount")
+
+    if not discount_data or not discount_data.get("is_active"):
+        raise HTTPException(status_code=404, detail="No active discount found for this store")
+
+    return StoreDiscountResponse(
+        store_id=store_id,
+        discount_percent=discount_data["discount_percent"],
+        reason=discount_data["reason"],
+        is_active=discount_data["is_active"],
+        created_by=uuid.UUID(discount_data["created_by"]) if discount_data.get("created_by") else None,
+        created_at=discount_data.get("created_at"),
+    )
+
+
+@admin_router.delete("/stores/{store_id}/discount")
+async def remove_store_discount(
+    store_id: uuid.UUID,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Remove the discount for a store."""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    subscription = db.query(StoreSubscription).filter(
+        StoreSubscription.store_id == store_id
+    ).first()
+
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Store subscription not found")
+
+    usage_limits = subscription.usage_limits or {}
+    discount_data = usage_limits.get("discount")
+
+    if not discount_data or not discount_data.get("is_active"):
+        raise HTTPException(status_code=404, detail="No active discount found for this store")
+
+    # Mark discount as inactive rather than deleting it (preserves history)
+    usage_limits["discount"]["is_active"] = False
+    usage_limits["discount"]["removed_by"] = str(admin.id)
+    usage_limits["discount"]["removed_at"] = datetime.utcnow().isoformat()
+    subscription.usage_limits = usage_limits
+    flag_modified(subscription, "usage_limits")
+
+    db.commit()
+
+    log_action(
+        db, admin, AuditAction.DELETE, "store_discount", store_id,
+        {"discount_percent": discount_data["discount_percent"], "reason": discount_data["reason"]}
+    )
+
+    return {"message": "Discount removed successfully", "store_id": str(store_id)}
