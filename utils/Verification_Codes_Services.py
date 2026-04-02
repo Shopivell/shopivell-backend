@@ -249,7 +249,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="https://shopivell.com/logos/shopivell.png" alt="Shopivell" height="32" style="height:32px;" onerror="this.style.display='none'"></td>
+              <td><span style="font-size:20px;font-weight:700;color:#1a1a1a;">Shopivell</span></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
@@ -320,7 +320,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="https://shopivell.com/logos/shopivell.png" alt="Shopivell" height="32" style="height:32px;" onerror="this.style.display='none'"></td>
+              <td><span style="font-size:20px;font-weight:700;color:#1a1a1a;">Shopivell</span></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
