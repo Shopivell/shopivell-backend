@@ -71,7 +71,7 @@ class VerificationCodeService:
 
             # Build proper MIME email
             msg = MIMEMultipart()
-            msg['From'] = cls.email_username
+            msg['From'] = f'Shopivell <{cls.email_username}>'
             msg['To'] = to_email
             msg['Subject'] = subject
             msg.attach(MIMEText(body, content_type, 'utf-8'))
@@ -236,21 +236,44 @@ class VerificationCodeService:
             return cls.send_sms(user.phone_number, body)
 
         else:
-            # Send via Email
-            subject = "Verification Code - Shopivell"
-            body = f"""Hello {user.name or 'there'},
-
-Your {code_type.replace('_', ' ').title()} verification code is:
-
-VERIFICATION CODE: {verification_code.code}
-
-This code will expire at {expiration_time} (30 minutes from now).
-
-If you didn't request this, please ignore this message.
-
-Best regards,
-Shopivell Team"""
-            return cls.send_email(email, subject, body)
+            # Send via Email (HTML)
+            user_name = user.name or user.first_name or 'there'
+            subject = f"{verification_code.code} is your Shopivell code"
+            body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;">
+        <tr><td style="padding:32px 40px;">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td><img src="https://objects.shopivell.com/shopivell-assets/shopivell-logo.png" alt="Shopivell" height="32" style="height:32px;" onerror="this.style.display='none'"></td>
+              <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
+            </tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:0 40px 32px;">
+          <h1 style="font-size:22px;font-weight:600;color:#1a1a1a;margin:0 0 16px;">One more step to confirm your account</h1>
+          <p style="font-size:15px;color:#444;line-height:1.5;margin:0 0 24px;">Hi {user_name},<br><br>We got a request to verify your account on Shopivell. Enter this code:</p>
+          <div style="background-color:#e8f4fd;border-radius:8px;padding:20px;text-align:center;margin:0 0 24px;">
+            <span style="font-size:32px;font-weight:700;letter-spacing:8px;color:#1a1a1a;">{verification_code.code}</span>
+          </div>
+          <p style="font-size:13px;color:#888;text-align:center;margin:0 0 24px;">Don't share this code with anyone.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:0 0 24px;">
+          <p style="font-size:13px;color:#666;margin:0 0 8px;"><strong>If someone asks for this code</strong></p>
+          <p style="font-size:13px;color:#888;line-height:1.5;margin:0 0 20px;">Don't share this code with anyone. Shopivell will never ask you for this code.</p>
+          <p style="font-size:13px;color:#666;margin:0 0 8px;"><strong>Didn't request this?</strong></p>
+          <p style="font-size:13px;color:#888;line-height:1.5;margin:0 0 20px;">If you didn't request this, you can safely ignore this email. The code expires at {expiration_time}.</p>
+          <p style="font-size:14px;color:#444;margin:0;">Thanks,<br>Shopivell Security</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+            return cls.send_email(email, subject, body, content_type='html')
 
     @classmethod
     def send_password_reset_code(
@@ -284,18 +307,39 @@ Shopivell Team"""
             return cls.send_sms(user.phone_number, body)
 
         else:
-            # Send via Email
-            subject = "Password Reset Code - Shopivell"
-            body = f"""Hello {user.name or 'there'},
-
-You requested to reset your password. Use this verification code:
-
-PASSWORD RESET CODE: {verification_code.code}
-
-This code expires at {expiration_time} (30 minutes from now).
-
-If you didn't request this reset, please ignore this email.
-
-Best regards,
-Shopivell Team"""
-            return cls.send_email(email, subject, body)
+            # Send via Email (HTML)
+            user_name = user.name or user.first_name or 'there'
+            subject = f"{verification_code.code} is your Shopivell password reset code"
+            body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;">
+        <tr><td style="padding:32px 40px;">
+          <table width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td><img src="https://objects.shopivell.com/shopivell-assets/shopivell-logo.png" alt="Shopivell" height="32" style="height:32px;" onerror="this.style.display='none'"></td>
+              <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
+            </tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:0 40px 32px;">
+          <h1 style="font-size:22px;font-weight:600;color:#1a1a1a;margin:0 0 16px;">Reset your password</h1>
+          <p style="font-size:15px;color:#444;line-height:1.5;margin:0 0 24px;">Hi {user_name},<br><br>You requested to reset your password. Enter this code:</p>
+          <div style="background-color:#e8f4fd;border-radius:8px;padding:20px;text-align:center;margin:0 0 24px;">
+            <span style="font-size:32px;font-weight:700;letter-spacing:8px;color:#1a1a1a;">{verification_code.code}</span>
+          </div>
+          <p style="font-size:13px;color:#888;text-align:center;margin:0 0 24px;">Don't share this code with anyone.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:0 0 24px;">
+          <p style="font-size:13px;color:#666;margin:0 0 8px;"><strong>Didn't request this?</strong></p>
+          <p style="font-size:13px;color:#888;line-height:1.5;margin:0 0 20px;">If you didn't request a password reset, you can safely ignore this email. Your password won't be changed. The code expires at {expiration_time}.</p>
+          <p style="font-size:14px;color:#444;margin:0;">Thanks,<br>Shopivell Security</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+            return cls.send_email(email, subject, body, content_type='html')
