@@ -25,7 +25,7 @@ from modules.stores.models import Store
 from modules.agency.models import Agency
 from modules.campaigns.models import UrlCampaign
 from modules.assets.models import Asset
-from modules.payment.models import PaymentTransaction
+from modules.payment.models import PaymentTransaction, StoreSubscription, PackagePricing, SubscriptionPlan
 from modules.feedback.models import Feedback
 
 from .models import AdminUser, AdminInvitation, AuditLog, AdminRole, InvitationStatus, AuditAction
@@ -1110,3 +1110,110 @@ async def delete_user(
     log_action(db, admin, AuditAction.DELETE, "user", user_id, {"email": user_email})
 
     return {"message": "User deleted successfully"}
+
+
+# ============ Subscription & Plan Management Endpoints ============
+
+@admin_router.get("/subscriptions")
+async def list_subscriptions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """List all store subscriptions with store name."""
+    query = db.query(StoreSubscription)
+    total = query.count()
+    total_pages = (total + page_size - 1) // page_size
+
+    subscriptions = query.order_by(StoreSubscription.subscribed_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    items = []
+    for sub in subscriptions:
+        store = db.query(Store).filter(Store.id == sub.store_id).first()
+        items.append({
+            "id": str(sub.id),
+            "store_id": str(sub.store_id),
+            "store_name": store.store_name if store else "Unknown",
+            "package_name": sub.package_name.value if hasattr(sub.package_name, 'value') else str(sub.package_name),
+            "billing_period": sub.billing_period,
+            "is_active": sub.is_active,
+            "auto_renew": sub.auto_renew,
+            "current_period_start": sub.current_period_start.isoformat() if sub.current_period_start else None,
+            "current_period_end": sub.current_period_end.isoformat() if sub.current_period_end else None,
+            "trial_ends_at": sub.trial_ends_at.isoformat() if sub.trial_ends_at else None,
+            "subscribed_at": sub.subscribed_at.isoformat() if sub.subscribed_at else None,
+        })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
+
+
+@admin_router.get("/plans")
+async def list_plans(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """List all pricing plans."""
+    plans = db.query(PackagePricing).order_by(PackagePricing.monthly_price).all()
+
+    items = []
+    for plan in plans:
+        items.append({
+            "id": str(plan.id),
+            "package_name": plan.package_name.value if hasattr(plan.package_name, 'value') else str(plan.package_name),
+            "description": plan.description,
+            "monthly_price": float(plan.monthly_price) if plan.monthly_price is not None else 0,
+            "annual_price": float(plan.annual_price) if plan.annual_price is not None else None,
+            "currency": plan.currency,
+            "features": plan.features,
+            "is_active": plan.is_active,
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+            "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
+        })
+
+    return {"items": items, "total": len(items)}
+
+
+@admin_router.put("/plans/{package_name}")
+async def update_plan(
+    package_name: SubscriptionPlan,
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Update a pricing plan."""
+    plan = db.query(PackagePricing).filter(
+        PackagePricing.package_name == package_name
+    ).first()
+
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    body = await request.json()
+
+    allowed_fields = {"description", "monthly_price", "annual_price", "currency", "features", "is_active"}
+    for field, value in body.items():
+        if field in allowed_fields:
+            setattr(plan, field, value)
+
+    db.commit()
+    db.refresh(plan)
+
+    log_action(db, admin, AuditAction.UPDATE, "plan", plan.id, {"package_name": package_name.value})
+
+    return {
+        "message": "Plan updated successfully",
+        "id": str(plan.id),
+        "package_name": plan.package_name.value if hasattr(plan.package_name, 'value') else str(plan.package_name),
+        "monthly_price": float(plan.monthly_price) if plan.monthly_price is not None else 0,
+        "annual_price": float(plan.annual_price) if plan.annual_price is not None else None,
+        "currency": plan.currency,
+        "features": plan.features,
+        "is_active": plan.is_active,
+    }

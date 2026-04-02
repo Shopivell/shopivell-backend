@@ -89,7 +89,11 @@ class PaymentService:
             else:
                 expected_amount = package.monthly_price
             
-            if abs(amount - expected_amount) > 0.01:
+            # In TEST_MODE, allow $0.01 payments for any valid package
+            test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
+            if test_mode:
+                logger.info(f"TEST_MODE enabled: accepting amount ${amount:.2f} instead of ${expected_amount:.2f}")
+            elif abs(amount - expected_amount) > 0.01:
                 return None, f"Amount does not match package price. Expected: ${expected_amount:.2f}"
             
             # Apply token discount if tokens provided

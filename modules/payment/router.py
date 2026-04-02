@@ -209,7 +209,14 @@ async def initiate_payment(
             amount = package.annual_price
         else:
             amount = package.monthly_price
-        
+
+        # In TEST_MODE, override amount to $0.01 for testing
+        import os
+        test_mode = os.environ.get("TEST_MODE", "false").lower() == "true"
+        if test_mode:
+            logger.info(f"TEST_MODE enabled: overriding amount from ${amount} to $0.01 for package {payment_request.package_name}")
+            amount = 0.01
+
         # Initialize payment service
         payment_service = PaymentService(db)
 
