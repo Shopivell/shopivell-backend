@@ -182,8 +182,13 @@ async def admin_login(request: AdminLoginRequest, req: Request, db: Session = De
         admin_user.last_login_at = datetime.utcnow()
         db.commit()
 
-        # Log login action
-        client_ip = req.headers.get("x-forwarded-for", "").split(",")[0].strip() or req.client.host if req.client else None
+        # Log login action - check multiple proxy headers for real client IP
+        client_ip = (
+            req.headers.get("cf-connecting-ip")
+            or req.headers.get("x-real-ip")
+            or (req.headers.get("x-forwarded-for", "").split(",")[0].strip() or None)
+            or (req.client.host if req.client else None)
+        )
         log_action(db, admin_user, AuditAction.LOGIN, "admin", admin_user.id, {"email": user.email}, ip_address=client_ip)
 
         # Create tokens
