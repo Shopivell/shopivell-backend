@@ -1,0 +1,30 @@
+name: Deploy to Dokploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Dokploy Deploy
+        run: |
+          COOKIE=$(curl -s -c - -X POST "http://62.171.163.122:3000/api/auth/sign-in/email" \
+            -H "Content-Type: application/json" \
+            -d '{"email":"'"${{ secrets.DOKPLOY_EMAIL }}"'","password":"'"${{ secrets.DOKPLOY_PASSWORD }}"'"}' \
+            | grep better-auth | awk '{print $NF}')
+
+          RESULT=$(curl -s -X POST "http://62.171.163.122:3000/api/trpc/application.redeploy" \
+            -H "Content-Type: application/json" \
+            -H "Cookie: better-auth.session_token=$COOKIE" \
+            -d '{"json":{"applicationId":"'"${{ secrets.DOKPLOY_APP_ID }}"'"}}')
+
+          echo "Deploy result: $RESULT"
+
+          if echo "$RESULT" | grep -q '"error"'; then
+            echo "Deploy failed!"
+            exit 1
+          fi
+
+          echo "Deploy triggered successfully!"
