@@ -156,7 +156,7 @@ The Shopivell Team
 # ============ Authentication Endpoints ============
 
 @admin_router.post("/auth/login", response_model=AdminLoginResponse)
-async def admin_login(request: AdminLoginRequest, db: Session = Depends(get_db)):
+async def admin_login(request: AdminLoginRequest, req: Request, db: Session = Depends(get_db)):
     """Admin login endpoint."""
     import traceback
     try:
@@ -183,7 +183,8 @@ async def admin_login(request: AdminLoginRequest, db: Session = Depends(get_db))
         db.commit()
 
         # Log login action
-        log_action(db, admin_user, AuditAction.LOGIN, "admin", admin_user.id, {"email": user.email})
+        client_ip = req.headers.get("x-forwarded-for", "").split(",")[0].strip() or req.client.host if req.client else None
+        log_action(db, admin_user, AuditAction.LOGIN, "admin", admin_user.id, {"email": user.email}, ip_address=client_ip)
 
         # Create tokens
         access_token = create_access_token(
