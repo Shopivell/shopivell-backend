@@ -1771,8 +1771,21 @@ def create_ad(
         elif ad_data.creative_link:
             print(f"PATH C: Creating simple link ad with URL: {ad_data.creative_link}")
             
-            # We need a Facebook Page ID. Use the one from the ad account or fetch the first available.
-            page_id = ad_account.business_id
+            # We need a Facebook Page ID. Look up from connected pages in our database first.
+            page_id = None
+            try:
+                from modules.business.models import FacebookPage
+                fb_page = db.query(FacebookPage).filter(
+                    FacebookPage.business_account_id == ad_account.business_account_id,
+                    FacebookPage.is_connected == True,
+                    FacebookPage.is_active == True
+                ).first()
+                if fb_page:
+                    page_id = fb_page.page_id
+                    print(f"Found page from DB: {page_id} ({fb_page.page_name})")
+            except Exception as e:
+                print(f"Error looking up page from DB: {str(e)}")
+
             if not page_id:
                 try:
                     print("Fetching available pages...")
