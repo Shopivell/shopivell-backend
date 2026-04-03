@@ -15,7 +15,7 @@ jobs:
             -d '{"email":"'"${{ secrets.DOKPLOY_EMAIL }}"'","password":"'"${{ secrets.DOKPLOY_PASSWORD }}"'"}' \
             | grep better-auth | awk '{print $NF}')
 
-          RESULT=$(curl -s -X POST "http://62.171.163.122:3000/api/trpc/application.redeploy" \
+          RESULT=$(curl -s -X POST "http://62.171.163.122:3000/api/trpc/application.deploy" \
             -H "Content-Type: application/json" \
             -H "Cookie: better-auth.session_token=$COOKIE" \
             -d '{"json":{"applicationId":"'"${{ secrets.DOKPLOY_APP_ID }}"'"}}')
