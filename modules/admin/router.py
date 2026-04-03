@@ -182,6 +182,9 @@ async def admin_login(request: AdminLoginRequest, db: Session = Depends(get_db))
         admin_user.last_login_at = datetime.utcnow()
         db.commit()
 
+        # Log login action
+        log_action(db, admin_user, AuditAction.LOGIN, "admin", admin_user.id, {"email": user.email})
+
         # Create tokens
         access_token = create_access_token(
             user_id=str(user.id),
