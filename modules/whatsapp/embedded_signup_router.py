@@ -504,7 +504,7 @@ async def admin_add_whatsapp_number(
 
     # Get or create a business account record for this WABA
     fb_account = db.query(FacebookBusinessAccount).filter(
-        FacebookBusinessAccount.business_id == request.waba_id
+        FacebookBusinessAccount.business_account_id == request.waba_id
     ).first()
 
     if not fb_account:
