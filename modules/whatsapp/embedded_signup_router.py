@@ -472,3 +472,81 @@ async def get_connection_info():
             "business_management"
         ]
     }
+
+
+# ============================================================================
+# Admin: Manually add a WhatsApp test number
+# ============================================================================
+
+class ManualAddRequest(BaseModel):
+    waba_id: str
+    phone_number_id: str
+    phone_number: str
+    display_name: str = "Test Number"
+    access_token: str = ""
+
+
+@embedded_signup_router.post("/admin/add-number")
+async def admin_add_whatsapp_number(
+    request: ManualAddRequest,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Manually add a WhatsApp number (e.g. Meta test numbers).
+    Skips the OAuth flow entirely.
+    """
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    from modules.business.models import FacebookBusinessAccount
+
+    # Get or create a business account record for this WABA
+    fb_account = db.query(FacebookBusinessAccount).filter(
+        FacebookBusinessAccount.business_id == request.waba_id
+    ).first()
+
+    if not fb_account:
+        # Use the existing business account if available
+        fb_account = db.query(FacebookBusinessAccount).filter(
+            FacebookBusinessAccount.is_active == True
+        ).first()
+
+    if not fb_account:
+        raise HTTPException(status_code=400, detail="No Facebook Business Account found. Connect your Facebook account first.")
+
+    # Check if already exists
+    existing = db.query(WhatsAppAccount).filter(
+        WhatsAppAccount.phone_number_id == request.phone_number_id
+    ).first()
+
+    if existing:
+        existing.store_id = store_id
+        existing.display_name = request.display_name
+        existing.is_enabled = True
+        if request.access_token:
+            existing.permanent_access_token = request.access_token
+        db.commit()
+        db.refresh(existing)
+        return {"message": "Number updated", "id": str(existing.id)}
+
+    account = WhatsAppAccount(
+        business_account_id=fb_account.id,
+        waba_id=request.waba_id,
+        phone_number_id=request.phone_number_id,
+        phone_number=request.phone_number,
+        display_name=request.display_name,
+        verified_name=request.display_name,
+        quality_rating="GREEN",
+        is_enabled=True,
+        is_default=True,
+        store_id=store_id,
+        permanent_access_token=request.access_token or None,
+    )
+
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    return {"message": "Number added successfully", "id": str(account.id)}
