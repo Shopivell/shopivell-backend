@@ -1287,6 +1287,150 @@ async def update_plan(
     }
 
 
+# ============ Trial Management Endpoints ============
+
+@admin_router.get("/settings/trial")
+async def get_trial_settings(
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Get the default trial period settings."""
+    # Store trial settings in the first FREE plan's usage or as a convention
+    # We use a simple approach: read from the FREE plan's features metadata
+    # Default is 14 days if not configured
+    free_plan = db.query(PackagePricing).filter(
+        PackagePricing.package_name == SubscriptionPlan.FREE
+    ).first()
+
+    default_days = 14
+    if free_plan and isinstance(free_plan.features, list):
+        # Check if there's a trial_days setting stored in the plan description or metadata
+        pass
+
+    # Check if trial_days is stored in usage_limits of any subscription as a global setting
+    # For simplicity, we store it as a JSON field in the FREE plan's description
+    if free_plan and free_plan.description:
+        try:
+            import json
+            meta = json.loads(free_plan.description) if free_plan.description.startswith('{') else {}
+            default_days = meta.get('default_trial_days', 14)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    return {"default_trial_days": default_days}
+
+
+@admin_router.put("/settings/trial")
+async def update_trial_settings(
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Update the default trial period settings."""
+    body = await request.json()
+    default_trial_days = body.get("default_trial_days", 14)
+
+    if not isinstance(default_trial_days, int) or default_trial_days < 1 or default_trial_days > 365:
+        raise HTTPException(status_code=400, detail="Trial days must be between 1 and 365")
+
+    free_plan = db.query(PackagePricing).filter(
+        PackagePricing.package_name == SubscriptionPlan.FREE
+    ).first()
+
+    if not free_plan:
+        raise HTTPException(status_code=404, detail="Free plan not found")
+
+    # Store in description as JSON metadata
+    import json
+    try:
+        meta = json.loads(free_plan.description) if free_plan.description and free_plan.description.startswith('{') else {}
+    except (json.JSONDecodeError, AttributeError):
+        meta = {}
+
+    meta['default_trial_days'] = default_trial_days
+    meta['_display_description'] = meta.get('_display_description', free_plan.description or 'Free plan')
+    free_plan.description = json.dumps(meta)
+
+    db.commit()
+
+    log_action(db, admin, AuditAction.UPDATE, "trial_settings", None, {"default_trial_days": default_trial_days})
+
+    return {"message": "Trial settings updated", "default_trial_days": default_trial_days}
+
+
+@admin_router.put("/subscriptions/{subscription_id}/trial")
+async def update_subscription_trial(
+    subscription_id: uuid.UUID,
+    request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Set or remove trial period for a specific store subscription."""
+    subscription = db.query(StoreSubscription).filter(
+        StoreSubscription.id == subscription_id
+    ).first()
+
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+
+    body = await request.json()
+
+    if body.get("clear_trial"):
+        # Remove trial
+        subscription.trial_ends_at = None
+        db.commit()
+        db.refresh(subscription)
+
+        store = db.query(Store).filter(Store.id == subscription.store_id).first()
+        log_action(db, admin, AuditAction.UPDATE, "subscription_trial", subscription_id, {
+            "action": "clear_trial",
+            "store_name": store.store_name if store else "Unknown",
+        })
+
+        return {
+            "message": "Trial removed",
+            "subscription_id": str(subscription_id),
+            "trial_ends_at": None,
+        }
+
+    trial_ends_at_str = body.get("trial_ends_at")
+    if not trial_ends_at_str:
+        raise HTTPException(status_code=400, detail="trial_ends_at is required")
+
+    try:
+        # Parse ISO datetime string
+        trial_ends_at = datetime.fromisoformat(trial_ends_at_str.replace('Z', '+00:00'))
+        # Store as naive UTC
+        if trial_ends_at.tzinfo is not None:
+            trial_ends_at = trial_ends_at.replace(tzinfo=None)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid trial_ends_at format. Use ISO 8601.")
+
+    subscription.trial_ends_at = trial_ends_at
+    # Ensure the subscription is active during trial
+    subscription.is_active = True
+    # Also update current_period_end to match trial if it's sooner
+    if subscription.current_period_end < trial_ends_at:
+        subscription.current_period_end = trial_ends_at
+
+    db.commit()
+    db.refresh(subscription)
+
+    store = db.query(Store).filter(Store.id == subscription.store_id).first()
+    log_action(db, admin, AuditAction.UPDATE, "subscription_trial", subscription_id, {
+        "action": "set_trial",
+        "trial_ends_at": trial_ends_at.isoformat(),
+        "store_name": store.store_name if store else "Unknown",
+    })
+
+    return {
+        "message": "Trial updated",
+        "subscription_id": str(subscription_id),
+        "trial_ends_at": trial_ends_at.isoformat(),
+        "store_id": str(subscription.store_id),
+    }
+
+
 # ============ Store Discount Endpoints ============
 
 @admin_router.post("/stores/{store_id}/discount", response_model=StoreDiscountResponse)
