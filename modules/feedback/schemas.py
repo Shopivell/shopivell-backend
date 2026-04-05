@@ -16,6 +16,7 @@ class FeedbackType(str, Enum):
     FEEDBACK = "feedback"
     IMPROVEMENT = "improvement"
     QUESTION = "question"
+    REVIEW = "review"
 
 
 class FeedbackStatus(str, Enum):
@@ -54,6 +55,7 @@ class FeedbackCreate(BaseModel):
     steps_to_reproduce: Optional[str] = None
     priority: FeedbackPriority = FeedbackPriority.MEDIUM
     is_public: bool = False
+    rating: Optional[int] = Field(None, ge=1, le=5, description="Star rating 1-5 for reviews")
 
 
 class FeedbackUpdate(BaseModel):
@@ -91,6 +93,7 @@ class FeedbackResponse(BaseModel):
     priority: str
     admin_response: Optional[str] = None
     responded_at: Optional[datetime] = None
+    rating: Optional[int] = None
     upvotes: int
     is_public: bool
     created_at: datetime

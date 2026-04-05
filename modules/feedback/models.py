@@ -40,6 +40,9 @@ class Feedback(Base):
     responded_at = Column(DateTime, nullable=True)
     responded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
+    # Rating (1-5 stars, for review type)
+    rating = Column(Integer, nullable=True)
+
     # Public voting
     upvotes = Column(Integer, default=0)
     is_public = Column(Boolean, default=False)

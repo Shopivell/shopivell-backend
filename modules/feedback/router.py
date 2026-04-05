@@ -103,6 +103,7 @@ async def create_feedback(
             steps_to_reproduce=feedback_data.steps_to_reproduce,
             priority=feedback_data.priority.value,
             is_public=feedback_data.is_public,
+            rating=feedback_data.rating,
             status=FeedbackStatus.NEW.value
         )
 
