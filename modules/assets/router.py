@@ -232,6 +232,42 @@ async def upload_image_simple(
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+@asset_router.get("/debug/storage-status")
+async def storage_status():
+    """Debug: check storage configuration status."""
+    from .service import minio_client, MINIO_BUCKET, MINIO_ENDPOINT, MINIO_CONFIGURED
+    from .service import CLOUDINARY_CONFIGURED
+
+    minio_test = None
+    if minio_client:
+        try:
+            exists = minio_client.bucket_exists(MINIO_BUCKET)
+            minio_test = f"bucket '{MINIO_BUCKET}' exists={exists}"
+        except Exception as e:
+            minio_test = f"error: {e}"
+
+    # Test media_generator's upload path
+    media_gen_minio = None
+    try:
+        from modules.agents.media_generator_agent import MediaGeneratorAgent
+        mg = MediaGeneratorAgent()
+        # Import what the method imports
+        from modules.assets.service import minio_client as mc2
+        media_gen_minio = f"minio_client is {'set' if mc2 else 'None'}"
+    except Exception as e:
+        media_gen_minio = f"import error: {e}"
+
+    return {
+        "minio_configured": MINIO_CONFIGURED,
+        "minio_client": "connected" if minio_client else "None",
+        "minio_endpoint": MINIO_ENDPOINT,
+        "minio_bucket": MINIO_BUCKET,
+        "minio_test": minio_test,
+        "cloudinary_configured": CLOUDINARY_CONFIGURED,
+        "media_generator_minio": media_gen_minio,
+    }
+
+
 @asset_router.get("/file/{object_path:path}")
 async def serve_minio_file(object_path: str):
     """Proxy to serve MinIO files through the backend API."""
