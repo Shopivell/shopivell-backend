@@ -616,7 +616,7 @@ class MediaGeneratorAgent:
             return "BRAND CONTEXT: " + " | ".join(parts) + ". "
         return ""
 
-    # ==================== CLOUDINARY UPLOAD ====================
+    # ==================== IMAGE UPLOAD (MinIO primary, Cloudinary fallback) ====================
 
     def upload_to_cloudinary(
         self,
@@ -625,28 +625,67 @@ class MediaGeneratorAgent:
         resource_type: str = "image"
     ) -> Dict[str, Any]:
         """
-        Upload a base64 image to Cloudinary.
+        Upload a base64 image to MinIO (primary) or Cloudinary (fallback).
 
         Args:
             image_base64: Base64 encoded image data
-            folder: Cloudinary folder path
+            folder: Storage folder path
             resource_type: 'image' or 'video'
 
         Returns:
-            Dict with cloudinary_url, public_id, and metadata
+            Dict with url, public_id, and metadata
         """
+        import base64
+        import io
+
+        # Decode base64 to bytes
+        try:
+            image_bytes = base64.b64decode(image_base64)
+        except Exception as e:
+            logger.error(f"[MediaGeneratorAgent] Base64 decode error: {e}")
+            return {"uploaded": False, "error": f"Base64 decode error: {e}"}
+
+        # Try MinIO first
+        from modules.assets.service import minio_client, MINIO_BUCKET, _get_minio_url
+        if minio_client:
+            try:
+                filename = f"generated_{uuid.uuid4().hex[:12]}.png"
+                object_name = f"{folder}/{filename}"
+
+                minio_client.put_object(
+                    MINIO_BUCKET,
+                    object_name,
+                    io.BytesIO(image_bytes),
+                    length=len(image_bytes),
+                    content_type="image/png"
+                )
+
+                url = _get_minio_url(object_name)
+                logger.info(f"[MediaGeneratorAgent] Uploaded to MinIO: {url}")
+
+                return {
+                    "uploaded": True,
+                    "public_id": object_name,
+                    "url": url,
+                    "secure_url": url,
+                    "cloudinary_url": url,
+                    "thumbnail_url": url,
+                    "width": None,
+                    "height": None,
+                    "format": "png",
+                    "bytes": len(image_bytes)
+                }
+            except Exception as e:
+                logger.warning(f"[MediaGeneratorAgent] MinIO upload failed, trying Cloudinary: {e}")
+
+        # Fallback to Cloudinary
         if not CLOUDINARY_CONFIGURED:
-            logger.warning("[MediaGeneratorAgent] Cloudinary not configured, skipping upload")
-            return {
-                "uploaded": False,
-                "error": "Cloudinary not configured"
-            }
+            logger.warning("[MediaGeneratorAgent] No storage configured, skipping upload")
+            return {"uploaded": False, "error": "No storage configured (MinIO and Cloudinary both unavailable)"}
 
         try:
-            # Prepare the data URI
             data_uri = f"data:image/png;base64,{image_base64}"
 
-            # Upload to Cloudinary
             result = cloudinary.uploader.upload(
                 data_uri,
                 folder=folder,
@@ -654,12 +693,11 @@ class MediaGeneratorAgent:
                 public_id=f"generated_{uuid.uuid4().hex[:12]}",
                 overwrite=True,
                 eager=[
-                    {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}  # Thumbnail
+                    {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}
                 ],
                 eager_async=False
             )
 
-            # Extract thumbnail URL
             thumbnail_url = None
             if result.get("eager") and len(result["eager"]) > 0:
                 thumbnail_url = result["eager"][0].get("secure_url")
@@ -681,46 +719,63 @@ class MediaGeneratorAgent:
 
         except Exception as e:
             logger.error(f"[MediaGeneratorAgent] Cloudinary upload error: {str(e)}")
-            return {
-                "uploaded": False,
-                "error": str(e)
-            }
+            return {"uploaded": False, "error": str(e)}
 
     async def upload_video_to_cloudinary(
         self,
         video_base64: str,
         folder: str = "shopivell/generated/videos"
     ) -> Dict[str, Any]:
-        """Upload a base64 video to Cloudinary."""
+        """Upload a base64 video to MinIO (primary) or Cloudinary (fallback)."""
+        import base64
+        import io
+
+        try:
+            video_bytes = base64.b64decode(video_base64)
+        except Exception as e:
+            return {"uploaded": False, "error": f"Base64 decode error: {e}"}
+
+        # Try MinIO first
+        from modules.assets.service import minio_client, MINIO_BUCKET, _get_minio_url
+        if minio_client:
+            try:
+                filename = f"video_{uuid.uuid4().hex[:12]}.mp4"
+                object_name = f"{folder}/{filename}"
+                minio_client.put_object(
+                    MINIO_BUCKET, object_name,
+                    io.BytesIO(video_bytes), length=len(video_bytes),
+                    content_type="video/mp4"
+                )
+                url = _get_minio_url(object_name)
+                logger.info(f"[MediaGeneratorAgent] Video uploaded to MinIO: {url}")
+                return {
+                    "uploaded": True, "public_id": object_name,
+                    "url": url, "secure_url": url, "cloudinary_url": url,
+                    "duration": None, "width": None, "height": None,
+                    "format": "mp4", "bytes": len(video_bytes)
+                }
+            except Exception as e:
+                logger.warning(f"[MediaGeneratorAgent] MinIO video upload failed: {e}")
+
+        # Fallback to Cloudinary
         if not CLOUDINARY_CONFIGURED:
-            return {"uploaded": False, "error": "Cloudinary not configured"}
+            return {"uploaded": False, "error": "No storage configured"}
 
         try:
             data_uri = f"data:video/mp4;base64,{video_base64}"
-
             result = cloudinary.uploader.upload(
-                data_uri,
-                folder=folder,
-                resource_type="video",
-                public_id=f"video_{uuid.uuid4().hex[:12]}",
-                overwrite=True
+                data_uri, folder=folder, resource_type="video",
+                public_id=f"video_{uuid.uuid4().hex[:12]}", overwrite=True
             )
-
             logger.info(f"[MediaGeneratorAgent] Video uploaded to Cloudinary: {result.get('secure_url')}")
-
             return {
-                "uploaded": True,
-                "public_id": result.get("public_id"),
-                "url": result.get("url"),
-                "secure_url": result.get("secure_url"),
+                "uploaded": True, "public_id": result.get("public_id"),
+                "url": result.get("url"), "secure_url": result.get("secure_url"),
                 "cloudinary_url": result.get("secure_url"),
-                "duration": result.get("duration"),
-                "width": result.get("width"),
-                "height": result.get("height"),
-                "format": result.get("format"),
+                "duration": result.get("duration"), "width": result.get("width"),
+                "height": result.get("height"), "format": result.get("format"),
                 "bytes": result.get("bytes")
             }
-
         except Exception as e:
             logger.error(f"[MediaGeneratorAgent] Cloudinary video upload error: {str(e)}")
             return {"uploaded": False, "error": str(e)}
