@@ -946,11 +946,14 @@ async def get_income_stats(
 async def list_feedback(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
+    type: Optional[str] = Query(None, description="Filter by type: bug, feature, feedback, review, etc."),
     admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     """List all feedback with pagination."""
     query = db.query(Feedback)
+    if type:
+        query = query.filter(Feedback.type == type)
     total = query.count()
     total_pages = (total + page_size - 1) // page_size
 
