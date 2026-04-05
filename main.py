@@ -171,6 +171,19 @@ async def startup_event():
     from database import SessionLocal
     from modules.marketing.models import MetaAdAccount
 
+    # Run pending migrations
+    try:
+        from sqlalchemy import text
+        db_temp = SessionLocal()
+        result = db_temp.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'feedback' AND column_name = 'rating'"))
+        if not result.fetchone():
+            db_temp.execute(text("ALTER TABLE feedback ADD COLUMN rating INTEGER NULL"))
+            db_temp.commit()
+            logger.info("[Startup] Added 'rating' column to feedback table")
+        db_temp.close()
+    except Exception as e:
+        logger.warning(f"[Startup] Migration check skipped: {e}")
+
     # Auto-register all connected ad accounts with the scheduler
     db = SessionLocal()
     try:
