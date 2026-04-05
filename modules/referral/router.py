@@ -241,3 +241,123 @@ async def estimate_discount(
         final_amount=final_amount,
         max_tokens_allowed=min(balance.available_tokens, MAX_TOKENS_PER_PAYMENT)
     )
+
+
+# ============ Admin Endpoints ============
+
+from .models import Referral, UserReferralCode, UserTokenBalance, TokenTransaction
+from sqlalchemy import func
+
+
+@referral_router.get("/admin/all")
+async def admin_list_referrals(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
+    """List all referrals (admin)."""
+    query = db.query(Referral)
+    total = query.count()
+
+    referrals = query.order_by(Referral.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    items = []
+    for ref in referrals:
+        referrer = db.query(User).filter(User.id == ref.referrer_user_id).first()
+        referred = db.query(User).filter(User.id == ref.referred_user_id).first()
+        items.append({
+            "id": str(ref.id),
+            "referrer_id": str(ref.referrer_user_id),
+            "referrer_email": referrer.email if referrer else "Unknown",
+            "referred_user_id": str(ref.referred_user_id),
+            "referred_email": referred.email if referred else "Unknown",
+            "referral_code": ref.referral_code,
+            "status": ref.status.value if hasattr(ref.status, 'value') else ref.status,
+            "tokens_awarded": ref.tokens_awarded,
+            "created_at": ref.created_at.isoformat() if ref.created_at else None,
+            "completed_at": ref.completed_at.isoformat() if ref.completed_at else None,
+        })
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@referral_router.get("/admin/stats")
+async def admin_referral_stats(db: Session = Depends(get_db)):
+    """Get referral system stats (admin)."""
+    total = db.query(Referral).count()
+    completed = db.query(Referral).filter(Referral.status == "completed").count()
+    pending = db.query(Referral).filter(Referral.status == "pending").count()
+    total_tokens = db.query(func.coalesce(func.sum(Referral.tokens_awarded), 0)).scalar()
+
+    from .constants import TOKENS_PER_REFERRAL, TOKEN_VALUE_USD, MAX_TOKENS_PER_PAYMENT
+
+    return {
+        "total_referrals": total,
+        "completed_referrals": completed,
+        "pending_referrals": pending,
+        "total_tokens_awarded": int(total_tokens),
+        "tokens_per_referral": TOKENS_PER_REFERRAL,
+        "token_value_usd": TOKEN_VALUE_USD,
+        "max_tokens_per_payment": MAX_TOKENS_PER_PAYMENT,
+    }
+
+
+@referral_router.get("/admin/config")
+async def get_referral_config(db: Session = Depends(get_db)):
+    """Get referral reward configuration."""
+    from .constants import TOKENS_PER_REFERRAL, TOKEN_VALUE_USD, MAX_TOKENS_PER_PAYMENT
+    return {
+        "tokens_per_referral": TOKENS_PER_REFERRAL,
+        "token_value_usd": TOKEN_VALUE_USD,
+        "max_tokens_per_payment": MAX_TOKENS_PER_PAYMENT,
+    }
+
+
+@referral_router.put("/admin/config")
+async def update_referral_config(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Update referral reward configuration (writes to constants file)."""
+    import os
+
+    tokens_per_referral = request.get("tokens_per_referral")
+    token_value_usd = request.get("token_value_usd")
+    max_tokens_per_payment = request.get("max_tokens_per_payment")
+
+    # Update the constants file
+    constants_path = os.path.join(os.path.dirname(__file__), "constants.py")
+
+    new_content = f'''# modules/referral/constants.py
+"""
+Referral system configuration constants.
+"""
+
+# Token rewards
+TOKENS_PER_REFERRAL = {int(tokens_per_referral) if tokens_per_referral else 10}      # Tokens awarded when referred user signs up
+TOKEN_VALUE_USD = {float(token_value_usd) if token_value_usd else 1.00}        # Each token = $X discount
+MAX_TOKENS_PER_PAYMENT = {int(max_tokens_per_payment) if max_tokens_per_payment else 50}   # Max tokens discount per payment
+
+# Referral code settings
+REFERRAL_CODE_LENGTH = 8      # Length of generated referral codes
+REFERRAL_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # Excluding similar chars (0/O, 1/I)
+
+# Frontend URL for referral links
+FRONTEND_BASE_URL = "https://shopivell.com"  # Update with actual domain
+REFERRAL_SIGNUP_PATH = "/signup"
+'''
+
+    with open(constants_path, 'w') as f:
+        f.write(new_content)
+
+    # Reload the module to pick up changes
+    import importlib
+    from . import constants
+    importlib.reload(constants)
+
+    return {
+        "message": "Referral configuration updated",
+        "tokens_per_referral": int(tokens_per_referral) if tokens_per_referral else 10,
+        "token_value_usd": float(token_value_usd) if token_value_usd else 1.00,
+        "max_tokens_per_payment": int(max_tokens_per_payment) if max_tokens_per_payment else 50,
+    }
