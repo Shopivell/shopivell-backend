@@ -670,12 +670,3 @@ async def admin_get_all_stats(
     )
 
 
-@feedback_router.delete("/cleanup/all-test-data")
-async def cleanup_all_feedback(db: Session = Depends(get_db)):
-    """Temporary: Delete all feedback and reviews. Remove after use."""
-    from .models import FeedbackComment, FeedbackVote
-    comments = db.query(FeedbackComment).delete()
-    votes = db.query(FeedbackVote).delete()
-    count = db.query(Feedback).delete()
-    db.commit()
-    return {"message": f"Deleted {count} feedback, {comments} comments, {votes} votes"}
