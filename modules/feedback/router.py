@@ -64,6 +64,7 @@ def get_feedback_response(feedback: Feedback, db: Session) -> FeedbackResponse:
         created_at=feedback.created_at,
         updated_at=feedback.updated_at,
         resolved_at=feedback.resolved_at,
+        rating=getattr(feedback, 'rating', None),
         user=user_info,
         comments_count=comments_count
     )
