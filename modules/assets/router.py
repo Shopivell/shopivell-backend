@@ -235,9 +235,13 @@ async def upload_image_simple(
 @asset_router.get("/debug/whatsapp-webhook-token")
 async def get_webhook_token(db: Session = Depends(get_db)):
     """Debug: get WhatsApp webhook verify tokens."""
-    from modules.whatsapp.models import WhatsAppAccount
-    accounts = db.query(WhatsAppAccount).all()
-    return [{"id": str(a.id), "phone": getattr(a, 'display_phone_number', None) or getattr(a, 'phone_number_id', None), "token": a.webhook_verify_token, "waba_id": a.waba_id} for a in accounts]
+    from sqlalchemy import text
+    try:
+        result = db.execute(text("SELECT id, phone_number, webhook_verify_token, waba_id FROM whatsapp_accounts"))
+        rows = result.fetchall()
+        return [{"id": str(r[0]), "phone": r[1], "token": r[2], "waba_id": r[3]} for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @asset_router.get("/debug/storage-status")
