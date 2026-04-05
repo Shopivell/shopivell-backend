@@ -96,12 +96,15 @@ LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
 
+STOREFRONT_URL = os.getenv("STOREFRONT_URL", "")
+API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "https://api.shopivell.com/v1")
+
+
 def _get_minio_url(object_name: str) -> str:
-    """Build the public URL for a MinIO object."""
-    if MINIO_PUBLIC_URL:
-        return f"{MINIO_PUBLIC_URL}/{MINIO_BUCKET}/{object_name}"
-    protocol = "https" if MINIO_USE_SSL else "http"
-    return f"{protocol}://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{object_name}"
+    """Build the public URL for a MinIO object.
+    Uses backend proxy endpoint for reliable access."""
+    # Use backend proxy for serving files (most reliable)
+    return f"{API_PUBLIC_URL}/api/assets/file/{object_name}"
 
 
 class AssetService:

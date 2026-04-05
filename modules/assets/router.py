@@ -230,3 +230,32 @@ async def upload_image_simple(
     except Exception as e:
         print(f"[Upload] Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@asset_router.get("/file/{object_path:path}")
+async def serve_minio_file(object_path: str):
+    """Proxy to serve MinIO files through the backend API."""
+    from .service import minio_client, MINIO_BUCKET
+    from fastapi.responses import StreamingResponse
+
+    if not minio_client:
+        raise HTTPException(status_code=503, detail="Storage not configured")
+
+    try:
+        response = minio_client.get_object(MINIO_BUCKET, object_path)
+        # Determine content type from extension
+        ext = object_path.rsplit('.', 1)[-1].lower() if '.' in object_path else ''
+        content_types = {
+            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+            'gif': 'image/gif', 'webp': 'image/webp', 'svg': 'image/svg+xml',
+            'mp4': 'video/mp4', 'webm': 'video/webm', 'pdf': 'application/pdf',
+        }
+        content_type = content_types.get(ext, 'application/octet-stream')
+
+        return StreamingResponse(
+            response,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=31536000"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"File not found: {str(e)}")
