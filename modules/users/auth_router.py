@@ -225,8 +225,9 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
                 user.google_id = google_id
                 updates['google_id'] = google_id
             
-            # FIX: Always update profile picture if Google provides one
-            if profile_picture and user.profile_picture != profile_picture:
+            # Only set Google profile picture if user has no custom picture
+            # (don't overwrite MinIO-uploaded pictures with Google avatar)
+            if profile_picture and not user.profile_picture:
                 user.profile_picture = profile_picture
                 updates['profile_picture'] = profile_picture
             
