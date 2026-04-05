@@ -232,6 +232,14 @@ async def upload_image_simple(
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+@asset_router.get("/debug/whatsapp-webhook-token")
+async def get_webhook_token(db: Session = Depends(get_db)):
+    """Debug: get WhatsApp webhook verify tokens."""
+    from modules.whatsapp.models import WhatsAppAccount
+    accounts = db.query(WhatsAppAccount).all()
+    return [{"id": str(a.id), "phone": a.display_phone_number, "token": a.webhook_verify_token} for a in accounts]
+
+
 @asset_router.get("/debug/storage-status")
 async def storage_status():
     """Debug: check storage configuration status."""
