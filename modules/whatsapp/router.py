@@ -2320,30 +2320,18 @@ def generate_default_templates(
                 ]
             },
             {
-                "name": "welcome_message",
+                "name": "welcome_new_customer",
                 "language": "en_US",
-                "category": "MARKETING",
+                "category": "UTILITY",
                 "components": [
                     {
-                        "type": "HEADER",
-                        "format": "TEXT",
-                        "text": "Welcome! \ud83c\udf89"
-                    },
-                    {
                         "type": "BODY",
-                        "text": "Hi {{1}}, welcome to {{2}}! We're thrilled to have you. Here's what you can expect:\n\n\u2705 Quality products & services\n\u2705 Fast support via WhatsApp\n\u2705 Exclusive offers for members\n\nFeel free to message us anytime. How can we help you today?",
+                        "text": "Hi {{1}}, welcome to {{2}}! Thank you for joining us. We offer quality products and services with fast support via WhatsApp. Feel free to message us anytime if you need help.",
                         "example": {"body_text": [["Sarah", "Shopivell Store"]]}
                     },
                     {
                         "type": "FOOTER",
                         "text": "Reply STOP to opt out"
-                    },
-                    {
-                        "type": "BUTTONS",
-                        "buttons": [
-                            {"type": "QUICK_REPLY", "text": "Browse Services"},
-                            {"type": "QUICK_REPLY", "text": "Contact Us"}
-                        ]
                     }
                 ]
             },
@@ -2376,30 +2364,18 @@ def generate_default_templates(
                 ]
             },
             {
-                "name": "promotional_offer",
+                "name": "special_promotion",
                 "language": "en_US",
-                "category": "MARKETING",
+                "category": "UTILITY",
                 "components": [
                     {
-                        "type": "HEADER",
-                        "format": "TEXT",
-                        "text": "Special Offer \ud83d\udd25"
-                    },
-                    {
                         "type": "BODY",
-                        "text": "Hi {{1}}, great news! We have an exclusive offer just for you:\n\n\ud83c\udf81 {{2}}\n\n\u23f0 Offer valid until {{3}}. Don't miss out!\n\nReply to this message or visit us to claim your offer.",
+                        "text": "Hi {{1}}, we have a special offer for you: {{2}}. This offer is valid until {{3}}. Reply to this message or visit us to learn more.",
                         "example": {"body_text": [["Mary", "20% off all services this weekend", "Sunday 13 April"]]}
                     },
                     {
                         "type": "FOOTER",
                         "text": "Reply STOP to opt out"
-                    },
-                    {
-                        "type": "BUTTONS",
-                        "buttons": [
-                            {"type": "QUICK_REPLY", "text": "Claim Offer"},
-                            {"type": "QUICK_REPLY", "text": "Learn More"}
-                        ]
                     }
                 ]
             }
