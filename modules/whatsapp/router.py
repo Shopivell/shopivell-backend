@@ -298,7 +298,7 @@ def create_whatsapp_account(
         # Auto-generate webhook verify token if not provided
         import secrets
         verify_token = account_data.webhook_verify_token or secrets.token_urlsafe(32)
-        webhook_url = account_data.webhook_url or "https://shopivell-backend.onrender.com/v1/api/whatsapp/webhook"
+        webhook_url = account_data.webhook_url or "https://api.shopivell.com/v1/api/whatsapp/webhook"
 
         whatsapp_account = WhatsAppAccount(
             business_account_id=account_data.business_account_id,
@@ -2230,7 +2230,208 @@ def get_all_message_templates(account_id: uuid.UUID, db: Session = Depends(get_d
             detail=f"An unexpected internal error occurred: {str(e)}"
         )
 
-# Add this new endpoint to whatsapp_router.py
+@whatsapp_router.post("/accounts/{account_id}/templates")
+def create_message_template(
+    account_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Create a new WhatsApp message template via Meta Graph API."""
+    try:
+        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+        waba_id = whatsapp_account.waba_id
+
+        import asyncio
+        body = asyncio.get_event_loop().run_until_complete(request.json()) if hasattr(request, 'json') else {}
+        # For sync endpoint, use a different approach
+        import json
+        raw = asyncio.new_event_loop().run_until_complete(request.body())
+        body = json.loads(raw)
+
+        url = f"{WHATSAPP_API_BASE}/{waba_id}/message_templates"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        logger.info(f"Creating template: {body.get('name')} for WABA: {waba_id}")
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+
+        if response.status_code in (200, 201):
+            return {"success": True, "template": response.json()}
+        else:
+            error_data = response.json()
+            logger.error(f"Meta API error creating template: {error_data}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=error_data.get("error", {}).get("message", "Failed to create template")
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@whatsapp_router.post("/accounts/{account_id}/templates/generate-defaults")
+def generate_default_templates(
+    account_id: uuid.UUID,
+    db: Session = Depends(get_db)
+):
+    """Generate default business templates: appointment reminder, welcome, follow-up, bulk promo."""
+    try:
+        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+        waba_id = whatsapp_account.waba_id
+
+        url = f"{WHATSAPP_API_BASE}/{waba_id}/message_templates"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        templates = [
+            {
+                "name": "appointment_reminder",
+                "language": "en_US",
+                "category": "UTILITY",
+                "components": [
+                    {
+                        "type": "HEADER",
+                        "format": "TEXT",
+                        "text": "Appointment Reminder"
+                    },
+                    {
+                        "type": "BODY",
+                        "text": "Hi {{1}}, this is a reminder for your upcoming appointment on {{2}} at {{3}}. Please reply YES to confirm or call us to reschedule. We look forward to seeing you!",
+                        "example": {"body_text": [["John", "Monday 10 April", "2:00 PM"]]}
+                    },
+                    {
+                        "type": "FOOTER",
+                        "text": "Reply STOP to opt out"
+                    },
+                    {
+                        "type": "BUTTONS",
+                        "buttons": [
+                            {"type": "QUICK_REPLY", "text": "Confirm"},
+                            {"type": "QUICK_REPLY", "text": "Reschedule"}
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "welcome_message",
+                "language": "en_US",
+                "category": "MARKETING",
+                "components": [
+                    {
+                        "type": "HEADER",
+                        "format": "TEXT",
+                        "text": "Welcome! \ud83c\udf89"
+                    },
+                    {
+                        "type": "BODY",
+                        "text": "Hi {{1}}, welcome to {{2}}! We're thrilled to have you. Here's what you can expect:\n\n\u2705 Quality products & services\n\u2705 Fast support via WhatsApp\n\u2705 Exclusive offers for members\n\nFeel free to message us anytime. How can we help you today?",
+                        "example": {"body_text": [["Sarah", "Shopivell Store"]]}
+                    },
+                    {
+                        "type": "FOOTER",
+                        "text": "Reply STOP to opt out"
+                    },
+                    {
+                        "type": "BUTTONS",
+                        "buttons": [
+                            {"type": "QUICK_REPLY", "text": "Browse Services"},
+                            {"type": "QUICK_REPLY", "text": "Contact Us"}
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "follow_up_message",
+                "language": "en_US",
+                "category": "UTILITY",
+                "components": [
+                    {
+                        "type": "HEADER",
+                        "format": "TEXT",
+                        "text": "Following Up"
+                    },
+                    {
+                        "type": "BODY",
+                        "text": "Hi {{1}}, we hope you enjoyed your recent experience with us! We'd love to hear your feedback.\n\nIs there anything else we can help you with? Feel free to reply to this message.",
+                        "example": {"body_text": [["David"]]}
+                    },
+                    {
+                        "type": "FOOTER",
+                        "text": "Reply STOP to opt out"
+                    },
+                    {
+                        "type": "BUTTONS",
+                        "buttons": [
+                            {"type": "QUICK_REPLY", "text": "Leave Feedback"},
+                            {"type": "QUICK_REPLY", "text": "Book Again"}
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "promotional_offer",
+                "language": "en_US",
+                "category": "MARKETING",
+                "components": [
+                    {
+                        "type": "HEADER",
+                        "format": "TEXT",
+                        "text": "Special Offer \ud83d\udd25"
+                    },
+                    {
+                        "type": "BODY",
+                        "text": "Hi {{1}}, great news! We have an exclusive offer just for you:\n\n\ud83c\udf81 {{2}}\n\n\u23f0 Offer valid until {{3}}. Don't miss out!\n\nReply to this message or visit us to claim your offer.",
+                        "example": {"body_text": [["Mary", "20% off all services this weekend", "Sunday 13 April"]]}
+                    },
+                    {
+                        "type": "FOOTER",
+                        "text": "Reply STOP to opt out"
+                    },
+                    {
+                        "type": "BUTTONS",
+                        "buttons": [
+                            {"type": "QUICK_REPLY", "text": "Claim Offer"},
+                            {"type": "QUICK_REPLY", "text": "Learn More"}
+                        ]
+                    }
+                ]
+            }
+        ]
+
+        results = []
+        for template in templates:
+            try:
+                resp = requests.post(url, headers=headers, json=template, timeout=30)
+                if resp.status_code in (200, 201):
+                    results.append({"name": template["name"], "status": "created", "id": resp.json().get("id")})
+                    logger.info(f"Template '{template['name']}' created successfully")
+                else:
+                    error = resp.json().get("error", {})
+                    # Template might already exist
+                    msg = error.get("message", "Unknown error")
+                    results.append({"name": template["name"], "status": "failed", "error": msg})
+                    logger.warning(f"Template '{template['name']}' failed: {msg}")
+            except Exception as e:
+                results.append({"name": template["name"], "status": "error", "error": str(e)})
+
+        created = len([r for r in results if r["status"] == "created"])
+        return {
+            "message": f"Created {created}/{len(templates)} templates",
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating default templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @whatsapp_router.post("/accounts/{account_id}/send-text", response_model=WhatsAppMessageSendResponse)
 def send_whatsapp_direct_text_message(
     account_id: uuid.UUID,
