@@ -305,6 +305,95 @@ async def admin_referral_stats(db: Session = Depends(get_db)):
     }
 
 
+@referral_router.post("/admin/manual-referral")
+async def admin_manual_referral(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """Manually process a referral (admin). Body: {referrer_email, referred_email}"""
+    referrer_email = request.get("referrer_email")
+    referred_email = request.get("referred_email")
+
+    if not referrer_email or not referred_email:
+        raise HTTPException(status_code=400, detail="referrer_email and referred_email are required")
+
+    referrer = db.query(User).filter(User.email == referrer_email).first()
+    referred = db.query(User).filter(User.email == referred_email).first()
+
+    if not referrer:
+        raise HTTPException(status_code=404, detail=f"Referrer {referrer_email} not found")
+    if not referred:
+        raise HTTPException(status_code=404, detail=f"Referred user {referred_email} not found")
+
+    # Get or create referral code for referrer
+    referrer_code = db.query(UserReferralCode).filter(UserReferralCode.user_id == referrer.id).first()
+    if not referrer_code:
+        from .constants import REFERRAL_CODE_LENGTH, REFERRAL_CODE_CHARS
+        import random
+        code = ''.join(random.choices(REFERRAL_CODE_CHARS, k=REFERRAL_CODE_LENGTH))
+        referrer_code = UserReferralCode(user_id=referrer.id, referral_code=code)
+        db.add(referrer_code)
+        db.flush()
+
+    # Check if referral already exists
+    existing = db.query(Referral).filter(
+        Referral.referrer_code_id == referrer_code.id,
+        Referral.referred_user_id == referred.id
+    ).first()
+    if existing:
+        return {"message": "Referral already exists", "status": existing.status.value, "tokens_awarded": existing.tokens_awarded}
+
+    from .constants import TOKENS_PER_REFERRAL
+    from .models import ReferralStatus, TokenTransactionType
+    from datetime import datetime
+
+    # Create referral
+    referral = Referral(
+        referrer_code_id=referrer_code.id,
+        referred_user_id=referred.id,
+        referred_email=referred.email,
+        status=ReferralStatus.REWARDED,
+        tokens_awarded=TOKENS_PER_REFERRAL,
+        signed_up_at=referred.created_at or datetime.utcnow(),
+        rewarded_at=datetime.utcnow(),
+    )
+    db.add(referral)
+
+    # Update referrer code stats
+    referrer_code.total_referrals += 1
+    referrer_code.successful_referrals += 1
+    referrer_code.total_tokens_earned += TOKENS_PER_REFERRAL
+
+    # Award tokens
+    balance = db.query(UserTokenBalance).filter(UserTokenBalance.user_id == referrer.id).first()
+    if not balance:
+        balance = UserTokenBalance(user_id=referrer.id)
+        db.add(balance)
+        db.flush()
+
+    balance.available_tokens += TOKENS_PER_REFERRAL
+    balance.total_earned += TOKENS_PER_REFERRAL
+
+    # Log transaction
+    tx = TokenTransaction(
+        token_balance_id=balance.id,
+        transaction_type=TokenTransactionType.EARNED,
+        amount=TOKENS_PER_REFERRAL,
+        balance_after=balance.available_tokens,
+        reference_type="referral",
+        reference_id=referral.id,
+        description=f"Manual referral reward: {referred.email} signed up"
+    )
+    db.add(tx)
+    db.commit()
+
+    return {
+        "message": f"Referral processed: {referrer_email} earned {TOKENS_PER_REFERRAL} tokens for referring {referred_email}",
+        "tokens_awarded": TOKENS_PER_REFERRAL,
+        "referral_id": str(referral.id),
+    }
+
+
 @referral_router.get("/admin/config")
 async def get_referral_config(db: Session = Depends(get_db)):
     """Get referral reward configuration."""
