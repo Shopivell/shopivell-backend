@@ -160,6 +160,30 @@ def run_column_migrations():
         except Exception as e:
             print(f"[WARN] Could not add rating column: {e}")
 
+        # Add lead_score and lead_status columns to customers if missing
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'customers' AND column_name = 'lead_score'
+                    ) THEN
+                        ALTER TABLE customers ADD COLUMN lead_score INTEGER NOT NULL DEFAULT 0;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'customers' AND column_name = 'lead_status'
+                    ) THEN
+                        ALTER TABLE customers ADD COLUMN lead_status VARCHAR(50);
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified lead_score and lead_status columns exist in customers table")
+        except Exception as e:
+            print(f"[WARN] Could not add lead score columns: {e}")
+
         # Add agencies table if missing
         try:
             conn.execute(text("""

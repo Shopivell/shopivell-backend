@@ -835,5 +835,196 @@ def create_customer_request(customer_id: uuid.UUID, request_data: CustomerReques
     db.add(request)
     db.commit()
     db.refresh(request)
-    
+
     return request
+
+
+# ============ Lead Scoring & Auto-Segmentation ============
+
+def _calculate_lead_score(customer: Customer, db: Session) -> int:
+    """Calculate lead score based on customer activity and profile completeness."""
+    score = 0
+
+    # Profile completeness (max 20 points)
+    if customer.phone: score += 5
+    if customer.email: score += 5
+    if customer.address: score += 3
+    if customer.city: score += 2
+    if customer.date_of_birth: score += 2
+    if customer.gender: score += 1
+    if customer.notes: score += 2
+
+    # Customer type (max 15 points)
+    type_scores = {'new': 5, 'regular': 10, 'premium': 15, 'vip': 15}
+    score += type_scores.get(customer.customer_type, 0)
+
+    # Loyalty points (max 15 points)
+    if customer.loyalty_points >= 500: score += 15
+    elif customer.loyalty_points >= 200: score += 10
+    elif customer.loyalty_points >= 50: score += 5
+
+    # Activity recency (max 20 points)
+    if customer.last_activity:
+        days_since = (datetime.utcnow() - customer.last_activity).days
+        if days_since <= 7: score += 20
+        elif days_since <= 30: score += 15
+        elif days_since <= 90: score += 10
+        elif days_since <= 180: score += 5
+
+    # Orders count (max 20 points)
+    try:
+        from modules.orders.models import CustomerOrder
+        order_count = db.query(CustomerOrder).filter(CustomerOrder.customer_id == customer.id).count()
+        if order_count >= 10: score += 20
+        elif order_count >= 5: score += 15
+        elif order_count >= 2: score += 10
+        elif order_count >= 1: score += 5
+    except Exception:
+        pass
+
+    # Requests/interactions (max 10 points)
+    request_count = db.query(CustomerRequest).filter(CustomerRequest.customer_id == customer.id).count()
+    if request_count >= 5: score += 10
+    elif request_count >= 2: score += 5
+    elif request_count >= 1: score += 3
+
+    return min(score, 100)
+
+
+def _get_lead_status(score: int) -> str:
+    """Get lead status label from score."""
+    if score >= 70: return "hot"
+    if score >= 40: return "warm"
+    if score >= 20: return "cold"
+    return "new"
+
+
+@customer_router.post("/lead-scores/calculate")
+async def calculate_lead_scores(
+    store_id: Optional[uuid.UUID] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """Calculate and update lead scores for all customers."""
+    query = db.query(Customer)
+    if store_id:
+        # Filter by store if your customers have store_id - adjust if needed
+        pass
+
+    customers = query.all()
+    updated = 0
+
+    for customer in customers:
+        score = _calculate_lead_score(customer, db)
+        lead_status = _get_lead_status(score)
+        customer.lead_score = score
+        customer.lead_status = lead_status
+        updated += 1
+
+    db.commit()
+
+    return {
+        "message": f"Updated lead scores for {updated} customers",
+        "updated": updated,
+        "breakdown": {
+            "hot": len([c for c in customers if getattr(c, 'lead_status', '') == 'hot']),
+            "warm": len([c for c in customers if getattr(c, 'lead_status', '') == 'warm']),
+            "cold": len([c for c in customers if getattr(c, 'lead_status', '') == 'cold']),
+            "new": len([c for c in customers if getattr(c, 'lead_status', '') == 'new']),
+        }
+    }
+
+
+@customer_router.post("/segments/auto-create-lead-segments")
+async def auto_create_lead_segments(
+    db: Session = Depends(get_db)
+):
+    """Auto-create segments based on lead scores: Hot, Warm, Cold, New leads."""
+    lead_segments = [
+        {
+            "name": "Hot Leads",
+            "description": "High-value leads with score 70-100. Ready to convert — prioritize outreach.",
+            "type": "lead_score",
+            "criteria": '{"min_score": 70, "max_score": 100}',
+            "min_score": 70,
+            "max_score": 100,
+        },
+        {
+            "name": "Warm Leads",
+            "description": "Engaged leads with score 40-69. Nurture with targeted content and offers.",
+            "type": "lead_score",
+            "criteria": '{"min_score": 40, "max_score": 69}',
+            "min_score": 40,
+            "max_score": 69,
+        },
+        {
+            "name": "Cold Leads",
+            "description": "Low engagement leads with score 20-39. Need re-engagement campaigns.",
+            "type": "lead_score",
+            "criteria": '{"min_score": 20, "max_score": 39}',
+            "min_score": 20,
+            "max_score": 39,
+        },
+        {
+            "name": "New Leads",
+            "description": "Fresh leads with score 0-19. Require onboarding and initial outreach.",
+            "type": "lead_score",
+            "criteria": '{"min_score": 0, "max_score": 19}',
+            "min_score": 0,
+            "max_score": 19,
+        },
+    ]
+
+    created = []
+    for seg_data in lead_segments:
+        # Check if segment already exists
+        existing = db.query(CustomerSegment).filter(CustomerSegment.name == seg_data["name"]).first()
+        if existing:
+            segment = existing
+        else:
+            segment = CustomerSegment(
+                name=seg_data["name"],
+                description=seg_data["description"],
+                type=seg_data["type"],
+                criteria=seg_data["criteria"],
+                is_active=True,
+                created_by="system",
+            )
+            db.add(segment)
+            db.flush()
+
+        # Assign customers to segment based on score
+        min_s, max_s = seg_data["min_score"], seg_data["max_score"]
+        matching = db.query(Customer).filter(
+            Customer.lead_score >= min_s,
+            Customer.lead_score <= max_s
+        ).all()
+
+        # Clear existing memberships for this segment
+        db.query(CustomerSegmentMembership).filter(
+            CustomerSegmentMembership.segment_id == segment.id
+        ).delete()
+
+        # Add matching customers
+        for customer in matching:
+            membership = CustomerSegmentMembership(
+                customer_id=customer.id,
+                segment_id=segment.id,
+            )
+            db.add(membership)
+
+        segment.customer_count = len(matching)
+        total_customers = db.query(Customer).count()
+        segment.percentage = f"{round(len(matching) / max(total_customers, 1) * 100)}%" if total_customers > 0 else "0%"
+
+        created.append({
+            "name": segment.name,
+            "customer_count": len(matching),
+            "percentage": segment.percentage,
+        })
+
+    db.commit()
+
+    return {
+        "message": "Lead score segments created and populated",
+        "segments": created,
+    }

@@ -46,6 +46,8 @@ class CustomerRequestBase(BaseModel):
 class CustomerResponse(CustomerBase):
     id: UUID
     loyalty_points: int
+    lead_score: int = 0
+    lead_status: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     last_activity: Optional[datetime] = None
@@ -108,6 +110,8 @@ class CustomerUpdate(BaseModel):
     profile_image: Optional[str] = None
     notes: Optional[str] = None
     loyalty_points: Optional[int] = None
+    lead_score: Optional[int] = None
+    lead_status: Optional[str] = None
 
 class CustomerSegmentUpdate(BaseModel):
     name: Optional[str] = None

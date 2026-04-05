@@ -32,6 +32,8 @@ class Customer(Base):
     customer_type: Mapped[str] = mapped_column(String(50), default="regular", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     loyalty_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lead_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lead_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # cold, warm, hot, qualified
     
     # Additional Information
     profile_image: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
