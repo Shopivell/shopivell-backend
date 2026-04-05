@@ -263,19 +263,21 @@ async def admin_list_referrals(
 
     items = []
     for ref in referrals:
-        referrer = db.query(User).filter(User.id == ref.referrer_user_id).first()
-        referred = db.query(User).filter(User.id == ref.referred_user_id).first()
+        # Get referrer through the referral code relationship
+        referrer_code = db.query(UserReferralCode).filter(UserReferralCode.id == ref.referrer_code_id).first()
+        referrer = db.query(User).filter(User.id == referrer_code.user_id).first() if referrer_code else None
+        referred = db.query(User).filter(User.id == ref.referred_user_id).first() if ref.referred_user_id else None
         items.append({
             "id": str(ref.id),
-            "referrer_id": str(ref.referrer_user_id),
+            "referrer_id": str(referrer_code.user_id) if referrer_code else "Unknown",
             "referrer_email": referrer.email if referrer else "Unknown",
-            "referred_user_id": str(ref.referred_user_id),
-            "referred_email": referred.email if referred else "Unknown",
-            "referral_code": ref.referral_code,
+            "referred_user_id": str(ref.referred_user_id) if ref.referred_user_id else "Unknown",
+            "referred_email": ref.referred_email or (referred.email if referred else "Unknown"),
+            "referral_code": referrer_code.referral_code if referrer_code else "Unknown",
             "status": ref.status.value if hasattr(ref.status, 'value') else ref.status,
             "tokens_awarded": ref.tokens_awarded,
             "created_at": ref.created_at.isoformat() if ref.created_at else None,
-            "completed_at": ref.completed_at.isoformat() if ref.completed_at else None,
+            "completed_at": ref.rewarded_at.isoformat() if ref.rewarded_at else (ref.signed_up_at.isoformat() if ref.signed_up_at else None),
         })
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -284,9 +286,10 @@ async def admin_list_referrals(
 @referral_router.get("/admin/stats")
 async def admin_referral_stats(db: Session = Depends(get_db)):
     """Get referral system stats (admin)."""
+    from .models import ReferralStatus as RS
     total = db.query(Referral).count()
-    completed = db.query(Referral).filter(Referral.status == "completed").count()
-    pending = db.query(Referral).filter(Referral.status == "pending").count()
+    completed = db.query(Referral).filter(Referral.status == RS.REWARDED).count()
+    pending = db.query(Referral).filter(Referral.status == RS.PENDING).count()
     total_tokens = db.query(func.coalesce(func.sum(Referral.tokens_awarded), 0)).scalar()
 
     from .constants import TOKENS_PER_REFERRAL, TOKEN_VALUE_USD, MAX_TOKENS_PER_PAYMENT
