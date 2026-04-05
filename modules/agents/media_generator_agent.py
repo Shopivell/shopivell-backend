@@ -3321,11 +3321,12 @@ STYLE REQUIREMENTS:
                 except Exception:
                     pass
 
-        # Step 7: Upload to Cloudinary
+        # Step 7: Upload to storage (MinIO primary, Cloudinary fallback)
         cloudinary_url = None
         thumbnail_url = None
         if upload_to_cloud and final_b64:
             try:
+                logger.info("[MediaGenerator] Uploading campaign ad image to storage...")
                 upload_result = self.upload_to_cloudinary(
                     image_base64=final_b64,
                     folder="shopivell/generated/campaign_ads",
@@ -3333,9 +3334,11 @@ STYLE REQUIREMENTS:
                 if upload_result.get("uploaded"):
                     cloudinary_url = upload_result.get("secure_url")
                     thumbnail_url = upload_result.get("thumbnail_url")
-                    logger.info(f"[MediaGenerator] Uploaded to Cloudinary: {cloudinary_url}")
+                    logger.info(f"[MediaGenerator] Upload SUCCESS: {cloudinary_url}")
+                else:
+                    logger.error(f"[MediaGenerator] Upload FAILED: {upload_result.get('error')}")
             except Exception as e:
-                logger.warning(f"[MediaGenerator] Cloudinary upload failed: {e}")
+                logger.error(f"[MediaGenerator] Upload exception: {e}")
 
         return {
             "success": True,
