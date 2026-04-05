@@ -786,3 +786,158 @@ async def close_conversation(
 
     logger.info(f"Closed conversation {conversation_id}")
     return {"message": "Conversation closed successfully"}
+
+
+# ============ AI FAQ Generation ============
+
+@faq_router.post("/stores/{store_id}/faqs/generate")
+async def generate_faqs_with_ai(
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Generate FAQs using AI based on the store's data (products, services, business type, etc.)."""
+    if not check_store_access(db, current_user, store_id):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Build store context for AI
+    context_parts = []
+    context_parts.append(f"Business Name: {store.store_name}")
+    if store.business_type:
+        context_parts.append(f"Business Type: {store.business_type}")
+    if store.store_voice:
+        context_parts.append(f"About: {store.store_voice}")
+    if store.products_or_services:
+        services = store.products_or_services if isinstance(store.products_or_services, list) else [store.products_or_services]
+        context_parts.append(f"Products/Services: {', '.join(services)}")
+    if store.store_link:
+        context_parts.append(f"Website: {store.store_link}")
+    if store.store_address:
+        context_parts.append(f"Address: {store.store_address}")
+    if store.store_city:
+        context_parts.append(f"City: {store.store_city}")
+    if store.store_country:
+        context_parts.append(f"Country: {store.store_country}")
+    if store.store_phone:
+        context_parts.append(f"Phone: {store.store_phone}")
+    if store.store_email:
+        context_parts.append(f"Email: {store.store_email}")
+
+    # Get existing products from DB
+    try:
+        from modules.products.models import Product
+        products = db.query(Product).filter(Product.store_id == store_id).limit(20).all()
+        if products:
+            product_names = [p.title for p in products if p.title]
+            if product_names:
+                context_parts.append(f"Products in store: {', '.join(product_names)}")
+    except Exception:
+        pass
+
+    # Get existing FAQs to avoid duplicates
+    existing_faqs = db.query(FAQ).filter(FAQ.store_id == store_id).all()
+    existing_questions = [faq.question.lower() for faq in existing_faqs]
+
+    store_context = "\n".join(context_parts)
+
+    import os
+    import json
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="AI service not configured")
+
+    client = OpenAI(api_key=api_key)
+
+    prompt = f"""You are an FAQ generator for a business. Based on the store information below, generate 8-12 relevant FAQs that customers would commonly ask.
+
+STORE INFORMATION:
+{store_context}
+
+EXISTING FAQ QUESTIONS (do NOT duplicate these):
+{chr(10).join(existing_questions[:20]) if existing_questions else 'None'}
+
+Generate FAQs in these categories: general, services, pricing, shipping, returns, support, account, products.
+Focus on questions relevant to this specific business type.
+For service businesses, focus on how services work, pricing, booking, availability.
+For product businesses, focus on shipping, returns, product details.
+
+Return ONLY a JSON array of objects with "question", "answer", and "category" fields.
+Each answer should be 1-3 sentences, helpful and professional.
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=3000,
+        )
+
+        content = response.choices[0].message.content.strip()
+        # Clean markdown if present
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
+        faqs_data = json.loads(content)
+        if not isinstance(faqs_data, list):
+            raise ValueError("Expected JSON array")
+
+    except Exception as e:
+        logger.error(f"AI FAQ generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"AI generation failed: {str(e)}")
+
+    # Create FAQ records
+    created = []
+    existing_count = len(existing_faqs)
+    for i, faq_data in enumerate(faqs_data):
+        question = faq_data.get("question", "").strip()
+        answer = faq_data.get("answer", "").strip()
+        category = faq_data.get("category", "general").strip().lower()
+
+        if not question or not answer:
+            continue
+        if question.lower() in existing_questions:
+            continue
+
+        faq = FAQ(
+            store_id=store_id,
+            question=question,
+            answer=answer,
+            category=category,
+            display_order=existing_count + i,
+            is_active=True,
+            is_featured=(i < 3),
+        )
+        db.add(faq)
+        created.append({"question": question, "answer": answer, "category": category})
+
+    db.commit()
+
+    # Sync new FAQs to knowledge base
+    try:
+        from .knowledge_service import KnowledgeService
+        ks = KnowledgeService(db)
+        new_faqs = db.query(FAQ).filter(
+            FAQ.store_id == store_id,
+            FAQ.is_active == True,
+            FAQ.knowledge_id == None
+        ).all()
+        for faq in new_faqs:
+            ks.sync_faq_to_knowledge(faq)
+    except Exception as e:
+        logger.warning(f"Knowledge sync after generation failed: {e}")
+
+    return {
+        "message": f"Generated {len(created)} new FAQs",
+        "generated": len(created),
+        "faqs": created,
+    }
