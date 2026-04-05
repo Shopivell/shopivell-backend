@@ -244,9 +244,9 @@ async def get_webhook_token(db: Session = Depends(get_db)):
             WHERE webhook_verify_token IS NULL
         """))
         db.commit()
-        result = db.execute(text("SELECT id, phone_number, webhook_verify_token, waba_id FROM whatsapp_accounts"))
+        result = db.execute(text("SELECT id, phone_number, webhook_verify_token, waba_id, phone_number_id FROM whatsapp_accounts"))
         rows = result.fetchall()
-        return [{"id": str(r[0]), "phone": r[1], "token": r[2], "waba_id": r[3]} for r in rows]
+        return [{"id": str(r[0]), "phone": r[1], "token": r[2], "waba_id": r[3], "phone_number_id": r[4]} for r in rows]
     except Exception as e:
         return {"error": str(e)}
 
