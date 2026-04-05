@@ -237,7 +237,7 @@ async def get_webhook_token(db: Session = Depends(get_db)):
     """Debug: get WhatsApp webhook verify tokens."""
     from modules.whatsapp.models import WhatsAppAccount
     accounts = db.query(WhatsAppAccount).all()
-    return [{"id": str(a.id), "phone": a.display_phone_number, "token": a.webhook_verify_token} for a in accounts]
+    return [{"id": str(a.id), "phone": getattr(a, 'display_phone_number', None) or getattr(a, 'phone_number_id', None), "token": a.webhook_verify_token, "waba_id": a.waba_id} for a in accounts]
 
 
 @asset_router.get("/debug/storage-status")
