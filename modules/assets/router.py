@@ -234,9 +234,16 @@ async def upload_image_simple(
 
 @asset_router.get("/debug/whatsapp-webhook-token")
 async def get_webhook_token(db: Session = Depends(get_db)):
-    """Debug: get WhatsApp webhook verify tokens."""
+    """Debug: get WhatsApp webhook verify tokens. Auto-sets if null."""
     from sqlalchemy import text
     try:
+        # Auto-set token if null
+        db.execute(text("""
+            UPDATE whatsapp_accounts
+            SET webhook_verify_token = 'shopivell_webhook_verify_2026'
+            WHERE webhook_verify_token IS NULL
+        """))
+        db.commit()
         result = db.execute(text("SELECT id, phone_number, webhook_verify_token, waba_id FROM whatsapp_accounts"))
         rows = result.fetchall()
         return [{"id": str(r[0]), "phone": r[1], "token": r[2], "waba_id": r[3]} for r in rows]
