@@ -284,6 +284,7 @@ class FeedbackListItem(BaseModel):
     status: str
     priority: str
     admin_response: Optional[str] = None
+    rating: Optional[int] = None
     created_at: datetime
 
     class Config:

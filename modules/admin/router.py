@@ -969,6 +969,7 @@ async def list_feedback(
             status=feedback.status,
             priority=feedback.priority,
             admin_response=feedback.admin_response,
+            rating=getattr(feedback, 'rating', None),
             created_at=feedback.created_at
         ))
 
