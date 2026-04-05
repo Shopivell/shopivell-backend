@@ -1007,6 +1007,28 @@ async def respond_to_feedback(
     return {"message": "Response sent"}
 
 
+@admin_router.delete("/feedback/{feedback_id}")
+async def delete_feedback(
+    feedback_id: uuid.UUID,
+    admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    """Delete a feedback item."""
+    feedback = db.query(Feedback).filter(Feedback.id == feedback_id).first()
+    if not feedback:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    from modules.feedback.models import FeedbackComment, FeedbackVote
+    db.query(FeedbackComment).filter(FeedbackComment.feedback_id == feedback_id).delete()
+    db.query(FeedbackVote).filter(FeedbackVote.feedback_id == feedback_id).delete()
+    db.delete(feedback)
+    db.commit()
+
+    log_action(db, admin, AuditAction.DELETE, "feedback", feedback_id)
+
+    return {"message": "Feedback deleted"}
+
+
 # ============ Store CRUD Endpoints ============
 
 @admin_router.post("/stores")
