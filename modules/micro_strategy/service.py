@@ -474,9 +474,8 @@ class MicroStrategyService:
             from langchain_openai import ChatOpenAI
 
             llm = ChatOpenAI(
-                model="openai/gpt-4o",
-                openai_api_key=os.getenv("OPENROUTER_API_KEY"),
-                openai_api_base="https://openrouter.ai/api/v1",
+                model="gpt-4o-mini",
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
                 temperature=0.8,
             )
 

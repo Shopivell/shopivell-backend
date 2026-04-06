@@ -45,9 +45,10 @@ class AdCreativeAgent:
 
     def __init__(self):
         self.client = None
-        self.primary_model = "anthropic/claude-sonnet-4"
-        self.fallback_model = "openai/gpt-4o"
+        self.primary_model = "gpt-4o"
+        self.fallback_model = "gpt-4o-mini"
 
+        openai_key = os.getenv("OPENAI_API_KEY")
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
 
         if OPENAI_AVAILABLE and openrouter_key:
@@ -59,9 +60,14 @@ class AdCreativeAgent:
                     "X-Title": "Shopivell Ad Generator",
                 }
             )
+            self.primary_model = "anthropic/claude-sonnet-4"
+            self.fallback_model = "openai/gpt-4o"
             logger.info("[AdCreativeAgent] Initialized with OpenRouter")
+        elif OPENAI_AVAILABLE and openai_key:
+            self.client = OpenAI(api_key=openai_key)
+            logger.info("[AdCreativeAgent] Initialized with OpenAI directly")
         else:
-            logger.warning("[AdCreativeAgent] No OpenRouter API key or OpenAI package not available!")
+            logger.warning("[AdCreativeAgent] No API key available!")
 
         # Prompt template for CLEAN base image generation (NO text baked in)
         # Text overlay is handled separately by AdImageComposer for professional results

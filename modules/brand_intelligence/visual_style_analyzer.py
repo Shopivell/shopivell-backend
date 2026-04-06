@@ -231,7 +231,7 @@ Respond in this exact JSON format:
 
         try:
             response = self.openai.chat.completions.create(
-                model="gpt-4o",  # Use GPT-4o for better vision analysis
+                model="gpt-4o-mini",  # Cost-optimized for internal analysis
                 messages=[
                     {
                         "role": "user",

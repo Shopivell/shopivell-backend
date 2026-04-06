@@ -74,7 +74,7 @@ class MonitorOptimizerAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.3  # Lower temperature for more analytical outputs
         )
         logger.info(f"[MonitorOptimizerAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
@@ -308,7 +308,7 @@ Return ONLY valid JSON, no other text.
                 health_score=health_score,
                 summary=summary,
                 parse_method=parse_method,
-                model_used="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini"
+                model_used="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini"
             )
             db.add(log)
             db.commit()

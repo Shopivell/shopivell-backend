@@ -346,7 +346,7 @@ Be conservative - when in doubt, flag it. False positives are better than false 
                 "Content-Type": "application/json"
             }
             url = f"{self.base_url}/chat/completions"
-            model = "gpt-4o"
+            model = "gpt-4o-mini"
 
         payload = {
             "model": model,

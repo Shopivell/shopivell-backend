@@ -113,7 +113,7 @@ class MarketResearchAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
             temperature=0.3
         )
         self.embeddings = OpenAIEmbeddings()

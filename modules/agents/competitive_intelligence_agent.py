@@ -486,7 +486,7 @@ class CompetitiveIntelligenceAgent:
             from langchain_core.output_parsers import StrOutputParser
 
             llm = ChatOpenRouter(
-                model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+                model="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
                 temperature=0.3
             )
 
