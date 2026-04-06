@@ -135,7 +135,7 @@ class GeminiImageGenerator:
         reference_images: List[Dict[str, str]] = None,
         output_path: str = None,
         aspect_ratio: str = "1:1",
-        model: str = "gemini-2.5-flash-image"
+        model: str = "gemini-3-pro-image-preview"
     ) -> Dict[str, Any]:
         """
         Generate an ad image using Gemini with reference images.
