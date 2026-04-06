@@ -251,6 +251,32 @@ async def get_webhook_token(db: Session = Depends(get_db)):
         return {"error": str(e)}
 
 
+@asset_router.get("/debug/insights-status")
+async def insights_status(db: Session = Depends(get_db)):
+    """Debug: check if Meta ad insights are being collected."""
+    from sqlalchemy import text
+    try:
+        # Count insights
+        result = db.execute(text("SELECT COUNT(*) FROM meta_ad_insights"))
+        total = result.scalar()
+
+        # Get date range
+        result2 = db.execute(text("SELECT MIN(date), MAX(date) FROM meta_ad_insights"))
+        row = result2.fetchone()
+
+        # Get sample
+        result3 = db.execute(text("SELECT ad_id, date, impressions, clicks, spend, conversions FROM meta_ad_insights ORDER BY date DESC LIMIT 3"))
+        samples = [{"ad_id": r[0], "date": str(r[1]), "impressions": r[2], "clicks": r[3], "spend": float(r[4]) if r[4] else 0, "conversions": r[5]} for r in result3.fetchall()]
+
+        return {
+            "total_insights": total,
+            "date_range": {"min": str(row[0]) if row[0] else None, "max": str(row[1]) if row[1] else None},
+            "recent_samples": samples,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @asset_router.get("/debug/storage-status")
 async def storage_status():
     """Debug: check storage configuration status."""
