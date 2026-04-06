@@ -21,6 +21,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from openai import OpenAI
 
+# Try Anthropic for better conversational quality
+try:
+    import anthropic
+    ANTHROPIC_AVAILABLE = bool(os.getenv("ANTHROPIC_API_KEY"))
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
+
 from database import SessionLocal
 from .models import (
     StoreBotConfig, WhatsAppConversation, WhatsAppConversationMessage,
@@ -300,15 +307,30 @@ Remember: It's better to say you don't have the information than to make somethi
         messages.append({"role": "user", "content": user_message})
 
         try:
-            # Generate response
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
+            # Generate response using Claude (primary) or GPT (fallback)
+            if ANTHROPIC_AVAILABLE:
+                anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                # Extract system message and convert format for Claude
+                system_content = "\n\n".join([m["content"] for m in messages if m["role"] == "system"])
+                user_messages = [m for m in messages if m["role"] != "system"]
+                claude_messages = [{"role": m["role"], "content": m["content"]} for m in user_messages]
 
-            bot_response = response.choices[0].message.content.strip()
+                response = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    system=system_content,
+                    messages=claude_messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                bot_response = response.content[0].text.strip()
+            else:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                bot_response = response.choices[0].message.content.strip()
 
             # Check if LLM indicated no knowledge match
             if "NO_KNOWLEDGE_MATCH" in bot_response.upper():

@@ -26,13 +26,18 @@ from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, MarketResearch, CreativeAngle
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
+# Import OpenRouter adapter (with fallback to Claude direct)
 try:
     from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
+    OPENROUTER_AVAILABLE = bool(os.getenv("OPENROUTER_API_KEY"))
 except ImportError:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
+
+if not OPENROUTER_AVAILABLE:
+    try:
+        from langchain_anthropic import ChatAnthropic as ChatOpenRouter
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -107,10 +112,10 @@ class CreativeStrategistAgent:
     """
 
     def __init__(self):
-        self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else os.getenv("OPENAI_MODEL", "gpt-4o"),
-            temperature=0.8
-        )
+        if OPENROUTER_AVAILABLE:
+            self.llm = ChatOpenRouter(model="openai/gpt-4o", temperature=0.8)
+        else:
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
         self.embeddings = OpenAIEmbeddings()
         logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
 

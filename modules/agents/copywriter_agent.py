@@ -11,13 +11,18 @@ from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, CreativeAngle, AdCopy
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
+# Import OpenRouter adapter (with fallback to Claude direct)
 try:
     from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
+    OPENROUTER_AVAILABLE = bool(os.getenv("OPENROUTER_API_KEY"))
 except ImportError:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
+
+if not OPENROUTER_AVAILABLE:
+    try:
+        from langchain_anthropic import ChatAnthropic as ChatOpenRouter
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -65,11 +70,12 @@ class CopywriterAgent:
     """
 
     def __init__(self):
-        self.llm = ChatOpenRouter(
-            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else os.getenv("OPENAI_MODEL", "gpt-4o"),
-            temperature=0.9  # Higher creativity for copy
-        )
-        logger.info(f"[CopywriterAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        if OPENROUTER_AVAILABLE:
+            self.llm = ChatOpenRouter(model="anthropic/claude-3.5-sonnet", temperature=0.9)
+            logger.info("[CopywriterAgent] Initialized with OpenRouter (Claude)")
+        else:
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.9)
+            logger.info("[CopywriterAgent] Initialized with Claude direct")
 
         self.main_prompt = ChatPromptTemplate.from_template("""
 You are an expert Meta (Facebook/Instagram) ad copywriter with deep knowledge of direct response marketing.

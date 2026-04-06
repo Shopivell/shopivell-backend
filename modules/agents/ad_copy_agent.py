@@ -23,13 +23,18 @@ from langchain_core.output_parsers import StrOutputParser
 from database import SessionLocal
 from .models import Campaign, CreativeAngle, AdCopy
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
+# Import OpenRouter adapter (with fallback to Claude direct)
 try:
     from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
+    OPENROUTER_AVAILABLE = bool(os.getenv("OPENROUTER_API_KEY"))
 except ImportError:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
+
+if not OPENROUTER_AVAILABLE:
+    try:
+        from langchain_anthropic import ChatAnthropic as ChatOpenRouter
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
 
 from pydantic import BaseModel, Field
 
@@ -65,11 +70,12 @@ class AdCopyAgent:
     """Enhanced AI Agent for generating high-converting ad copy"""
 
     def __init__(self):
-        self.llm = ChatOpenRouter(
-            model="anthropic/claude-3.5-sonnet" if OPENROUTER_AVAILABLE else "gpt-4o",
-            temperature=0.8
-        )
-        logger.info(f"[AdCopyAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        if OPENROUTER_AVAILABLE:
+            self.llm = ChatOpenRouter(model="anthropic/claude-3.5-sonnet", temperature=0.8)
+            logger.info("[AdCopyAgent] Initialized with OpenRouter (Claude)")
+        else:
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
+            logger.info("[AdCopyAgent] Initialized with Claude direct")
 
         # Enhanced prompt for market research based copy generation
         self.research_based_prompt = ChatPromptTemplate.from_template("""
