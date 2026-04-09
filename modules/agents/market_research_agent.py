@@ -756,40 +756,106 @@ Return ONLY valid JSON, no other text.
             logger.error(f"[MarketResearchAgent] Structured extraction error: {e}")
             return {}
 
-    def _search_competitors(self, business_type: str, location: str, products: List[str]) -> List[Dict[str, Any]]:
-        """Search for real competitors in the market using Tavily (basic)."""
+    def _search_competitors(self, business_type: str, location: str, products: List[str], company_name: str = None, domain: str = None) -> List[Dict[str, Any]]:
+        """
+        Search for real competitors using multiple targeted Tavily queries.
+        Uses different search strategies to find actual competitor websites,
+        not just directory listings.
+        """
         if not self.tavily:
             return []
 
         try:
-            products_str = ", ".join(products[:3]) if products else business_type
-            query = f"{business_type} companies {location} {products_str} competitors"
-
-            cache_key = generate_cache_key(query, prefix="mra:competitors:")
+            cache_key = generate_cache_key(f"{business_type}:{location}:{domain}", prefix="mra:competitors:")
             cached_result = self.cache.get(cache_key)
             if cached_result is not None:
                 logger.info(f"[MarketResearchAgent] Cache HIT for competitor search")
                 return cached_result
 
-            logger.info(f"[MarketResearchAgent] Searching competitors via Tavily: {query}")
-
-            search_result = self.tavily.search(
-                query=query,
-                search_depth="advanced",
-                max_results=10
-            )
-
+            seen_urls = set()
             competitors = []
-            for result in search_result.get("results", []):
-                competitors.append({
-                    "name": result.get("title", ""),
-                    "url": result.get("url", ""),
-                    "description": result.get("content", "")[:500],
-                    "source": "tavily"
-                })
 
-            self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
-            return competitors
+            # Build multiple targeted queries for better coverage
+            queries = []
+
+            # Query 1: Direct competitor search
+            queries.append(f"top {business_type} companies in {location}")
+
+            # Query 2: Product/service-specific
+            if products:
+                products_str = ", ".join(products[:3])
+                queries.append(f"{products_str} providers {location}")
+
+            # Query 3: "alternatives to" or "similar to" the company
+            if company_name:
+                queries.append(f"{company_name} competitors alternatives {location}")
+
+            # Query 4: Industry-specific with .co.zw or local TLD
+            if domain:
+                tld = domain.split(".")[-1] if "." in domain else ""
+                country_tld = f".{'.'.join(domain.split('.')[-2:])}" if domain.count(".") >= 2 else ""
+                if country_tld:
+                    queries.append(f"{business_type} {location} site:{country_tld}")
+
+            # Query 5: "best" or "leading" companies
+            queries.append(f"best {business_type} {location} list")
+
+            # Run up to 3 queries to balance cost vs coverage
+            for query in queries[:3]:
+                try:
+                    logger.info(f"[MarketResearchAgent] Competitor search query: {query}")
+                    search_result = self.tavily.search(
+                        query=query,
+                        search_depth="advanced",
+                        max_results=8
+                    )
+
+                    for result in search_result.get("results", []):
+                        url = result.get("url", "")
+                        # Skip directories, social media, and already-seen URLs
+                        parsed = urlparse(url)
+                        result_domain = parsed.netloc.lower().replace("www.", "")
+
+                        # Skip aggregator/directory sites
+                        skip_domains = [
+                            "lusha.com", "zoominfo.com", "ensun.io", "techbehemoths.com",
+                            "crunchbase.com", "bloomberg.com", "glassdoor.com",
+                            "facebook.com", "linkedin.com", "twitter.com", "instagram.com",
+                            "youtube.com", "reddit.com", "wikipedia.org", "bbc.com",
+                            "amazon.com", "ebay.com", "alibaba.com",
+                            "yellowpages", "yelp.com", "trustpilot.com"
+                        ]
+                        if any(skip in result_domain for skip in skip_domains):
+                            continue
+
+                        # Skip own domain
+                        if domain and domain.replace("www.", "") in result_domain:
+                            continue
+
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            competitors.append({
+                                "name": result.get("title", ""),
+                                "url": url,
+                                "description": result.get("content", "")[:500],
+                                "source": "tavily"
+                            })
+
+                except Exception as e:
+                    logger.warning(f"[MarketResearchAgent] Competitor query failed: {query} - {e}")
+
+            # Deduplicate by domain
+            seen_domains = set()
+            unique_competitors = []
+            for comp in competitors:
+                comp_domain = urlparse(comp["url"]).netloc.lower().replace("www.", "")
+                if comp_domain not in seen_domains:
+                    seen_domains.add(comp_domain)
+                    unique_competitors.append(comp)
+
+            logger.info(f"[MarketResearchAgent] Found {len(unique_competitors)} unique competitors via Tavily")
+            self.cache.set(cache_key, unique_competitors, ttl=CacheConfig.TTL_LONG)
+            return unique_competitors
 
         except Exception as e:
             logger.error(f"[MarketResearchAgent] Competitor search error: {e}")
@@ -801,11 +867,12 @@ Return ONLY valid JSON, no other text.
         location: str,
         products: List[str],
         domain: str = None,
-        country_code: str = "US"
+        country_code: str = "US",
+        company_name: str = None
     ) -> List[Dict[str, Any]]:
         """
         Enhanced competitor search: tries DataForSEO (deep, data-backed) first,
-        falls back to Tavily (basic search) if DataForSEO is not configured.
+        falls back to Tavily multi-query search if DataForSEO has no useful data.
 
         DataForSEO provides: actual keyword overlap, traffic estimates, competitor domains
         ranked by intersection score — far richer than a Google search.
@@ -824,6 +891,20 @@ Return ONLY valid JSON, no other text.
 
                     # Step 2: Discover competitors via keyword overlap
                     ci_competitors = agent.discover_competitors(domain, country_code, limit=10)
+
+                    # Filter out generic mega-domains that aren't real competitors
+                    generic_domains = {
+                        "youtube.com", "reddit.com", "facebook.com", "instagram.com",
+                        "linkedin.com", "twitter.com", "wikipedia.org", "amazon.com",
+                        "ebay.com", "walmart.com", "bestbuy.com", "staples.com",
+                        "officedepot.com", "reviews.io", "trustpilot.com", "yelp.com",
+                        "pinterest.com", "tiktok.com", "quora.com"
+                    }
+                    ci_competitors = [
+                        c for c in ci_competitors
+                        if c.get("domain", "").lower() not in generic_domains
+                        and c.get("domain", "") != domain  # exclude self
+                    ]
 
                     if ci_competitors:
                         # Step 3: Get top competitor keywords
@@ -892,8 +973,8 @@ Return ONLY valid JSON, no other text.
             except Exception as e:
                 logger.warning(f"[MarketResearchAgent] DataForSEO competitor analysis failed, falling back to Tavily: {e}")
 
-        # Fallback to basic Tavily search
-        return self._search_competitors(business_type, location, products)
+        # Fallback to Tavily multi-query search
+        return self._search_competitors(business_type, location, products, company_name=company_name, domain=domain)
 
     def _search_industry_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
         """Search for real industry trends"""
