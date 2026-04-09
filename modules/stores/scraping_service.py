@@ -37,36 +37,20 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 SCREENSHOT_DIR = Path("uploads/screenshots")
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Cloudinary configuration for screenshot uploads
+# MinIO configuration for screenshot uploads (reuses the same config as assets)
 try:
-    import cloudinary
-    import cloudinary.uploader
-
-    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
-    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
-    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
-
-    CLOUDINARY_CONFIGURED = (
-        CLOUDINARY_CLOUD_NAME and
-        CLOUDINARY_API_KEY and
-        CLOUDINARY_API_SECRET and
-        CLOUDINARY_CLOUD_NAME != "your_cloud_name"
-    )
-
-    if CLOUDINARY_CONFIGURED:
-        cloudinary.config(
-            cloud_name=CLOUDINARY_CLOUD_NAME,
-            api_key=CLOUDINARY_API_KEY,
-            api_secret=CLOUDINARY_API_SECRET,
-            secure=True
-        )
-        print("[Screenshot] Cloudinary configured for screenshot uploads")
+    from modules.assets.service import minio_client, MINIO_BUCKET, MINIO_CONFIGURED, _get_minio_url
+    SCREENSHOT_MINIO_AVAILABLE = MINIO_CONFIGURED and minio_client is not None
+    if SCREENSHOT_MINIO_AVAILABLE:
+        print("[Screenshot] MinIO configured for screenshot uploads")
     else:
-        print("[Screenshot] Cloudinary not configured - screenshots will be stored locally only")
-
+        print("[Screenshot] MinIO not configured - screenshots will be stored locally only")
 except ImportError:
-    CLOUDINARY_CONFIGURED = False
-    print("[Screenshot] Cloudinary not installed - screenshots will be stored locally only")
+    SCREENSHOT_MINIO_AVAILABLE = False
+    minio_client = None
+    MINIO_BUCKET = None
+    _get_minio_url = None
+    print("[Screenshot] MinIO not available - screenshots will be stored locally only")
 
 # ScreenshotOne API configuration (fallback when Playwright fails)
 SCREENSHOTONE_ACCESS_KEY = os.getenv("SCREENSHOTONE_ACCESS_KEY")
@@ -141,65 +125,57 @@ def capture_screenshot_via_api(url: str) -> Dict[str, Any]:
         }
 
 
-def upload_screenshot_to_cloudinary(
+def upload_screenshot_to_storage(
     screenshot_bytes: bytes,
     filename: str,
     folder: str = "shopivell/screenshots"
 ) -> Dict[str, Any]:
     """
-    Upload a screenshot to Cloudinary.
+    Upload a screenshot to MinIO object storage.
 
     Args:
         screenshot_bytes: The screenshot image bytes
         filename: The filename for the screenshot
-        folder: Cloudinary folder path
+        folder: Storage folder path
 
     Returns:
         Dict with upload result including secure_url, or error info
     """
-    if not CLOUDINARY_CONFIGURED:
+    if not SCREENSHOT_MINIO_AVAILABLE:
         return {
             "success": False,
-            "error": "Cloudinary not configured"
+            "error": "MinIO not configured"
         }
 
     try:
         import uuid as uuid_module
+        import io
 
-        # Upload to Cloudinary
-        result = cloudinary.uploader.upload(
-            screenshot_bytes,
-            folder=folder,
-            public_id=f"screenshot_{uuid_module.uuid4().hex[:12]}",
-            resource_type="image",
-            overwrite=True,
-            eager=[
-                {"width": 400, "height": 300, "crop": "fill", "format": "jpg"}  # Thumbnail
-            ],
-            eager_async=False
+        object_name = f"{folder}/{uuid_module.uuid4().hex}_{filename}"
+
+        minio_client.put_object(
+            MINIO_BUCKET,
+            object_name,
+            io.BytesIO(screenshot_bytes),
+            length=len(screenshot_bytes),
+            content_type="image/png"
         )
 
-        # Extract thumbnail URL
-        thumbnail_url = None
-        if result.get("eager") and len(result["eager"]) > 0:
-            thumbnail_url = result["eager"][0].get("secure_url")
-
-        print(f"[Screenshot] Uploaded to Cloudinary: {result.get('secure_url')}")
+        url = _get_minio_url(object_name)
+        print(f"[Screenshot] Uploaded to MinIO: {url}")
 
         return {
             "success": True,
-            "public_id": result.get("public_id"),
-            "url": result.get("url"),
-            "secure_url": result.get("secure_url"),
-            "thumbnail_url": thumbnail_url,
-            "width": result.get("width"),
-            "height": result.get("height"),
-            "format": result.get("format"),
-            "bytes": result.get("bytes")
+            "public_id": object_name,
+            "url": url,
+            "secure_url": url,
+            "thumbnail_url": url,  # Same URL — no server-side thumbnail generation
+            "format": "png",
+            "bytes": len(screenshot_bytes)
         }
 
     except Exception as e:
-        print(f"[Screenshot] Cloudinary upload error: {e}")
+        print(f"[Screenshot] MinIO upload error: {e}")
         return {
             "success": False,
             "error": str(e)
@@ -361,30 +337,29 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
 
             print(f"[Screenshot] Captured: {screenshot_path} ({len(screenshot_bytes)} bytes)")
 
-            # Upload to Cloudinary
-            cloudinary_url = None
-            cloudinary_thumbnail = None
-            if CLOUDINARY_CONFIGURED:
-                cloudinary_result = upload_screenshot_to_cloudinary(
+            # Upload to MinIO
+            storage_url = None
+            storage_thumbnail = None
+            if SCREENSHOT_MINIO_AVAILABLE:
+                storage_result = upload_screenshot_to_storage(
                     screenshot_bytes=screenshot_bytes,
                     filename=filename
                 )
-                if cloudinary_result.get("success"):
-                    cloudinary_url = cloudinary_result.get("secure_url")
-                    cloudinary_thumbnail = cloudinary_result.get("thumbnail_url")
-                    print(f"[Screenshot] Cloudinary URL: {cloudinary_url}")
+                if storage_result.get("success"):
+                    storage_url = storage_result.get("secure_url")
+                    storage_thumbnail = storage_result.get("thumbnail_url")
 
             return {
                 "success": True,
                 "screenshot_path": str(screenshot_path),
                 "screenshot_filename": filename,
                 "screenshot_base64": base64.b64encode(screenshot_bytes).decode("utf-8"),
-                "screenshot_url": cloudinary_url,  # Cloudinary URL for database storage
-                "thumbnail_url": cloudinary_thumbnail,
+                "screenshot_url": storage_url,
+                "thumbnail_url": storage_thumbnail,
                 "width": viewport_size["width"] if viewport_size else 1920,
                 "height": viewport_size["height"] if viewport_size else 1080,
                 "full_page": full_page,
-                "url": final_url  # URL that was actually loaded (might be HTTP fallback)
+                "url": final_url
             }
 
     except Exception as e:
@@ -407,26 +382,25 @@ async def capture_homepage_screenshot(url: str, full_page: bool = False) -> Dict
 
                 print(f"[Screenshot] Fallback captured: {screenshot_path} ({len(screenshot_bytes)} bytes)")
 
-                # Upload to Cloudinary
-                cloudinary_url = None
-                cloudinary_thumbnail = None
-                if CLOUDINARY_CONFIGURED:
-                    cloudinary_result = upload_screenshot_to_cloudinary(
+                # Upload to MinIO
+                storage_url = None
+                storage_thumbnail = None
+                if SCREENSHOT_MINIO_AVAILABLE:
+                    storage_result = upload_screenshot_to_storage(
                         screenshot_bytes=screenshot_bytes,
                         filename=filename
                     )
-                    if cloudinary_result.get("success"):
-                        cloudinary_url = cloudinary_result.get("secure_url")
-                        cloudinary_thumbnail = cloudinary_result.get("thumbnail_url")
-                        print(f"[Screenshot] Cloudinary URL: {cloudinary_url}")
+                    if storage_result.get("success"):
+                        storage_url = storage_result.get("secure_url")
+                        storage_thumbnail = storage_result.get("thumbnail_url")
 
                 return {
                     "success": True,
                     "screenshot_path": str(screenshot_path),
                     "screenshot_filename": filename,
                     "screenshot_base64": base64.b64encode(screenshot_bytes).decode("utf-8"),
-                    "screenshot_url": cloudinary_url,
-                    "thumbnail_url": cloudinary_thumbnail,
+                    "screenshot_url": storage_url,
+                    "thumbnail_url": storage_thumbnail,
                     "width": 1920,
                     "height": 1080,
                     "full_page": full_page,
