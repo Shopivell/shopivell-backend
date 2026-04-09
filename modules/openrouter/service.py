@@ -15,10 +15,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # OpenRouter Configuration
-OPENROUTER_API_KEY = os.getenv(
-    "OPENROUTER_API_KEY",
-    "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"
-)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Model configurations
