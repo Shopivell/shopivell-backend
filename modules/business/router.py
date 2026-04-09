@@ -46,16 +46,14 @@ FACEBOOK_OAUTH_SCOPE = (
     "ads_management"
 )
 
-# Instagram requires these additional scopes on top of Facebook page permissions
+# Instagram OAuth scope - uses Facebook page permissions to access linked IG Business accounts.
+# instagram_basic, instagram_content_publish etc. require App Review approval.
+# Until approved, we discover IG accounts via the pages' instagram_business_account field.
 INSTAGRAM_OAUTH_SCOPE = (
     "public_profile,"
     "pages_show_list,"
     "pages_read_engagement,"
-    "pages_manage_posts,"
-    "instagram_basic,"
-    "instagram_content_publish,"
-    "instagram_manage_comments,"
-    "instagram_manage_insights"
+    "pages_manage_posts"
 )
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:
