@@ -21,8 +21,8 @@ from modules.social.schemas import (
 )
 
 # Configuration for localhost development
-FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "859974717008470")
-FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "c523768871eef789b46a160c5d1d4ab1")
+FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "")
+FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
 FACEBOOK_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "http://localhost:8000/v1/api/social/facebook/callback")
 FACEBOOK_API_VERSION = os.getenv("FACEBOOK_API_VERSION", "v24.0")
 

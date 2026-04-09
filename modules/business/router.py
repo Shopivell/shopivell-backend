@@ -29,8 +29,8 @@ business_router = APIRouter(prefix="/api/business", tags=["business"])
 FB_GRAPH_API_BASE = "https://graph.facebook.com/v18.0"
 
 # Facebook App credentials from environment (with defaults for your app)
-FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "859974717008470")
-FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "c523768871eef789b46a160c5d1d4ab1")
+FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "")
+FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
 
 # OAuth Configuration
 FACEBOOK_REDIRECT_URI = os.getenv(
