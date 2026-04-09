@@ -161,6 +161,38 @@ class FacebookOAuthUrlRequest(BaseModel):
     state: Optional[str] = None  # Custom state to pass through OAuth flow
 
 
+# Instagram schemas
+class InstagramAccountResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    business_account_id: uuid.UUID
+    instagram_id: str
+    username: str
+    name: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    biography: Optional[str] = None
+    followers_count: Optional[str] = None
+    follows_count: Optional[str] = None
+    media_count: Optional[str] = None
+    website: Optional[str] = None
+    category: Optional[str] = None
+    facebook_page_id: Optional[str] = None
+    is_connected: bool = True
+    is_active: bool = True
+    last_synced_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+class InstagramAccountListResponse(BaseModel):
+    accounts: List[InstagramAccountResponse]
+    total_count: int
+
+class InstagramOAuthResponse(BaseModel):
+    success: bool
+    message: str
+    accounts: List[InstagramAccountResponse]
+
 # Update forward references for nested models
 FacebookBusinessAccountResponse.model_rebuild()
 FacebookPageResponse.model_rebuild()

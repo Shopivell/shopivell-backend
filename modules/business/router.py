@@ -12,14 +12,15 @@ from urllib.parse import urlencode, urlparse
 from pydantic import BaseModel
 
 from database import get_db
-from .models import FacebookBusinessAccount, FacebookPage
+from .models import FacebookBusinessAccount, FacebookPage, InstagramAccount
 from .schemas import (
     FacebookBusinessAccountResponse, FacebookCallbackRequest, FacebookOAuthUrlRequest, FacebookOAuthUrlRequest, FacebookPageResponse,
     FacebookBusinessAccountCreate, FacebookPageCreate,
     FacebookBusinessAccountUpdate, FacebookPageUpdate,
     FacebookOAuthRequest, FacebookOAuthResponse,
     FacebookBusinessAccountListResponse, FacebookPageListResponse, FacebookPostInsightsResponse, FacebookPostsResponse,
-    SuccessMessage, FacebookPostCreate, FacebookPostResponse
+    SuccessMessage, FacebookPostCreate, FacebookPostResponse,
+    InstagramAccountResponse, InstagramAccountListResponse, InstagramOAuthResponse
 )
 
 business_router = APIRouter(prefix="/api/business", tags=["business"])
@@ -43,6 +44,18 @@ FACEBOOK_OAUTH_SCOPE = (
     "pages_read_engagement,"
     "pages_manage_posts,"
     "ads_management"
+)
+
+# Instagram requires these additional scopes on top of Facebook page permissions
+INSTAGRAM_OAUTH_SCOPE = (
+    "public_profile,"
+    "pages_show_list,"
+    "pages_read_engagement,"
+    "pages_manage_posts,"
+    "instagram_basic,"
+    "instagram_content_publish,"
+    "instagram_manage_comments,"
+    "instagram_manage_insights"
 )
 
 def exchange_short_lived_token_for_long_lived(short_lived_token: str) -> dict:
@@ -1057,3 +1070,268 @@ def get_facebook_page_analytics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get page analytics: {str(e)}"
         )
+
+
+# ========================
+# Instagram Endpoints
+# ========================
+
+def get_instagram_business_accounts_from_pages(access_token: str):
+    """
+    Fetch Instagram Business accounts linked to Facebook Pages.
+    Each Facebook Page can have one linked Instagram Business account.
+    """
+    try:
+        # Get all pages with their linked Instagram business accounts
+        response = requests.get(
+            f"{FB_GRAPH_API_BASE}/me/accounts",
+            params={
+                "access_token": access_token,
+                "fields": "id,name,access_token,instagram_business_account"
+            }
+        )
+        response.raise_for_status()
+        pages = response.json().get("data", [])
+
+        ig_accounts = []
+        for page in pages:
+            ig_account = page.get("instagram_business_account")
+            if ig_account:
+                # Fetch full IG account details using the page access token
+                ig_id = ig_account["id"]
+                page_token = page.get("access_token", access_token)
+                try:
+                    ig_response = requests.get(
+                        f"{FB_GRAPH_API_BASE}/{ig_id}",
+                        params={
+                            "access_token": page_token,
+                            "fields": "id,username,name,profile_picture_url,biography,"
+                                      "followers_count,follows_count,media_count,website,ig_id"
+                        }
+                    )
+                    ig_response.raise_for_status()
+                    ig_data = ig_response.json()
+                    ig_data["_page_access_token"] = page_token
+                    ig_data["_facebook_page_id"] = page["id"]
+                    ig_data["_facebook_page_name"] = page.get("name", "")
+                    ig_accounts.append(ig_data)
+                except Exception as e:
+                    print(f"[IG DEBUG] Failed to fetch IG account {ig_id}: {e}")
+                    continue
+
+        return ig_accounts
+    except Exception as e:
+        print(f"[IG DEBUG] Failed to get Instagram accounts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to get Instagram accounts: {str(e)}"
+        )
+
+
+@business_router.post("/instagram/oauth-url")
+def get_instagram_oauth_url(request_data: FacebookOAuthUrlRequest):
+    """Generate OAuth URL for Instagram Business connection (via Facebook OAuth)"""
+    state = request_data.state or str(uuid.uuid4())
+    redirect_uri = request_data.redirect_uri or FACEBOOK_REDIRECT_URI
+
+    parsed_uri = urlparse(redirect_uri)
+    if not parsed_uri.scheme or not parsed_uri.netloc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid redirect URI"
+        )
+
+    params = {
+        "client_id": FACEBOOK_APP_ID,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "response_type": "code",
+        "scope": INSTAGRAM_OAUTH_SCOPE,
+    }
+    auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{urlencode(params)}"
+    return JSONResponse({"auth_url": auth_url, "state": state})
+
+
+@business_router.post("/instagram/callback")
+def instagram_callback(
+    request_data: FacebookCallbackRequest,
+    db: Session = Depends(get_db),
+):
+    """OAuth callback for Instagram Business connection.
+    Uses the same Facebook OAuth flow but fetches Instagram Business accounts."""
+    try:
+        redirect_uri = request_data.redirect_uri or FACEBOOK_REDIRECT_URI
+
+        # 1. Exchange code for short-lived user access token
+        token_resp = requests.get(
+            f"{FB_GRAPH_API_BASE}/oauth/access_token",
+            params={
+                "client_id": FACEBOOK_APP_ID,
+                "client_secret": FACEBOOK_APP_SECRET,
+                "redirect_uri": redirect_uri,
+                "code": request_data.code,
+            },
+        )
+        token_resp.raise_for_status()
+        token_data = token_resp.json()
+        user_access_token = token_data["access_token"]
+
+        # 2. Exchange for long-lived token
+        long_lived_data = exchange_short_lived_token_for_long_lived(user_access_token)
+        long_lived_token = long_lived_data.get("access_token", user_access_token)
+        expires_in = long_lived_data.get("expires_in", 5184000)
+        expires_at = datetime.utcnow() + timedelta(seconds=expires_in) if expires_in else None
+
+        # 3. Get user info
+        user_info = get_facebook_user_info(long_lived_token)
+        user_id = user_info.get("id")
+
+        # 4. Ensure business account exists (reuse Facebook logic)
+        business_account_id_str = user_id
+        business_name = user_info.get("name", "My Business")
+
+        try:
+            business_accounts = get_facebook_business_accounts(long_lived_token)
+            if business_accounts:
+                first_business = business_accounts[0]
+                business_account_id_str = first_business.get("id")
+                business_name = first_business.get("name", "My Business")
+        except Exception:
+            pass
+
+        existing_business = db.query(FacebookBusinessAccount).filter(
+            FacebookBusinessAccount.business_account_id == business_account_id_str
+        ).first()
+
+        if existing_business:
+            existing_business.access_token = long_lived_token
+            existing_business.business_name = business_name
+            existing_business.user_id = user_id
+            existing_business.is_connected = True
+            existing_business.expires_at = expires_at
+            existing_business.updated_at = datetime.utcnow()
+            business_account = existing_business
+        else:
+            business_account = FacebookBusinessAccount(
+                business_account_id=business_account_id_str,
+                business_name=business_name,
+                access_token=long_lived_token,
+                user_id=user_id,
+                expires_at=expires_at,
+                is_connected=True
+            )
+            db.add(business_account)
+            db.commit()
+            db.refresh(business_account)
+
+        # 5. Fetch Instagram Business accounts linked to Facebook Pages
+        ig_accounts_data = get_instagram_business_accounts_from_pages(long_lived_token)
+
+        if not ig_accounts_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Instagram Business accounts found. Make sure your Instagram account is set to Business or Creator and is linked to a Facebook Page."
+            )
+
+        # 6. Store Instagram accounts in DB
+        connected_accounts = []
+        for ig_data in ig_accounts_data:
+            ig_id = ig_data.get("id")
+            page_token = ig_data.get("_page_access_token", "")
+
+            existing_ig = db.query(InstagramAccount).filter(
+                InstagramAccount.instagram_id == ig_id
+            ).first()
+
+            ig_info = {
+                "instagram_id": ig_id,
+                "username": ig_data.get("username", ""),
+                "name": ig_data.get("name"),
+                "profile_picture_url": ig_data.get("profile_picture_url"),
+                "biography": ig_data.get("biography"),
+                "followers_count": str(ig_data.get("followers_count", "")),
+                "follows_count": str(ig_data.get("follows_count", "")),
+                "media_count": str(ig_data.get("media_count", "")),
+                "website": ig_data.get("website"),
+                "page_access_token": page_token,
+                "facebook_page_id": ig_data.get("_facebook_page_id"),
+                "is_connected": True,
+                "is_active": True,
+                "last_synced_at": datetime.utcnow()
+            }
+
+            if existing_ig:
+                for key, value in ig_info.items():
+                    if value is not None:
+                        setattr(existing_ig, key, value)
+                existing_ig.updated_at = datetime.utcnow()
+                account = existing_ig
+            else:
+                account = InstagramAccount(
+                    business_account_id=business_account.id,
+                    **ig_info
+                )
+                db.add(account)
+
+            connected_accounts.append(account)
+
+        db.commit()
+        for account in connected_accounts:
+            db.refresh(account)
+
+        return InstagramOAuthResponse(
+            success=True,
+            message=f"Successfully connected {len(connected_accounts)} Instagram account{'s' if len(connected_accounts) != 1 else ''}",
+            accounts=[InstagramAccountResponse.model_validate(acc) for acc in connected_accounts]
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Instagram authentication failed: {str(e)}"
+        )
+
+
+@business_router.get("/instagram/accounts", response_model=InstagramAccountListResponse)
+def get_instagram_accounts(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: Session = Depends(get_db)
+):
+    """Get all connected Instagram Business accounts"""
+    accounts = db.query(InstagramAccount).filter(
+        InstagramAccount.is_connected == True
+    ).offset(skip).limit(limit).all()
+
+    total_count = db.query(InstagramAccount).filter(
+        InstagramAccount.is_connected == True
+    ).count()
+
+    return InstagramAccountListResponse(
+        accounts=[InstagramAccountResponse.model_validate(acc) for acc in accounts],
+        total_count=total_count
+    )
+
+
+@business_router.delete("/instagram/accounts/{account_id}", response_model=SuccessMessage)
+def disconnect_instagram_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Disconnect an Instagram Business account"""
+    account = db.query(InstagramAccount).filter(
+        InstagramAccount.id == account_id
+    ).first()
+
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instagram account not found"
+        )
+
+    account.is_connected = False
+    account.is_active = False
+    account.updated_at = datetime.utcnow()
+    db.commit()
+
+    return SuccessMessage(message="Instagram account disconnected successfully")

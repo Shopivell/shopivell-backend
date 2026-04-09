@@ -22,6 +22,7 @@ from modules.delivery.models import *  # Delivery models (depends on Store, Cust
 from modules.reviews.models import *  # Review models (depends on User, Store)
 # from modules.coupons.models import *  # Coupon models (depends on User, Store)
 # from modules.returns.models import *  # Return models (depends on User, Store)
+from modules.business.models import *  # Business models (Facebook, Instagram)
 from modules.openrouter.models import *  # AI usage tracking models
 from modules.micro_strategy.models import *  # Micro-strategy models (depends on Store, MetaAdAccount)
 
