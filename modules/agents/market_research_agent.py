@@ -1894,20 +1894,6 @@ async def research_website_directly(
             combined_content += "\n" + multi_page_data["combined_content"][:10000]
         structured_data = await agent._extract_structured_website_data(combined_content, url)
 
-    # Step 4: Determine business type for competitor search
-    industry = structured_data.get("industry", "business")
-    location = structured_data.get("geographic_coverage", "Global")
-
-    # Extract products/services for competitor search
-    products = []
-    if structured_data.get("services_products"):
-        products = [sp.get("name", "") for sp in structured_data["services_products"][:5]]
-
-    # Step 5-7: Search for competitors, trends, audience insights, and keywords in parallel
-    from datetime import datetime
-    current_year = str(datetime.now().year)
-    target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
-
     # Extract domain and detect country from TLD
     parsed_url = urlparse(url)
     domain = parsed_url.netloc.replace("www.", "")
@@ -1922,21 +1908,90 @@ async def research_website_directly(
     if last_tld in tld_country_map:
         country_code = tld_country_map[last_tld]
 
+    # Map country code to location name
+    country_name_map = {
+        "ZW": "Zimbabwe", "ZA": "South Africa", "BW": "Botswana", "ZM": "Zambia",
+        "MZ": "Mozambique", "NA": "Namibia", "KE": "Kenya", "NG": "Nigeria",
+        "GH": "Ghana", "TZ": "Tanzania", "UG": "Uganda", "GB": "United Kingdom",
+        "AU": "Australia", "CA": "Canada", "DE": "Germany", "FR": "France", "IN": "India",
+        "US": "United States"
+    }
+
+    # Step 4: Determine business type for competitor search
+    industry = structured_data.get("industry", "")
+    location = structured_data.get("geographic_coverage", "")
+
+    # Fallback: extract basic info from raw content when AI extraction fails
+    raw_content = website_data.get("content", "")
+    if not industry or industry == "business":
+        # Extract services/headings from raw content
+        import re
+        headings = re.findall(r'#{1,3}\s+(.+)', raw_content)
+        # Filter out generic headings
+        service_headings = [
+            h.strip() for h in headings
+            if len(h.strip()) > 3 and len(h.strip()) < 60
+            and not any(skip in h.lower() for skip in [
+                'navigation', 'menu', 'footer', 'header', 'cookie', 'privacy',
+                'faq', 'frequently', 'contact', 'about us', 'why', 'ready to',
+                'see our', 'our expert', 'still have'
+            ])
+        ]
+        if service_headings:
+            industry = ", ".join(service_headings[:3])
+
+    if not location or location == "Global":
+        location = country_name_map.get(country_code, "")
+        # Also try to find location from raw content
+        for city in ["Harare", "Bulawayo", "Johannesburg", "Cape Town", "Nairobi", "Lagos", "Accra"]:
+            if city.lower() in raw_content.lower():
+                location = f"{city}, {country_name_map.get(country_code, '')}"
+                break
+
+    # Extract products/services for competitor search
+    products = []
+    if structured_data.get("services_products"):
+        products = [sp.get("name", "") for sp in structured_data["services_products"][:5]]
+
+    # Fallback: extract services from headings when AI extraction fails
+    if not products and raw_content:
+        import re
+        headings = re.findall(r'#{2,3}\s+(.+)', raw_content)
+        products = [
+            h.strip() for h in headings
+            if len(h.strip()) > 3 and len(h.strip()) < 50
+            and not any(skip in h.lower() for skip in [
+                'navigation', 'menu', 'footer', 'faq', 'frequently',
+                'contact', 'about', 'why', 'ready', 'see our', 'our expert',
+                'still have', 'services', 'company', 'legal'
+            ])
+        ][:5]
+
     company_name = structured_data.get("company_name") or business_name
+
+    # Step 5-7: Search for competitors, trends, audience insights, and keywords in parallel
+    from datetime import datetime
+    current_year = str(datetime.now().year)
+    target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
 
     # Build keyword seeds from extracted data
     keyword_seeds = []
+    if products and location:
+        for p in products[:5]:
+            keyword_seeds.append(f"{p} {location}")
     if structured_data.get("services_products"):
         for sp in structured_data["services_products"][:5]:
             name = sp.get("name", "")
             if name and location:
                 keyword_seeds.append(f"{name} {location}")
-    if industry and location:
+    if industry and location and industry != "business":
         keyword_seeds.append(f"{industry} {location}")
-    if products:
-        for p in products[:3]:
-            if location:
-                keyword_seeds.append(f"{p} {location}")
+    if company_name and location:
+        keyword_seeds.append(f"{company_name} {location}")
+    # Last resort: use domain name + location
+    if not keyword_seeds and location:
+        domain_name = domain.split(".")[0]
+        keyword_seeds.append(f"{domain_name} {location}")
 
     competitors, trends, audience_insights, autocomplete_keywords = await asyncio.gather(
         asyncio.to_thread(agent._search_competitors_enhanced, industry, location, products, domain, country_code, company_name),
