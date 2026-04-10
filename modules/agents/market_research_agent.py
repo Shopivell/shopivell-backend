@@ -717,6 +717,8 @@ class MarketResearchAgent:
             "about", "service", "product", "team", "contact",
             "pricing", "solution", "partner", "leadership", "portfolio"
         ]
+        # Deprioritize deep item pages (e.g., /products/hp-probook-460-g10)
+        deep_item_patterns = ["/products/", "/product/", "/items/", "/item/", "/blog/", "/news/", "/post/"]
 
         try:
             headers = {
@@ -755,17 +757,22 @@ class MarketResearchAgent:
                     discovered.add(clean_url)
 
             # Sort: priority keyword links first, then the rest
+            # But deprioritize deep item pages (e.g., /products/some-item)
             priority_links = []
+            deep_item_links = []
             other_links = []
             for link in discovered:
                 path_lower = urlparse(link).path.lower()
-                if any(kw in path_lower for kw in priority_keywords):
+                is_deep_item = any(pattern in path_lower and path_lower != pattern.rstrip('/') for pattern in deep_item_patterns)
+                if is_deep_item:
+                    deep_item_links.append(link)
+                elif any(kw in path_lower for kw in priority_keywords):
                     priority_links.append(link)
                 else:
                     other_links.append(link)
 
-            logger.info(f"[MarketResearchAgent] Discovered {len(priority_links)} priority + {len(other_links)} other internal links")
-            return priority_links + other_links
+            logger.info(f"[MarketResearchAgent] Discovered {len(priority_links)} priority + {len(other_links)} other + {len(deep_item_links)} deep item links")
+            return priority_links + other_links + deep_item_links
 
         except Exception as e:
             logger.warning(f"[MarketResearchAgent] Link discovery failed: {e}")
@@ -872,12 +879,16 @@ class MarketResearchAgent:
             except Exception as e:
                 logger.error(f"[MarketResearchAgent] Tavily multi-page scrape error: {e}")
 
-        # Fallback to BeautifulSoup if Tavily failed
-        if not tavily_success and BS4_AVAILABLE:
-            logger.info(f"[MarketResearchAgent] Falling back to BeautifulSoup for multi-page scrape")
-            results["source"] = "beautifulsoup"
+        # Use BeautifulSoup for pages Tavily missed or failed on
+        scraped_urls = set(p["url"] for p in results["pages"])
+        failed_urls = [u for u in urls_to_scrape if u not in scraped_urls]
 
-            for page_url in urls_to_scrape[:5]:  # Limit to 5 pages for BeautifulSoup
+        if failed_urls and BS4_AVAILABLE:
+            logger.info(f"[MarketResearchAgent] Using BeautifulSoup for {len(failed_urls)} pages Tavily missed")
+            if not tavily_success:
+                results["source"] = "beautifulsoup"
+
+            for page_url in failed_urls[:5]:  # Limit to 5 pages for BeautifulSoup
                 try:
                     bs_result = self._scrape_with_beautifulsoup(page_url)
                     if bs_result.get("success") and bs_result.get("content"):
@@ -955,8 +966,11 @@ Extract and return a JSON object with these fields:
     "key_features": ["Feature 1", "Feature 2"],
     "call_to_actions": ["CTA 1", "CTA 2"],
     "pricing_info": "Any pricing information found or 'Not available'",
-    "geographic_coverage": "Countries/regions served"
+    "geographic_coverage": "Countries/regions served",
+    "keyword_seeds": ["short search-friendly keyword 1", "keyword 2", "keyword 3"]
 }}
+
+For keyword_seeds: Generate 5-10 short, generic search terms (2-4 words max) that potential customers would type into Google to find this business. Use category-level terms (e.g. "laptops Zimbabwe", "IT store Harare"), NOT full product names. These will be used for Google Autocomplete keyword research.
 
 Only include fields where you found relevant information. Be accurate and only extract what's explicitly stated.
 Return ONLY valid JSON, no other text.
@@ -1439,20 +1453,22 @@ Return ONLY valid JSON, no other text.
             if last_tld in tld_country_map:
                 country_code = tld_country_map[last_tld]
 
-        # Build keyword seeds from extracted website data
+        # Build keyword seeds - prefer AI-generated seeds from structured extraction
         keyword_seeds = []
         company_name = structured_data.get("company_name")
-        if structured_data.get("services_products"):
-            for sp in structured_data["services_products"][:5]:
-                name = sp.get("name", "")
-                if name and location:
-                    keyword_seeds.append(f"{name} {location}")
-        if business_type and location:
-            keyword_seeds.append(f"{business_type} {location}")
-        if products:
-            for p in products[:3]:
-                if location:
-                    keyword_seeds.append(f"{p} {location}")
+        ai_seeds = structured_data.get("keyword_seeds", [])
+        if ai_seeds and isinstance(ai_seeds, list):
+            for seed in ai_seeds[:10]:
+                if isinstance(seed, str) and seed.strip():
+                    keyword_seeds.append(seed.strip())
+            logger.info(f"[MarketResearchAgent] Using {len(keyword_seeds)} AI-generated keyword seeds: {keyword_seeds}")
+
+        # Fallback: use business type and company name
+        if not keyword_seeds:
+            if business_type and location:
+                keyword_seeds.append(f"{business_type} {location}")
+            if company_name and location:
+                keyword_seeds.append(f"{company_name} {location}")
 
         competitors, trends, audience_data, autocomplete_keywords = await asyncio.gather(
             asyncio.to_thread(
@@ -2041,42 +2057,30 @@ async def research_website_directly(
     short_location = country_name_map.get(country_code, "") if country_code != "US" else ""
     location_suffix = f" {short_location}" if short_location else ""
 
-    def _simplify_seed(name: str) -> List[str]:
-        """Break complex service names into shorter search-friendly seeds."""
-        seeds = []
-        # Add full name
-        seeds.append(f"{name}{location_suffix}")
-        # Split on & and add each part separately
-        if "&" in name or "and" in name.lower():
-            parts = re.split(r'\s*[&]\s*|\s+and\s+', name, flags=re.IGNORECASE)
-            for part in parts:
-                part = part.strip()
-                if len(part) > 3:
-                    seeds.append(f"{part}{location_suffix}")
-        return seeds
-
     keyword_seeds = []
     seen_seeds = set()
 
-    # From extracted services/products
-    source_names = []
-    if structured_data.get("services_products"):
-        source_names = [sp.get("name", "") for sp in structured_data["services_products"][:6]]
-    elif products:
-        source_names = products[:6]
+    # Use AI-generated keyword seeds first (from structured extraction)
+    ai_seeds = structured_data.get("keyword_seeds", [])
+    if ai_seeds and isinstance(ai_seeds, list):
+        for seed in ai_seeds[:10]:
+            if isinstance(seed, str) and seed.strip() and seed.lower() not in seen_seeds:
+                seen_seeds.add(seed.lower())
+                keyword_seeds.append(seed.strip())
+        logger.info(f"[MarketResearchAgent] Using {len(keyword_seeds)} AI-generated keyword seeds: {keyword_seeds}")
 
-    for name in source_names:
-        if not name:
-            continue
-        for seed in _simplify_seed(name):
+    # Fallback: if AI didn't generate seeds, use company name + industry
+    if not keyword_seeds:
+        if company_name:
+            seed = f"{company_name}{location_suffix}"
             if seed.lower() not in seen_seeds:
                 seen_seeds.add(seed.lower())
                 keyword_seeds.append(seed)
-
-    if company_name:
-        seed = f"{company_name}{location_suffix}"
-        if seed.lower() not in seen_seeds:
-            keyword_seeds.append(seed)
+        if industry and industry != "business":
+            industry_seed = f"{industry}{location_suffix}"
+            if industry_seed.lower() not in seen_seeds:
+                seen_seeds.add(industry_seed.lower())
+                keyword_seeds.append(industry_seed)
 
     # Last resort: use domain name
     if not keyword_seeds:

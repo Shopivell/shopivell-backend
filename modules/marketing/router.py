@@ -403,18 +403,18 @@ def fetch_ads_library(
         url = f"{FB_GRAPH_API_BASE}/ads_archive"
 
         params = {
+            "access_token": access_token,
             "search_terms": search_term,
             "ad_type": ad_type,
-            "ad_reached_countries": ad_reached_countries,  
+            "ad_reached_countries": json.dumps(ad_reached_countries) if isinstance(ad_reached_countries, list) else ad_reached_countries,
             "limit": limit,
+            "fields": "id,ad_creation_time,ad_creative_bodies,ad_creative_link_captions,ad_creative_link_titles,ad_delivery_start_time,ad_delivery_stop_time,page_id,page_name,publisher_platforms",
         }
 
         # Remove null params
         params = {k: v for k, v in params.items() if v is not None}
 
-        headers = {"Authorization": f"Bearer {access_token}"}
-
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params)
         response.raise_for_status()
 
         data = response.json()
