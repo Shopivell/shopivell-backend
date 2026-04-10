@@ -60,8 +60,8 @@ RUN groupadd -r shopivell && useradd -r -g shopivell shopivell
 COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
-# Install Playwright browsers
-RUN playwright install chromium
+# Install Playwright browsers with system dependencies
+RUN playwright install --with-deps chromium
 
 # Copy application code
 COPY . .
