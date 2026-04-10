@@ -2412,6 +2412,157 @@ async def research_website_directly(
     all_contacts = multi_page_data.get("all_contacts") or website_data.get("contact_info", {})
     all_stats = multi_page_data.get("all_statistics") or website_data.get("statistics", [])
 
+    # Step 8: Generate SWOT analysis, ad copy suggestions, and capture screenshot in parallel
+    swot_analysis = {}
+    ad_copy_suggestions = {}
+    screenshot_data = {}
+
+    async def _generate_swot():
+        """Generate SWOT analysis from all collected research data"""
+        try:
+            swot_prompt = ChatPromptTemplate.from_template("""
+You are a business strategist. Based on the research data below, generate a SWOT analysis.
+
+COMPANY: {company_name}
+INDUSTRY: {industry}
+LOCATION: {location}
+
+SERVICES/PRODUCTS:
+{services}
+
+VALUE PROPOSITIONS:
+{value_props}
+
+COMPETITORS ({num_competitors} found):
+{competitors_summary}
+
+INDUSTRY TRENDS:
+{trends_summary}
+
+KEYWORDS CUSTOMERS SEARCH ({num_keywords} found):
+{keywords_summary}
+
+CONTACT/PRESENCE:
+{contact_summary}
+
+Generate a detailed SWOT analysis as valid JSON:
+{{
+    "strengths": ["strength 1", "strength 2", "strength 3", "strength 4"],
+    "weaknesses": ["weakness 1", "weakness 2", "weakness 3"],
+    "opportunities": ["opportunity 1", "opportunity 2", "opportunity 3"],
+    "threats": ["threat 1", "threat 2", "threat 3"],
+    "summary": "One paragraph executive summary of the business's competitive position"
+}}
+
+Base your analysis ONLY on the actual data provided above. Be specific — reference real competitors, real services, real gaps. Return ONLY valid JSON.
+""")
+            services_text = "\n".join([
+                f"- {sp.get('name', '')}: {sp.get('description', '')[:80]}"
+                for sp in structured_data.get("services_products", [])
+            ]) or "Not extracted"
+
+            vp_text = "\n".join([f"- {vp}" for vp in structured_data.get("value_propositions", [])]) or "Not extracted"
+
+            comp_text = "\n".join([
+                f"- {c.get('name', '')[:50]} ({c.get('source', '')})"
+                for c in competitors[:10]
+            ]) or "None found"
+
+            trends_text = "\n".join([
+                f"- {t.get('title', '')[:60]}"
+                for t in trends[:5]
+            ]) or "None found"
+
+            kw_text = ", ".join([kw.get("keyword", "") for kw in autocomplete_keywords[:15]]) or "None found"
+
+            contact_text = f"Emails: {all_contacts.get('emails', [])}, Phones: {all_contacts.get('phones', [])}, Social: {list(all_contacts.get('social_media', {}).keys())}"
+
+            from modules.openrouter.context import set_ai_context
+            chain = swot_prompt | agent.llm | StrOutputParser()
+            with set_ai_context(agent_name="market_research"):
+                result = await chain.ainvoke({
+                    "company_name": structured_data.get("company_name") or business_name or "Unknown",
+                    "industry": industry,
+                    "location": location,
+                    "services": services_text,
+                    "value_props": vp_text,
+                    "num_competitors": len(competitors),
+                    "competitors_summary": comp_text,
+                    "trends_summary": trends_text,
+                    "num_keywords": len(autocomplete_keywords),
+                    "keywords_summary": kw_text,
+                    "contact_summary": contact_text,
+                })
+
+            result = result.strip()
+            if result.startswith("```json"):
+                result = result[7:]
+            if result.startswith("```"):
+                result = result[3:]
+            if result.endswith("```"):
+                result = result[:-3]
+            return json.loads(result.strip())
+        except Exception as e:
+            logger.warning(f"[MarketResearchAgent] SWOT generation failed: {e}")
+            return {}
+
+    async def _generate_ad_copy():
+        """Generate ad copy suggestions using AdCopyAgent"""
+        try:
+            from .ad_copy_agent import generate_ad_copy_from_website
+            # Build research data in the format AdCopyAgent expects
+            research_for_ads = {
+                "research_summary": {
+                    "company_name": structured_data.get("company_name") or business_name or "Unknown",
+                    "tagline": structured_data.get("tagline", ""),
+                    "industry": industry,
+                    "geographic_coverage": location,
+                },
+                "extracted_data": {
+                    "services_products": structured_data.get("services_products", []),
+                    "value_propositions": structured_data.get("value_propositions", []),
+                    "target_audiences": structured_data.get("target_audiences", ["General Audience"]),
+                    "statistics": all_stats,
+                    "key_features": structured_data.get("key_features", []),
+                    "certifications_awards": structured_data.get("certifications_awards", []),
+                },
+                "market_data": {
+                    "competitors": [{"name": c.get("name", "")} for c in competitors[:5]],
+                    "keywords": {"all": [kw.get("keyword", "") for kw in autocomplete_keywords[:10]]},
+                }
+            }
+            return await generate_ad_copy_from_website(
+                research_data=research_for_ads,
+                platforms=["facebook", "instagram"],
+            )
+        except Exception as e:
+            logger.warning(f"[MarketResearchAgent] Ad copy generation failed: {e}")
+            return {}
+
+    async def _capture_screenshot():
+        """Capture homepage screenshot"""
+        try:
+            from modules.stores.scraping_service import capture_homepage_screenshot, PLAYWRIGHT_AVAILABLE as PW_AVAILABLE
+            if not PW_AVAILABLE:
+                # Try ScreenshotOne API fallback
+                from modules.stores.scraping_service import SCREENSHOTONE_ACCESS_KEY
+                if SCREENSHOTONE_ACCESS_KEY:
+                    screenshot_url = f"https://api.screenshotone.com/take?access_key={SCREENSHOTONE_ACCESS_KEY}&url={url}&viewport_width=1920&viewport_height=1080&format=png&block_ads=true"
+                    return {"success": True, "screenshot_url": screenshot_url, "source": "screenshotone"}
+                return {"success": False, "error": "No screenshot service available"}
+            result = await capture_homepage_screenshot(url, full_page=False)
+            return result
+        except Exception as e:
+            logger.warning(f"[MarketResearchAgent] Screenshot capture failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    # Run all 3 in parallel
+    swot_analysis, ad_copy_suggestions, screenshot_data = await asyncio.gather(
+        _generate_swot(),
+        _generate_ad_copy(),
+        _capture_screenshot(),
+    )
+
     return {
         "url": url,
         "research_summary": {
@@ -2509,5 +2660,12 @@ async def research_website_directly(
             "source": multi_page_data.get("source", "unknown") if multi_page_data else None,
             "success_count": multi_page_data.get("success_count", 0) if multi_page_data else 0,
             "total_content_length": len(multi_page_data.get("combined_content", "")) if multi_page_data else 0,
-        }
+        },
+        "swot_analysis": swot_analysis,
+        "ad_copy_suggestions": ad_copy_suggestions,
+        "screenshot": {
+            "success": screenshot_data.get("success", False),
+            "url": screenshot_data.get("screenshot_url") or screenshot_data.get("storage_url"),
+            "source": screenshot_data.get("source", "playwright" if screenshot_data.get("success") else None),
+        } if screenshot_data else {"success": False},
     }
