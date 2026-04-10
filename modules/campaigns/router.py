@@ -1,4 +1,5 @@
 # modules/campaigns/router.py
+import os
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -296,7 +297,27 @@ async def scrape_url_stream(
                 await asyncio.sleep(0.1)
 
             # Stream screenshot URL
+            # Priority: MinIO URL > ScreenshotOne direct URL > nothing
             screenshot_url = scraped_data.get("screenshot_url")
+            if not screenshot_url:
+                # Generate a direct ScreenshotOne URL as fallback (no download needed)
+                screenshotone_key = os.environ.get("SCREENSHOTONE_ACCESS_KEY")
+                if screenshotone_key:
+                    from urllib.parse import quote
+                    screenshot_url = (
+                        f"https://api.screenshotone.com/take?"
+                        f"access_key={screenshotone_key}"
+                        f"&url={quote(url, safe='')}"
+                        f"&viewport_width=1280"
+                        f"&viewport_height=800"
+                        f"&format=webp"
+                        f"&block_ads=true"
+                        f"&block_trackers=true"
+                        f"&delay=2"
+                        f"&timeout=20"
+                        f"&cache=true"
+                        f"&cache_ttl=86400"
+                    )
             if screenshot_url:
                 yield f"data: {json.dumps({'event': 'info_found', 'type': 'screenshot', 'label': 'Screenshot Captured', 'value': screenshot_url})}\n\n"
                 await asyncio.sleep(0.2)
