@@ -1504,6 +1504,107 @@ Return ONLY valid JSON:
 
 # ========== Convenience functions for direct use ==========
 
+async def _generate_smart_audiences(research_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Use AI to generate specific, targetable audience segments from research data.
+    Returns audiences with demographics, pain points, urgency levels, and best platforms.
+    """
+    summary = research_data.get('research_summary', {})
+    extracted = research_data.get('extracted_data', {})
+
+    services = extracted.get('services_products', [])
+    services_text = ", ".join([
+        s.get('name', '') if isinstance(s, dict) else str(s)
+        for s in services[:8]
+    ]) or "Not specified"
+
+    value_props = ", ".join(extracted.get('value_propositions', [])[:5]) or "Not specified"
+    raw_audiences = extracted.get('target_audiences', [])
+
+    prompt = ChatPromptTemplate.from_template("""
+You are a Facebook/Instagram ads strategist. Based on this business data, generate 4-5 specific, targetable audience segments for ad campaigns.
+
+COMPANY: {company_name}
+INDUSTRY: {industry}
+LOCATION: {location}
+SERVICES/PRODUCTS: {services}
+VALUE PROPOSITIONS: {value_props}
+WEBSITE-MENTIONED AUDIENCES: {raw_audiences}
+
+Generate 4-5 audience segments as valid JSON array. Each segment must be SPECIFIC enough to target on Facebook/Instagram ads. Do NOT just repeat what the website says — think about WHO actually needs these services and WHY.
+
+Rules:
+- Include a mix of B2B and B2C if applicable
+- Each audience must have a distinct pain point and urgency level
+- Demographics should be targetable (age range, job titles, interests)
+- Pain points must be specific to THIS business's services
+- Best platform should match where this audience spends time
+
+Return ONLY valid JSON array:
+[
+    {{
+        "name": "Specific audience name (e.g. 'Homeowners 25-45 in Harare' not 'Domestic clients')",
+        "type": "B2B or B2C",
+        "demographics": "Age, location, job titles or interests — targetable on Facebook",
+        "pain_point": "Their specific frustration that this business solves",
+        "urgency": "high/medium/low — how urgent is their need",
+        "best_platform": "facebook or instagram or linkedin",
+        "recommended_cta": "Most appropriate CTA for this audience"
+    }}
+]
+""")
+
+    try:
+        from modules.openrouter.context import set_ai_context
+        if OPENROUTER_AVAILABLE:
+            llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.7)
+        else:
+            llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.7)
+
+        chain = prompt | llm | StrOutputParser()
+        with set_ai_context(agent_name="audience_generator"):
+            response = await chain.ainvoke({
+                'company_name': summary.get('company_name', 'Company'),
+                'industry': summary.get('industry', 'Business'),
+                'location': summary.get('geographic_coverage', ''),
+                'services': services_text,
+                'value_props': value_props,
+                'raw_audiences': ", ".join(raw_audiences) if raw_audiences else "Not specified",
+            })
+
+        # Clean and parse
+        response = response.strip()
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.startswith("```"):
+            response = response[3:]
+        if response.endswith("```"):
+            response = response[:-3]
+
+        audiences = json.loads(response.strip())
+        if isinstance(audiences, list) and len(audiences) > 0:
+            logger.info(f"[AdCopyAgent] Generated {len(audiences)} smart audience segments")
+            return audiences
+
+    except Exception as e:
+        logger.warning(f"[AdCopyAgent] Smart audience generation failed: {e}")
+
+    # Fallback: use raw audiences from website
+    fallback = []
+    for aud in raw_audiences[:4]:
+        is_b2b = any(kw in aud.lower() for kw in ['corporate', 'business', 'company', 'professional', 'enterprise', 'b2b', 'client', 'commercial'])
+        fallback.append({
+            "name": aud,
+            "type": "B2B" if is_b2b else "B2C",
+            "demographics": "",
+            "pain_point": "",
+            "urgency": "medium",
+            "best_platform": "facebook",
+            "recommended_cta": "Get Quote" if is_b2b else "Learn More"
+        })
+    return fallback or [{"name": "General Audience", "type": "B2C", "demographics": "", "pain_point": "", "urgency": "medium", "best_platform": "facebook", "recommended_cta": "Learn More"}]
+
+
 async def generate_ad_copy_from_website(
     research_data: Dict[str, Any],
     platforms: List[str] = None,
@@ -1530,16 +1631,18 @@ async def generate_ad_copy_from_website(
     results = {
         'company_name': research_data.get('research_summary', {}).get('company_name', 'Company'),
         'industry': research_data.get('research_summary', {}).get('industry', 'Business'),
+        'audiences': [],
         'ad_copy_sets': []
     }
 
-    # Get target audiences
-    extracted = research_data.get('extracted_data', {})
-    target_audiences = extracted.get('target_audiences', ['General Audience'])
+    # Generate smart, targetable audience segments using AI
+    audiences = await _generate_smart_audiences(research_data)
+    results['audiences'] = audiences
 
-    for audience in target_audiences[:4]:
-        # Determine audience type
-        is_b2b = any(kw in audience.lower() for kw in ['corporate', 'business', 'company', 'professional', 'enterprise', 'b2b', 'client'])
+    for audience in audiences[:5]:
+        audience_name = audience.get('name', 'General Audience')
+        audience_type = audience.get('type', 'B2C')
+        is_b2b = audience_type == 'B2B'
 
         if is_b2b and not include_b2b:
             continue
@@ -1547,12 +1650,23 @@ async def generate_ad_copy_from_website(
             continue
 
         audience_data = {
-            'name': audience,
-            'type': 'B2B' if is_b2b else 'B2C',
-            'description': audience
+            'name': audience_name,
+            'type': audience_type,
+            'description': audience.get('demographics', audience_name),
+            'pain_point': audience.get('pain_point', ''),
+            'urgency': audience.get('urgency', 'medium'),
+            'recommended_cta': audience.get('recommended_cta', ''),
         }
 
-        for platform in platforms:
+        # Use the best platform for this audience, plus one more
+        best_platform = audience.get('best_platform', 'facebook')
+        audience_platforms = [best_platform]
+        for p in platforms:
+            if p not in audience_platforms:
+                audience_platforms.append(p)
+                break
+
+        for platform in audience_platforms:
             try:
                 if is_b2b:
                     ad_copy = await agent.generate_b2b_ad_copy(research_data, audience_data, platform)
@@ -1560,13 +1674,18 @@ async def generate_ad_copy_from_website(
                     ad_copy = await agent.generate_b2c_ad_copy(research_data, audience_data, platform)
 
                 results['ad_copy_sets'].append({
-                    'audience': audience,
-                    'audience_type': 'B2B' if is_b2b else 'B2C',
+                    'audience': audience_name,
+                    'audience_type': audience_type,
+                    'audience_details': {
+                        'demographics': audience.get('demographics', ''),
+                        'pain_point': audience.get('pain_point', ''),
+                        'urgency': audience.get('urgency', 'medium'),
+                    },
                     'platform': platform,
                     'ad_copy': ad_copy
                 })
             except Exception as e:
-                logger.error(f"[AdCopyAgent] Error generating copy for {audience}/{platform}: {e}")
+                logger.error(f"[AdCopyAgent] Error generating copy for {audience_name}/{platform}: {e}")
 
     return results
 
