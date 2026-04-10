@@ -228,6 +228,10 @@ async def scrape_url_stream(
     - progress: {stage, message, percentage}
     - scraped_data: {business_name, business_type, products, brand_color, etc.}
     - ad_set: {name, title, audience_tags, hashtags, headline, primary_text}
+    - competitor: {name, url, description, rating, reviews, source}
+    - keyword: {keyword, source}
+    - trend: {title, source, insight}
+    - market_research_summary: {competitors_found, keywords_found, trends_found}
     - complete: {campaign_id, status}
     - error: {message}
     """
@@ -373,8 +377,112 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps(ad_set_complete)}\n\n"
                 await asyncio.sleep(0.1)
 
-            # Stage 6: Save campaign
-            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 90})}\n\n"
+            # Stage 6: Market Research (competitors, keywords, trends) — runs in parallel
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Researching competitors & keywords...', 'percentage': 85})}\n\n"
+            await asyncio.sleep(0.1)
+
+            try:
+                from modules.agents.market_research_agent import MarketResearchAgent
+                from urllib.parse import urlparse
+
+                research_agent = MarketResearchAgent()
+                parsed_url = urlparse(url)
+                research_domain = parsed_url.netloc.replace("www.", "")
+
+                # Detect country from TLD
+                tld_country_map = {
+                    "zw": "ZW", "za": "ZA", "bw": "BW", "zm": "ZM",
+                    "mz": "MZ", "na": "NA", "ke": "KE", "ng": "NG",
+                    "gh": "GH", "tz": "TZ", "ug": "UG", "uk": "GB",
+                    "au": "AU", "ca": "CA", "de": "DE", "fr": "FR", "in": "IN"
+                }
+                country_name_map = {
+                    "ZW": "Zimbabwe", "ZA": "South Africa", "BW": "Botswana", "ZM": "Zambia",
+                    "MZ": "Mozambique", "NA": "Namibia", "KE": "Kenya", "NG": "Nigeria",
+                    "GH": "Ghana", "TZ": "Tanzania", "UG": "Uganda", "GB": "United Kingdom",
+                    "AU": "Australia", "CA": "Canada", "DE": "Germany", "FR": "France",
+                    "IN": "India", "US": "United States"
+                }
+                last_tld = research_domain.split(".")[-1].lower()
+                country_code = tld_country_map.get(last_tld, "US")
+                location = country_name_map.get(country_code, "")
+
+                # Use AI-extracted business info for research queries
+                business_type = ad_content.get("business_type", "")
+                business_name = ad_content.get("business_name", "")
+                products = ad_content.get("products_services", [])[:5]
+
+                # Run competitors, keywords, and trends in parallel
+                from datetime import datetime as dt
+                current_year = str(dt.now().year)
+
+                # Build keyword seeds from products/services
+                def _build_seeds(prods, loc_suffix):
+                    seeds = []
+                    seen = set()
+                    for name in prods[:6]:
+                        if not name:
+                            continue
+                        seed = f"{name}{loc_suffix}"
+                        if seed.lower() not in seen:
+                            seen.add(seed.lower())
+                            seeds.append(seed)
+                    return seeds
+
+                loc_suffix = f" {location}" if location else ""
+                keyword_seeds = _build_seeds(products, loc_suffix)
+                if business_name:
+                    keyword_seeds.append(f"{business_name}{loc_suffix}")
+                if not keyword_seeds:
+                    keyword_seeds = [f"{business_type}{loc_suffix}"]
+
+                competitors, keywords, trends = await asyncio.gather(
+                    asyncio.to_thread(
+                        research_agent._search_competitors_enhanced,
+                        business_type, location, products,
+                        research_domain, country_code, business_name
+                    ),
+                    asyncio.to_thread(
+                        research_agent._search_keywords_autocomplete,
+                        keyword_seeds[:8], country_code
+                    ),
+                    asyncio.to_thread(
+                        research_agent._search_industry_trends,
+                        business_type, current_year
+                    ),
+                )
+
+                # Stream competitors
+                clean_competitors = [
+                    c for c in competitors
+                    if not c.get("name", "").startswith("__") and c.get("name")
+                ]
+                for comp in clean_competitors[:12]:
+                    yield f"data: {json.dumps({'event': 'competitor', 'name': comp.get('name', ''), 'url': comp.get('url', ''), 'description': (comp.get('description', '') or '')[:200], 'rating': comp.get('rating'), 'reviews': comp.get('reviews'), 'source': comp.get('source', '')})}\n\n"
+                    await asyncio.sleep(0.05)
+
+                # Stream keywords
+                for kw in keywords[:20]:
+                    yield f"data: {json.dumps({'event': 'keyword', 'keyword': kw.get('keyword', ''), 'source': kw.get('source', 'google_autocomplete')})}\n\n"
+                    await asyncio.sleep(0.03)
+
+                # Stream trends
+                for trend in trends[:5]:
+                    yield f"data: {json.dumps({'event': 'trend', 'title': trend.get('title', ''), 'source': trend.get('source', ''), 'insight': (trend.get('insight', '') or '')[:200]})}\n\n"
+                    await asyncio.sleep(0.05)
+
+                # Send summary
+                yield f"data: {json.dumps({'event': 'market_research_summary', 'competitors_found': len(clean_competitors), 'keywords_found': len(keywords), 'trends_found': len(trends)})}\n\n"
+                await asyncio.sleep(0.1)
+
+                logger.info(f"Market research complete: {len(clean_competitors)} competitors, {len(keywords)} keywords, {len(trends)} trends")
+
+            except Exception as research_err:
+                logger.warning(f"Market research failed (non-fatal): {research_err}")
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Market research skipped', 'percentage': 88})}\n\n"
+
+            # Stage 7: Save campaign
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 92})}\n\n"
             await asyncio.sleep(0.1)
 
             campaign, error = service.scrape_url_for_campaign(
