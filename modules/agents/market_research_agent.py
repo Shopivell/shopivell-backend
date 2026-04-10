@@ -1927,15 +1927,31 @@ async def research_website_directly(
         # Extract services/headings from raw content
         import re
         headings = re.findall(r'#{1,3}\s+(.+)', raw_content)
-        # Filter out generic headings
+        # Clean headings: remove markdown links, keep text only
+        cleaned_headings = []
+        for h in headings:
+            # Extract text from markdown links: [Text](url) → Text
+            clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', h).strip()
+            # Remove leading/trailing special chars
+            clean = clean.strip('#] ')
+            if clean:
+                cleaned_headings.append(clean)
+
+        # Filter out generic/promotional headings
+        skip_patterns = [
+            'navigation', 'menu', 'footer', 'header', 'cookie', 'privacy',
+            'faq', 'frequently', 'contact', 'about us', 'about', 'why',
+            'ready to', 'see our', 'our expert', 'still have', 'our story',
+            'our mission', 'our vision', 'testimonial', 'working process',
+            'diagnosis', 'client approval', 'happy customer', 'trusted',
+            'services', 'company', 'legal', 'get in touch', 'get a free',
+        ]
         service_headings = [
-            h.strip() for h in headings
-            if len(h.strip()) > 3 and len(h.strip()) < 60
-            and not any(skip in h.lower() for skip in [
-                'navigation', 'menu', 'footer', 'header', 'cookie', 'privacy',
-                'faq', 'frequently', 'contact', 'about us', 'why', 'ready to',
-                'see our', 'our expert', 'still have'
-            ])
+            h for h in cleaned_headings
+            if len(h) > 3 and len(h) < 60
+            and not any(skip in h.lower() for skip in skip_patterns)
+            and not h.lower().startswith(('over ', 'our ', 'your ', 'the ', 'why ', 'how '))
+            and not h.isdigit()  # skip "01", "02" etc
         ]
         if service_headings:
             industry = ", ".join(service_headings[:3])
@@ -1958,15 +1974,32 @@ async def research_website_directly(
     if not products and raw_content:
         import re
         headings = re.findall(r'#{2,3}\s+(.+)', raw_content)
-        products = [
-            h.strip() for h in headings
-            if len(h.strip()) > 3 and len(h.strip()) < 50
-            and not any(skip in h.lower() for skip in [
-                'navigation', 'menu', 'footer', 'faq', 'frequently',
-                'contact', 'about', 'why', 'ready', 'see our', 'our expert',
-                'still have', 'services', 'company', 'legal'
-            ])
-        ][:5]
+        skip_patterns = [
+            'navigation', 'menu', 'footer', 'faq', 'frequently',
+            'contact', 'about', 'why', 'ready', 'see our', 'our expert',
+            'still have', 'services', 'company', 'legal', 'our story',
+            'our mission', 'our vision', 'testimonial', 'working process',
+            'diagnosis', 'client approval', 'happy customer', 'trusted',
+            'get in touch', 'get a free',
+        ]
+        products = []
+        seen = set()
+        for h in headings:
+            # Clean markdown links
+            clean = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', h).strip().strip('#] ')
+            if not clean or len(clean) < 4 or len(clean) > 50:
+                continue
+            if any(skip in clean.lower() for skip in skip_patterns):
+                continue
+            if clean.lower().startswith(('over ', 'our ', 'your ', 'the ', 'why ', 'how ')):
+                continue
+            if clean.isdigit():
+                continue
+            if clean.lower() not in seen:
+                seen.add(clean.lower())
+                products.append(clean)
+            if len(products) >= 6:
+                break
 
     company_name = structured_data.get("company_name") or business_name
 
