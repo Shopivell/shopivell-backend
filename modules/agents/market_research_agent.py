@@ -78,11 +78,16 @@ except ImportError:
     analyze_brand_from_screenshot_sync = None
     extract_store_info_from_website = None
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
-try:
-    from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
-except ImportError:
+# LLM Configuration: Use OpenAI directly, or OpenRouter if key is set
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+if OPENROUTER_API_KEY:
+    try:
+        from modules.openrouter.langchain_adapter import ChatOpenRouter
+        OPENROUTER_AVAILABLE = True
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
+        OPENROUTER_AVAILABLE = False
+else:
     from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
 

@@ -58,10 +58,15 @@ class LLMRuleProposalResponse(BaseModel):
     proposed_rules: List[LLMProposedRule]
 
 # Import OpenRouter adapter (with fallback to ChatOpenAI)
-try:
-    from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
-except ImportError:
+_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
+if _OPENROUTER_KEY:
+    try:
+        from modules.openrouter.langchain_adapter import ChatOpenRouter
+        OPENROUTER_AVAILABLE = True
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
+        OPENROUTER_AVAILABLE = False
+else:
     from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
 
