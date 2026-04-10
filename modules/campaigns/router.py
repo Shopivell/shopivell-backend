@@ -407,32 +407,86 @@ async def scrape_url_stream(
                 country_code = tld_country_map.get(last_tld, "US")
                 location = country_name_map.get(country_code, "")
 
-                # Use AI-extracted business info for research queries
-                business_type = ad_content.get("business_type", "")
-                business_name = ad_content.get("business_name", "")
-                products = ad_content.get("products_services", [])[:5]
+                # Extract structured data from scraped content using AI (much better than ad_content)
+                import re as _re
+                raw_content = scraped_data.get("content", "")
+
+                # First try AI extraction for business info
+                structured_data = {}
+                try:
+                    structured_data = await research_agent._extract_structured_website_data(
+                        raw_content[:8000], url
+                    )
+                except Exception as extract_err:
+                    logger.warning(f"Structured extraction failed: {extract_err}")
+
+                # Use structured data first, fall back to ad_content
+                business_type = (
+                    structured_data.get("industry")
+                    or ad_content.get("business_type", "")
+                )
+                business_name = (
+                    structured_data.get("company_name")
+                    or ad_content.get("business_name", "")
+                )
+
+                # Extract products from structured data or ad content
+                products = []
+                if structured_data.get("services_products"):
+                    products = [sp.get("name", "") for sp in structured_data["services_products"][:6]]
+                if not products:
+                    products = ad_content.get("products_services", [])[:5]
+
+                # Fallback: extract headings from raw content if still empty
+                if not products and raw_content:
+                    headings = _re.findall(r'#{2,3}\s+(.+)', raw_content)
+                    skip = ['navigation', 'menu', 'footer', 'faq', 'contact', 'about',
+                            'testimonial', 'working process', 'our story', 'our mission']
+                    for h in headings:
+                        clean = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', h).strip().strip('#] ')
+                        if clean and 3 < len(clean) < 50 and not any(s in clean.lower() for s in skip):
+                            products.append(clean)
+                        if len(products) >= 6:
+                            break
+
+                # Override location from structured data if available
+                if structured_data.get("geographic_coverage") and structured_data["geographic_coverage"] != "Global":
+                    location = structured_data["geographic_coverage"]
+
+                logger.info(f"[Research] business_type={business_type}, business_name={business_name}, products={products[:3]}, location={location}")
 
                 # Run competitors, keywords, and trends in parallel
                 from datetime import datetime as dt
                 current_year = str(dt.now().year)
 
                 # Build keyword seeds from products/services
-                def _build_seeds(prods, loc_suffix):
-                    seeds = []
-                    seen = set()
-                    for name in prods[:6]:
-                        if not name:
-                            continue
-                        seed = f"{name}{loc_suffix}"
-                        if seed.lower() not in seen:
-                            seen.add(seed.lower())
-                            seeds.append(seed)
-                    return seeds
+                loc_suffix = f" {location.split(',')[0].strip()}" if location else ""
 
-                loc_suffix = f" {location}" if location else ""
-                keyword_seeds = _build_seeds(products, loc_suffix)
+                keyword_seeds = []
+                seen_seeds = set()
+                for name in products[:6]:
+                    if not name:
+                        continue
+                    # Add full name with location
+                    seed = f"{name}{loc_suffix}"
+                    if seed.lower() not in seen_seeds:
+                        seen_seeds.add(seed.lower())
+                        keyword_seeds.append(seed)
+                    # Split on & and add parts
+                    if "&" in name or " and " in name.lower():
+                        parts = _re.split(r'\s*[&]\s*|\s+and\s+', name, flags=_re.IGNORECASE)
+                        for part in parts:
+                            part = part.strip()
+                            if len(part) > 3:
+                                seed = f"{part}{loc_suffix}"
+                                if seed.lower() not in seen_seeds:
+                                    seen_seeds.add(seed.lower())
+                                    keyword_seeds.append(seed)
+
                 if business_name:
-                    keyword_seeds.append(f"{business_name}{loc_suffix}")
+                    seed = f"{business_name}{loc_suffix}"
+                    if seed.lower() not in seen_seeds:
+                        keyword_seeds.append(seed)
                 if not keyword_seeds:
                     keyword_seeds = [f"{business_type}{loc_suffix}"]
 
