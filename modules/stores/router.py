@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from database import get_db
-from utils.cache import cache, CacheConfig, generate_cache_key, invalidator
+from utils.cache import cache, CacheConfig, generate_cache_key, cache_invalidator as invalidator
 from modules.users.models import User
 from modules.stores.models import Store, StoreSetupStep, StoreSetupSession
 from modules.stores.schemas import (

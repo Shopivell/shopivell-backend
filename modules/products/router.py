@@ -15,7 +15,7 @@ from modules.products.schemas import (
     CollectionCreate, CollectionResponse, CollectionUpdate, CollectionListResponse,
     InventoryListResponse, InventoryItemResponse, InventoryUpdate
 )
-from utils.cache import cache, CacheConfig, generate_cache_key, invalidator
+from utils.cache import cache, CacheConfig, generate_cache_key, cache_invalidator as invalidator
 
 products_router = APIRouter(prefix="/api/products", tags=["products"])
 
