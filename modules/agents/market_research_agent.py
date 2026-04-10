@@ -55,6 +55,10 @@ except ImportError:
     TAVILY_AVAILABLE = False
     tavily_api_key = None
 
+# Serper.dev API for Google SERP results (competitors, local businesses, related searches)
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+SERPER_AVAILABLE = bool(SERPER_API_KEY)
+
 # Import screenshot and scraping functions from stores module (optional enhancement)
 try:
     from modules.stores.scraping_service import (
@@ -119,7 +123,209 @@ class MarketResearchAgent:
         self.embeddings = OpenAIEmbeddings()
         self.tavily = TavilyClient(api_key=tavily_api_key) if TAVILY_AVAILABLE else None
         self.cache = RedisCache()
-        logger.info(f"[MarketResearchAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}, Tavily: {TAVILY_AVAILABLE}, Cache: {self.cache.is_connected}")
+        self.serper_available = SERPER_AVAILABLE
+        logger.info(
+            f"[MarketResearchAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}, "
+            f"Tavily: {TAVILY_AVAILABLE}, Serper: {SERPER_AVAILABLE}, Cache: {self.cache.is_connected}"
+        )
+
+    def _serper_search(self, query: str, country: str = "zw", num: int = 10, search_type: str = "search") -> Dict[str, Any]:
+        """
+        Search Google via Serper.dev API.
+
+        Args:
+            query: Search query
+            country: Country code for localized results (e.g., "zw", "za", "us")
+            num: Number of results
+            search_type: "search" for organic, "places" for Google Maps
+
+        Returns:
+            Dict with organic results, related searches, people also ask, etc.
+        """
+        if not self.serper_available:
+            return {"organic": [], "error": "Serper API not configured"}
+
+        try:
+            endpoint = f"https://google.serper.dev/{search_type}"
+            payload = {"q": query, "gl": country.lower(), "hl": "en", "num": num}
+
+            response = requests.post(
+                endpoint,
+                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                json=payload,
+                timeout=15
+            )
+            response.raise_for_status()
+            return response.json()
+
+        except Exception as e:
+            logger.error(f"[MarketResearchAgent] Serper search error: {e}")
+            return {"organic": [], "error": str(e)}
+
+    def _search_competitors_serper(
+        self,
+        business_type: str,
+        location: str,
+        products: List[str],
+        company_name: str = None,
+        domain: str = None,
+        country_code: str = "zw"
+    ) -> List[Dict[str, Any]]:
+        """
+        Find competitors using Serper.dev Google SERP + Maps results.
+        Returns actual businesses that rank for the same search terms.
+        """
+        cache_key = generate_cache_key(f"serper:{business_type}:{location}:{domain}", prefix="mra:competitors:")
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        skip_domains = {
+            "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
+            "youtube.com", "reddit.com", "wikipedia.org", "tiktok.com", "pinterest.com",
+            "lusha.com", "zoominfo.com", "crunchbase.com", "glassdoor.com",
+            "ensun.io", "techbehemoths.com", "goodfirms.co", "clutch.co",
+            "refrens.com", "arounddeal.com", "trustpilot.com", "yelp.com",
+            "amazon.com", "ebay.com", "alibaba.com", "classifieds.co.zw",
+        }
+
+        own_domain = (domain or "").replace("www.", "").lower()
+        seen_domains = set()
+        competitors = []
+
+        # Build search queries
+        queries = [f"top {business_type} companies in {location}"]
+        if products:
+            queries.append(f"{', '.join(products[:3])} {location}")
+        if company_name:
+            queries.append(f"{company_name} competitors alternatives {location}")
+
+        # Run organic searches
+        for query in queries[:3]:
+            logger.info(f"[MarketResearchAgent] Serper search: {query}")
+            result = self._serper_search(query, country=country_code)
+
+            for item in result.get("organic", []):
+                url = item.get("link", "")
+                item_domain = urlparse(url).netloc.lower().replace("www.", "")
+
+                if any(skip in item_domain for skip in skip_domains):
+                    continue
+                if own_domain and own_domain in item_domain:
+                    continue
+                if item_domain in seen_domains:
+                    continue
+
+                seen_domains.add(item_domain)
+                competitors.append({
+                    "name": item.get("title", ""),
+                    "url": url,
+                    "description": item.get("snippet", "")[:500],
+                    "position": item.get("position"),
+                    "source": "serper"
+                })
+
+            # Collect related searches as keyword ideas
+            for related in result.get("relatedSearches", []):
+                q = related.get("query", "")
+                if q:
+                    competitors.append({
+                        "name": f"__related_search__",
+                        "url": "",
+                        "description": q,
+                        "source": "serper_related"
+                    })
+
+        # Run Google Maps search for local businesses
+        maps_query = f"{business_type} {location}"
+        logger.info(f"[MarketResearchAgent] Serper Maps: {maps_query}")
+        maps_result = self._serper_search(maps_query, country=country_code, search_type="places")
+
+        for place in maps_result.get("places", []):
+            title = place.get("title", "")
+            place_domain = ""
+            # Skip own business
+            if company_name and company_name.lower() in title.lower():
+                continue
+
+            competitors.append({
+                "name": title,
+                "url": place.get("website", ""),
+                "description": place.get("address", ""),
+                "rating": place.get("rating"),
+                "reviews": place.get("reviews", 0),
+                "source": "serper_maps"
+            })
+
+        logger.info(f"[MarketResearchAgent] Serper found {len(competitors)} results (organic + maps)")
+        self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
+        return competitors
+
+    def _search_keywords_autocomplete(
+        self,
+        seed_keywords: List[str],
+        country_code: str = "zw",
+        expand_alphabet: bool = True
+    ) -> List[Dict[str, str]]:
+        """
+        Get keyword suggestions using Google Autocomplete API (free, no key needed).
+        Includes alphabet expansion for comprehensive keyword discovery.
+
+        Args:
+            seed_keywords: Seed keywords to expand
+            country_code: Country code for localized suggestions
+            expand_alphabet: Whether to do a-z expansion on top seeds
+
+        Returns:
+            List of keyword suggestion dicts
+        """
+        cache_key = generate_cache_key(f"autocomplete:{':'.join(seed_keywords[:5])}:{country_code}", prefix="mra:kw:")
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        all_keywords = set()
+
+        # Step 1: Direct autocomplete for each seed
+        for seed in seed_keywords[:10]:
+            try:
+                response = requests.get(
+                    "https://suggestqueries.google.com/complete/search",
+                    params={"client": "firefox", "q": seed, "gl": country_code.lower()},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    suggestions = data[1] if len(data) > 1 else []
+                    for s in suggestions:
+                        all_keywords.add(s)
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Autocomplete failed for '{seed}': {e}")
+
+        # Step 2: Alphabet expansion on top 3 seeds
+        if expand_alphabet:
+            for seed in seed_keywords[:3]:
+                for letter in "abcdefghijklmnopqrstuvwxyz":
+                    try:
+                        response = requests.get(
+                            "https://suggestqueries.google.com/complete/search",
+                            params={"client": "firefox", "q": f"{seed} {letter}", "gl": country_code.lower()},
+                            headers={"User-Agent": "Mozilla/5.0"},
+                            timeout=5
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            suggestions = data[1] if len(data) > 1 else []
+                            for s in suggestions:
+                                all_keywords.add(s)
+                    except Exception:
+                        continue
+
+        result = [{"keyword": kw, "source": "google_autocomplete"} for kw in sorted(all_keywords)]
+        logger.info(f"[MarketResearchAgent] Autocomplete found {len(result)} keywords from {len(seed_keywords)} seeds")
+        self.cache.set(cache_key, result, ttl=CacheConfig.TTL_LONG)
+        return result
 
     def _validate_url(self, url: str) -> Tuple[bool, str]:
         """
@@ -871,28 +1077,75 @@ Return ONLY valid JSON, no other text.
         company_name: str = None
     ) -> List[Dict[str, Any]]:
         """
-        Enhanced competitor search: tries DataForSEO (deep, data-backed) first,
-        falls back to Tavily multi-query search if DataForSEO has no useful data.
-
-        DataForSEO provides: actual keyword overlap, traffic estimates, competitor domains
-        ranked by intersection score — far richer than a Google search.
+        Enhanced competitor search pipeline:
+        1. Serper.dev (Google SERP + Maps) — best for local markets, real rankings
+        2. DataForSEO — enriches with keyword overlap data for domains with SEO presence
+        3. Tavily multi-query — fallback if neither Serper nor DataForSEO are available
         """
-        # Try DataForSEO-backed competitive intelligence first
+        # Map country code for Serper (uses lowercase 2-letter)
+        serper_country = country_code.lower() if country_code else "zw"
+
+        # Step 1: Try Serper (best for local competitor discovery)
+        if self.serper_available:
+            serper_results = self._search_competitors_serper(
+                business_type, location, products,
+                company_name=company_name, domain=domain,
+                country_code=serper_country
+            )
+            # Filter out metadata entries for counting real competitors
+            real_competitors = [c for c in serper_results if not c.get("name", "").startswith("__")]
+            if real_competitors:
+                logger.info(f"[MarketResearchAgent] Serper found {len(real_competitors)} competitors for {domain or business_type}")
+
+                # Step 2: Try to enrich with DataForSEO keyword data (optional)
+                if domain:
+                    try:
+                        from .competitive_intelligence_agent import CompetitiveIntelligenceAgent, DATAFORSEO_AVAILABLE
+                        if DATAFORSEO_AVAILABLE:
+                            agent = CompetitiveIntelligenceAgent()
+                            ci_competitors = agent.discover_competitors(domain, country_code, limit=10)
+
+                            # Filter generic domains
+                            generic_domains = {
+                                "youtube.com", "reddit.com", "facebook.com", "instagram.com",
+                                "linkedin.com", "twitter.com", "wikipedia.org", "amazon.com",
+                                "ebay.com", "walmart.com", "bestbuy.com", "staples.com",
+                                "officedepot.com", "reviews.io", "trustpilot.com", "yelp.com",
+                                "pinterest.com", "tiktok.com", "quora.com"
+                            }
+                            ci_competitors = [
+                                c for c in ci_competitors
+                                if c.get("domain", "").lower() not in generic_domains
+                                and c.get("domain", "") != domain
+                            ]
+
+                            if ci_competitors:
+                                # Add DataForSEO data as enrichment
+                                for comp in ci_competitors[:5]:
+                                    serper_results.append({
+                                        "name": comp.get("domain", ""),
+                                        "url": f"https://{comp.get('domain', '')}",
+                                        "description": "",
+                                        "source": "dataforseo",
+                                        "organic_keywords": comp.get("organic_keywords"),
+                                        "organic_traffic": comp.get("organic_traffic"),
+                                        "intersections": comp.get("intersections"),
+                                    })
+                                logger.info(f"[MarketResearchAgent] DataForSEO enriched with {len(ci_competitors)} additional competitors")
+                    except Exception as e:
+                        logger.debug(f"[MarketResearchAgent] DataForSEO enrichment skipped: {e}")
+
+                return serper_results
+
+        # Step 3: DataForSEO-only path (when Serper is not available)
         if domain:
             try:
                 from .competitive_intelligence_agent import CompetitiveIntelligenceAgent, DATAFORSEO_AVAILABLE
                 if DATAFORSEO_AVAILABLE:
                     logger.info(f"[MarketResearchAgent] Using DataForSEO for competitor analysis: {domain}")
-
                     agent = CompetitiveIntelligenceAgent()
-
-                    # Step 1: Get domain categories
-                    categories = agent.get_domain_categories(domain, country_code)
-
-                    # Step 2: Discover competitors via keyword overlap
                     ci_competitors = agent.discover_competitors(domain, country_code, limit=10)
 
-                    # Filter out generic mega-domains that aren't real competitors
                     generic_domains = {
                         "youtube.com", "reddit.com", "facebook.com", "instagram.com",
                         "linkedin.com", "twitter.com", "wikipedia.org", "amazon.com",
@@ -903,77 +1156,27 @@ Return ONLY valid JSON, no other text.
                     ci_competitors = [
                         c for c in ci_competitors
                         if c.get("domain", "").lower() not in generic_domains
-                        and c.get("domain", "") != domain  # exclude self
+                        and c.get("domain", "") != domain
                     ]
 
                     if ci_competitors:
-                        # Step 3: Get top competitor keywords
-                        top_domains = [c["domain"] for c in ci_competitors[:5]]
-                        all_keywords, top_keywords = agent.analyze_competitor_keywords(
-                            top_domains, country_code
-                        )
-
-                        # Enrich with Tavily summaries
-                        if self.tavily:
-                            ci_competitors = agent._enrich_single_competitor(ci_competitors[0])
-                            # Just enrich the top one for efficiency
-
-                        # Format into standard competitor list
                         competitors = []
                         for comp in ci_competitors:
                             competitors.append({
                                 "name": comp.get("domain", ""),
                                 "url": f"https://{comp.get('domain', '')}",
-                                "description": comp.get("tavily_summary", "")[:500] if comp.get("tavily_summary") else "",
+                                "description": "",
                                 "source": "dataforseo",
                                 "organic_keywords": comp.get("organic_keywords"),
                                 "organic_traffic": comp.get("organic_traffic"),
                                 "intersections": comp.get("intersections"),
-                                "competition_score": comp.get("competition_score")
                             })
-
-                        # Add keyword intelligence as extra data
-                        if top_keywords:
-                            competitors.append({
-                                "name": "__keyword_opportunities__",
-                                "source": "dataforseo_keywords",
-                                "keywords": [
-                                    {
-                                        "keyword": kw.get("keyword"),
-                                        "search_volume": kw.get("search_volume"),
-                                        "cpc": kw.get("cpc"),
-                                        "source_domain": kw.get("source_domain")
-                                    }
-                                    for kw in top_keywords[:10]
-                                ]
-                            })
-
-                        # Add category data
-                        if categories:
-                            competitors.append({
-                                "name": "__business_categories__",
-                                "source": "dataforseo_categories",
-                                "categories": [
-                                    {"category": c.get("category"), "traffic": c.get("organic_traffic")}
-                                    for c in categories[:5]
-                                ]
-                            })
-
-                        logger.info(
-                            f"[MarketResearchAgent] DataForSEO found {len(ci_competitors)} competitors "
-                            f"+ {len(top_keywords)} keyword opportunities for {domain}"
-                        )
-
-                        # Cache the result
-                        cache_key = generate_cache_key(f"ci:{domain}:{country_code}", prefix="mra:competitors:")
-                        self.cache.set(cache_key, competitors, ttl=CacheConfig.TTL_LONG)
-
                         return competitors
 
             except Exception as e:
-                logger.warning(f"[MarketResearchAgent] DataForSEO competitor analysis failed, falling back to Tavily: {e}")
+                logger.warning(f"[MarketResearchAgent] DataForSEO failed: {e}")
 
-        # Fallback to Tavily multi-query search
+        # Step 4: Tavily fallback
         return self._search_competitors(business_type, location, products, company_name=company_name, domain=domain)
 
     def _search_industry_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
