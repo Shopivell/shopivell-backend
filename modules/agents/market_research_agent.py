@@ -1396,14 +1396,76 @@ Return ONLY valid JSON, no other text.
                 country_code = code
                 break
 
-        competitors, trends, audience_data = await asyncio.gather(
+        # Auto-detect country from domain TLD (e.g., .co.zw → ZW)
+        if domain and country_code == "US":
+            tld_parts = domain.split(".")
+            tld_country_map = {
+                "zw": "ZW", "za": "ZA", "bw": "BW", "zm": "ZM",
+                "mz": "MZ", "na": "NA", "ke": "KE", "ng": "NG",
+                "gh": "GH", "tz": "TZ", "ug": "UG", "uk": "GB",
+                "au": "AU", "ca": "CA", "de": "DE", "fr": "FR", "in": "IN"
+            }
+            last_tld = tld_parts[-1].lower()
+            if last_tld in tld_country_map:
+                country_code = tld_country_map[last_tld]
+
+        # Build keyword seeds from extracted website data
+        keyword_seeds = []
+        company_name = structured_data.get("company_name")
+        if structured_data.get("services_products"):
+            for sp in structured_data["services_products"][:5]:
+                name = sp.get("name", "")
+                if name and location:
+                    keyword_seeds.append(f"{name} {location}")
+        if business_type and location:
+            keyword_seeds.append(f"{business_type} {location}")
+        if products:
+            for p in products[:3]:
+                if location:
+                    keyword_seeds.append(f"{p} {location}")
+
+        competitors, trends, audience_data, autocomplete_keywords = await asyncio.gather(
             asyncio.to_thread(
                 self._search_competitors_enhanced,
-                business_type, location, products, domain, country_code
+                business_type, location, products, domain, country_code, company_name
             ),
             asyncio.to_thread(self._search_industry_trends, business_type, current_year),
             asyncio.to_thread(self._search_audience_insights, target_audience_str, business_type),
+            asyncio.to_thread(
+                self._search_keywords_autocomplete,
+                keyword_seeds[:8] if keyword_seeds else [f"{business_type} {location}"],
+                country_code
+            ),
         )
+
+        # Merge keyword_data with autocomplete results
+        if not keyword_data:
+            keyword_data = {
+                "success": True,
+                "source": "google_autocomplete",
+                "total_found": len(autocomplete_keywords),
+                "keywords": [
+                    {"keyword": kw.get("keyword", ""), "search_volume": None, "cpc": None}
+                    for kw in autocomplete_keywords
+                ]
+            }
+        elif autocomplete_keywords:
+            # Enrich existing keyword_data with autocomplete suggestions
+            existing_kws = {kw.get("keyword", "").lower() for kw in keyword_data.get("keywords", [])}
+            for kw in autocomplete_keywords:
+                if kw.get("keyword", "").lower() not in existing_kws:
+                    keyword_data["keywords"].append({"keyword": kw["keyword"], "search_volume": None, "cpc": None, "source": "google_autocomplete"})
+            keyword_data["total_found"] = len(keyword_data["keywords"])
+
+        # Extract related searches from Serper competitor results as additional keywords
+        for comp in competitors:
+            if comp.get("source") == "serper_related" and comp.get("description"):
+                existing_kws = {kw.get("keyword", "").lower() for kw in keyword_data.get("keywords", [])}
+                if comp["description"].lower() not in existing_kws:
+                    keyword_data["keywords"].append({"keyword": comp["description"], "search_volume": None, "cpc": None, "source": "serper_related"})
+
+        # Remove related search entries from competitors list (they're metadata, not competitors)
+        competitors = [c for c in competitors if c.get("source") != "serper_related"]
 
         # Step 5.5: Fetch competitor ads from Meta Ad Library (if access token available)
         ad_library_data = []
@@ -1836,20 +1898,61 @@ async def research_website_directly(
     if structured_data.get("services_products"):
         products = [sp.get("name", "") for sp in structured_data["services_products"][:5]]
 
-    # Step 5-7: Search for competitors, trends, and audience insights in parallel
+    # Step 5-7: Search for competitors, trends, audience insights, and keywords in parallel
     from datetime import datetime
     current_year = str(datetime.now().year)
     target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
 
-    # Extract domain for DataForSEO-backed competitor analysis
+    # Extract domain and detect country from TLD
     parsed_url = urlparse(url)
     domain = parsed_url.netloc.replace("www.", "")
+    country_code = "US"
+    tld_country_map = {
+        "zw": "ZW", "za": "ZA", "bw": "BW", "zm": "ZM",
+        "mz": "MZ", "na": "NA", "ke": "KE", "ng": "NG",
+        "gh": "GH", "tz": "TZ", "ug": "UG", "uk": "GB",
+        "au": "AU", "ca": "CA", "de": "DE", "fr": "FR", "in": "IN"
+    }
+    last_tld = domain.split(".")[-1].lower()
+    if last_tld in tld_country_map:
+        country_code = tld_country_map[last_tld]
 
-    competitors, trends, audience_insights = await asyncio.gather(
-        asyncio.to_thread(agent._search_competitors_enhanced, industry, location, products, domain),
+    company_name = structured_data.get("company_name") or business_name
+
+    # Build keyword seeds from extracted data
+    keyword_seeds = []
+    if structured_data.get("services_products"):
+        for sp in structured_data["services_products"][:5]:
+            name = sp.get("name", "")
+            if name and location:
+                keyword_seeds.append(f"{name} {location}")
+    if industry and location:
+        keyword_seeds.append(f"{industry} {location}")
+    if products:
+        for p in products[:3]:
+            if location:
+                keyword_seeds.append(f"{p} {location}")
+
+    competitors, trends, audience_insights, autocomplete_keywords = await asyncio.gather(
+        asyncio.to_thread(agent._search_competitors_enhanced, industry, location, products, domain, country_code, company_name),
         asyncio.to_thread(agent._search_industry_trends, industry, current_year),
         asyncio.to_thread(agent._search_audience_insights, target_audience_str, industry),
+        asyncio.to_thread(
+            agent._search_keywords_autocomplete,
+            keyword_seeds[:8] if keyword_seeds else [f"{industry} {location}"],
+            country_code
+        ),
     )
+
+    # Extract related searches from Serper results as keyword ideas
+    related_keywords = []
+    clean_competitors = []
+    for comp in competitors:
+        if comp.get("source") == "serper_related" and comp.get("description"):
+            related_keywords.append(comp["description"])
+        else:
+            clean_competitors.append(comp)
+    competitors = clean_competitors
 
     # Compile results
     all_contacts = multi_page_data.get("all_contacts") or website_data.get("contact_info", {})
@@ -1865,7 +1968,9 @@ async def research_website_directly(
             "pages_scraped": multi_page_data.get("success_count", 1) if multi_page_data else 1,
             "competitors_found": len(competitors),
             "trends_found": len(trends),
-            "audience_insights_found": len(audience_insights)
+            "audience_insights_found": len(audience_insights),
+            "keywords_found": len(autocomplete_keywords) + len(related_keywords),
+            "country_code": country_code
         },
         "extracted_data": {
             "company_info": {
@@ -1892,9 +1997,14 @@ async def research_website_directly(
                 {
                     "name": c.get("name", ""),
                     "url": c.get("url", ""),
-                    "description": c.get("description", "")[:300]
+                    "description": c.get("description", "")[:300],
+                    "rating": c.get("rating"),
+                    "reviews": c.get("reviews"),
+                    "source": c.get("source", ""),
+                    "position": c.get("position"),
                 }
-                for c in competitors[:10]
+                for c in competitors[:15]
+                if not c.get("name", "").startswith("__")
             ],
             "industry_trends": [
                 {
@@ -1911,7 +2021,13 @@ async def research_website_directly(
                     "insight": a.get("insight", "")[:300]
                 }
                 for a in audience_insights[:6]
-            ]
+            ],
+            "keywords": {
+                "autocomplete": [kw.get("keyword", "") for kw in autocomplete_keywords],
+                "related_searches": related_keywords,
+                "total": len(autocomplete_keywords) + len(related_keywords),
+                "seed_keywords_used": keyword_seeds[:8]
+            }
         },
         "raw_content": {
             "main_page": website_data.get("content", "")[:5000],
