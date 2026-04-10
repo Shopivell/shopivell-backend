@@ -2539,6 +2539,49 @@ Base your analysis ONLY on the actual data provided above. Be specific — refer
             logger.warning(f"[MarketResearchAgent] Ad copy generation failed: {e}")
             return {}
 
+    async def _generate_ad_creatives():
+        """Generate image prompts using Ad Creative Agent for the top angles"""
+        try:
+            from .ad_creative_agent import AdCreativeAgent
+            creative_agent = AdCreativeAgent()
+            if not creative_agent.client:
+                return []
+
+            company_name = structured_data.get("company_name") or business_name or "Unknown"
+            services = structured_data.get("services_products", [])
+            value_props = structured_data.get("value_propositions", [])
+            key_benefits = [vp[:50] for vp in value_props[:3]] if value_props else ["Quality", "Value", "Trust"]
+
+            product_desc = f"{company_name} provides {', '.join([s.get('name', '') for s in services[:3]])}" if services else f"{company_name} - {industry}"
+
+            # Generate 2 creatives with different angles
+            angles = [
+                {"name": "Trust & Social Proof", "value_prop": value_props[0] if value_props else f"Trusted {industry} provider", "emotion": "Trust", "visual": "Professional, warm, approachable"},
+                {"name": "Problem/Solution", "value_prop": f"Solving {industry} challenges" , "emotion": "Relief", "visual": "Before/after transformation, modern"},
+            ]
+
+            creatives = []
+            for angle in angles:
+                creative = await creative_agent.generate_ad_creative(
+                    product_name=company_name,
+                    product_description=product_desc,
+                    target_audience=", ".join(structured_data.get("target_audiences", ["General audience"])),
+                    key_benefits=key_benefits,
+                    call_to_action="Get Quote" if any(kw in industry.lower() for kw in ["service", "repair", "security", "consult"]) else "Shop Now",
+                    angle_name=angle["name"],
+                    angle_value_proposition=angle["value_prop"],
+                    angle_emotion=angle["emotion"],
+                    visual_direction=angle["visual"],
+                )
+                creatives.append(creative)
+
+            logger.info(f"[MarketResearchAgent] Generated {len(creatives)} ad creatives")
+            return creatives
+
+        except Exception as e:
+            logger.warning(f"[MarketResearchAgent] Ad creative generation failed: {e}")
+            return []
+
     async def _capture_screenshot():
         """Capture homepage screenshot"""
         try:
@@ -2556,10 +2599,11 @@ Base your analysis ONLY on the actual data provided above. Be specific — refer
             logger.warning(f"[MarketResearchAgent] Screenshot capture failed: {e}")
             return {"success": False, "error": str(e)}
 
-    # Run all 3 in parallel
-    swot_analysis, ad_copy_suggestions, screenshot_data = await asyncio.gather(
+    # Run all 4 in parallel
+    swot_analysis, ad_copy_suggestions, ad_creatives, screenshot_data = await asyncio.gather(
         _generate_swot(),
         _generate_ad_copy(),
+        _generate_ad_creatives(),
         _capture_screenshot(),
     )
 
@@ -2663,6 +2707,7 @@ Base your analysis ONLY on the actual data provided above. Be specific — refer
         },
         "swot_analysis": swot_analysis,
         "ad_copy_suggestions": ad_copy_suggestions,
+        "ad_creatives": ad_creatives,
         "screenshot": {
             "success": screenshot_data.get("success", False),
             "url": screenshot_data.get("screenshot_url") or screenshot_data.get("storage_url"),

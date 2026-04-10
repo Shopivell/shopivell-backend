@@ -1506,90 +1506,21 @@ Return ONLY valid JSON:
 
 async def _generate_smart_audiences(research_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Use AI to generate specific, targetable audience segments from research data.
-    Returns audiences with demographics, pain points, urgency levels, and best platforms.
+    Generate specific, targetable audience segments using the Creative Strategist Agent.
+    The Creative Strategist is the single source of truth for audience generation.
     """
-    summary = research_data.get('research_summary', {})
-    extracted = research_data.get('extracted_data', {})
-
-    services = extracted.get('services_products', [])
-    services_text = ", ".join([
-        s.get('name', '') if isinstance(s, dict) else str(s)
-        for s in services[:8]
-    ]) or "Not specified"
-
-    value_props = ", ".join(extracted.get('value_propositions', [])[:5]) or "Not specified"
-    raw_audiences = extracted.get('target_audiences', [])
-
-    prompt = ChatPromptTemplate.from_template("""
-You are a Facebook/Instagram ads strategist. Based on this business data, generate 4-5 specific, targetable audience segments for ad campaigns.
-
-COMPANY: {company_name}
-INDUSTRY: {industry}
-LOCATION: {location}
-SERVICES/PRODUCTS: {services}
-VALUE PROPOSITIONS: {value_props}
-WEBSITE-MENTIONED AUDIENCES: {raw_audiences}
-
-Generate 4-5 audience segments as valid JSON array. Each segment must be SPECIFIC enough to target on Facebook/Instagram ads. Do NOT just repeat what the website says — think about WHO actually needs these services and WHY.
-
-Rules:
-- Include a mix of B2B and B2C if applicable
-- Each audience must have a distinct pain point and urgency level
-- Demographics should be targetable (age range, job titles, interests)
-- Pain points must be specific to THIS business's services
-- Best platform should match where this audience spends time
-
-Return ONLY valid JSON array:
-[
-    {{
-        "name": "Specific audience name (e.g. 'Homeowners 25-45 in Harare' not 'Domestic clients')",
-        "type": "B2B or B2C",
-        "demographics": "Age, location, job titles or interests — targetable on Facebook",
-        "pain_point": "Their specific frustration that this business solves",
-        "urgency": "high/medium/low — how urgent is their need",
-        "best_platform": "facebook or instagram or linkedin",
-        "recommended_cta": "Most appropriate CTA for this audience"
-    }}
-]
-""")
-
     try:
-        from modules.openrouter.context import set_ai_context
-        if OPENROUTER_AVAILABLE:
-            llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.7)
-        else:
-            llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.7)
-
-        chain = prompt | llm | StrOutputParser()
-        with set_ai_context(agent_name="audience_generator"):
-            response = await chain.ainvoke({
-                'company_name': summary.get('company_name', 'Company'),
-                'industry': summary.get('industry', 'Business'),
-                'location': summary.get('geographic_coverage', ''),
-                'services': services_text,
-                'value_props': value_props,
-                'raw_audiences': ", ".join(raw_audiences) if raw_audiences else "Not specified",
-            })
-
-        # Clean and parse
-        response = response.strip()
-        if response.startswith("```json"):
-            response = response[7:]
-        if response.startswith("```"):
-            response = response[3:]
-        if response.endswith("```"):
-            response = response[:-3]
-
-        audiences = json.loads(response.strip())
-        if isinstance(audiences, list) and len(audiences) > 0:
-            logger.info(f"[AdCopyAgent] Generated {len(audiences)} smart audience segments")
+        from .creative_strategist_agent import CreativeStrategistAgent
+        strategist = CreativeStrategistAgent()
+        audiences = await strategist.generate_ad_audiences(research_data)
+        if audiences:
             return audiences
-
     except Exception as e:
-        logger.warning(f"[AdCopyAgent] Smart audience generation failed: {e}")
+        logger.warning(f"[AdCopyAgent] Creative Strategist audience generation failed: {e}")
 
     # Fallback: use raw audiences from website
+    extracted = research_data.get('extracted_data', {})
+    raw_audiences = extracted.get('target_audiences', [])
     fallback = []
     for aud in raw_audiences[:4]:
         is_b2b = any(kw in aud.lower() for kw in ['corporate', 'business', 'company', 'professional', 'enterprise', 'b2b', 'client', 'commercial'])

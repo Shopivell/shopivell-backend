@@ -923,6 +923,104 @@ Based on this real data, how should we refine the targeting?""")
             return {"success": False, "error": str(e)}
 
 
+    async def generate_ad_audiences(self, research_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Generate specific, targetable audience segments for ad campaigns from research data.
+        This is the single source of truth for audience generation across all agents.
+
+        Returns:
+            List of audience dicts with name, type, demographics, pain_point, urgency, best_platform, recommended_cta
+        """
+        summary = research_data.get('research_summary', {})
+        extracted = research_data.get('extracted_data', {})
+
+        services = extracted.get('services_products', [])
+        services_text = ", ".join([
+            s.get('name', '') if isinstance(s, dict) else str(s)
+            for s in services[:8]
+        ]) or "Not specified"
+
+        value_props = ", ".join(extracted.get('value_propositions', [])[:5]) or "Not specified"
+        raw_audiences = extracted.get('target_audiences', [])
+
+        prompt = ChatPromptTemplate.from_template("""
+You are a Facebook/Instagram ads strategist. Based on this business data, generate 4-5 specific, targetable audience segments for ad campaigns.
+
+COMPANY: {company_name}
+INDUSTRY: {industry}
+LOCATION: {location}
+SERVICES/PRODUCTS: {services}
+VALUE PROPOSITIONS: {value_props}
+WEBSITE-MENTIONED AUDIENCES: {raw_audiences}
+
+Generate 4-5 audience segments as valid JSON array. Each segment must be SPECIFIC enough to target on Facebook/Instagram ads. Do NOT just repeat what the website says — think about WHO actually needs these services and WHY.
+
+Rules:
+- Include a mix of B2B and B2C if applicable
+- Each audience must have a distinct pain point and urgency level
+- Demographics should be targetable (age range, job titles, interests)
+- Pain points must be specific to THIS business's services
+- Best platform should match where this audience spends time
+
+Return ONLY valid JSON array:
+[
+    {{
+        "name": "Specific audience name (e.g. 'Homeowners 25-45 in Harare' not 'Domestic clients')",
+        "type": "B2B or B2C",
+        "demographics": "Age, location, job titles or interests — targetable on Facebook",
+        "pain_point": "Their specific frustration that this business solves",
+        "urgency": "high/medium/low — how urgent is their need",
+        "best_platform": "facebook or instagram or linkedin",
+        "recommended_cta": "Most appropriate CTA for this audience"
+    }}
+]
+""")
+
+        try:
+            from modules.openrouter.context import set_ai_context
+            chain = prompt | self.llm | StrOutputParser()
+            with set_ai_context(agent_name="creative_strategist"):
+                response = await chain.ainvoke({
+                    'company_name': summary.get('company_name', 'Company'),
+                    'industry': summary.get('industry', 'Business'),
+                    'location': summary.get('geographic_coverage', ''),
+                    'services': services_text,
+                    'value_props': value_props,
+                    'raw_audiences': ", ".join(raw_audiences) if raw_audiences else "Not specified",
+                })
+
+            response = response.strip()
+            if response.startswith("```json"):
+                response = response[7:]
+            if response.startswith("```"):
+                response = response[3:]
+            if response.endswith("```"):
+                response = response[:-3]
+
+            audiences = json.loads(response.strip())
+            if isinstance(audiences, list) and len(audiences) > 0:
+                logger.info(f"[CreativeStrategistAgent] Generated {len(audiences)} ad audience segments")
+                return audiences
+
+        except Exception as e:
+            logger.warning(f"[CreativeStrategistAgent] Ad audience generation failed: {e}")
+
+        # Fallback: use raw audiences from website
+        fallback = []
+        for aud in raw_audiences[:4]:
+            is_b2b = any(kw in aud.lower() for kw in ['corporate', 'business', 'company', 'professional', 'enterprise', 'b2b', 'client', 'commercial'])
+            fallback.append({
+                "name": aud,
+                "type": "B2B" if is_b2b else "B2C",
+                "demographics": "",
+                "pain_point": "",
+                "urgency": "medium",
+                "best_platform": "facebook",
+                "recommended_cta": "Get Quote" if is_b2b else "Learn More"
+            })
+        return fallback or [{"name": "General Audience", "type": "B2C", "demographics": "", "pain_point": "", "urgency": "medium", "best_platform": "facebook", "recommended_cta": "Learn More"}]
+
+
 # Convenience function for direct use
 async def generate_creative_strategy(campaign_id: str, num_hooks: int = 8) -> Dict[str, Any]:
     """
