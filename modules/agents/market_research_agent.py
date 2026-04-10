@@ -1942,11 +1942,6 @@ async def research_website_directly(
 
     if not location or location == "Global":
         location = country_name_map.get(country_code, "")
-        # Also try to find location from raw content
-        for city in ["Harare", "Bulawayo", "Johannesburg", "Cape Town", "Nairobi", "Lagos", "Accra"]:
-            if city.lower() in raw_content.lower():
-                location = f"{city}, {country_name_map.get(country_code, '')}"
-                break
 
     # Extract products/services for competitor search
     products = []
