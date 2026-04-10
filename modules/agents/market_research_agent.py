@@ -2042,19 +2042,44 @@ async def research_website_directly(
     # Use short location for seeds (country name only, not full geographic_coverage)
     short_location = country_name_map.get(country_code, "") if country_code != "US" else ""
     location_suffix = f" {short_location}" if short_location else ""
+
+    def _simplify_seed(name: str) -> List[str]:
+        """Break complex service names into shorter search-friendly seeds."""
+        seeds = []
+        # Add full name
+        seeds.append(f"{name}{location_suffix}")
+        # Split on & and add each part separately
+        if "&" in name or "and" in name.lower():
+            parts = re.split(r'\s*[&]\s*|\s+and\s+', name, flags=re.IGNORECASE)
+            for part in parts:
+                part = part.strip()
+                if len(part) > 3:
+                    seeds.append(f"{part}{location_suffix}")
+        return seeds
+
     keyword_seeds = []
-    if products:
-        for p in products[:5]:
-            keyword_seeds.append(f"{p}{location_suffix}")
+    seen_seeds = set()
+
+    # From extracted services/products
+    source_names = []
     if structured_data.get("services_products"):
-        for sp in structured_data["services_products"][:5]:
-            name = sp.get("name", "")
-            if name:
-                keyword_seeds.append(f"{name}{location_suffix}")
-    if industry and industry != "business":
-        keyword_seeds.append(f"{industry}{location_suffix}")
+        source_names = [sp.get("name", "") for sp in structured_data["services_products"][:6]]
+    elif products:
+        source_names = products[:6]
+
+    for name in source_names:
+        if not name:
+            continue
+        for seed in _simplify_seed(name):
+            if seed.lower() not in seen_seeds:
+                seen_seeds.add(seed.lower())
+                keyword_seeds.append(seed)
+
     if company_name:
-        keyword_seeds.append(f"{company_name}{location_suffix}")
+        seed = f"{company_name}{location_suffix}"
+        if seed.lower() not in seen_seeds:
+            keyword_seeds.append(seed)
+
     # Last resort: use domain name
     if not keyword_seeds:
         domain_name = domain.split(".")[0]
