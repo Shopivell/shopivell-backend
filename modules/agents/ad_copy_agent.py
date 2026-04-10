@@ -71,10 +71,12 @@ class AdCopyAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-3.5-sonnet", temperature=0.8)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.8)
+            self._supports_json_mode = True
             logger.info("[AdCopyAgent] Initialized with OpenRouter (Claude)")
         else:
             self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
+            self._supports_json_mode = False  # ChatAnthropic doesn't support response_format
             logger.info("[AdCopyAgent] Initialized with Claude direct")
 
         # Enhanced prompt for market research based copy generation
@@ -495,7 +497,7 @@ Services/Products: {services}
 Value Propositions: {value_props}""")
             ])
 
-            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
             chain = prompt | json_llm | StrOutputParser()
             with set_ai_context(agent_name="product_extractor"):
                 response = await chain.ainvoke({
@@ -708,7 +710,7 @@ Return ONLY valid JSON, no markdown.
 
         # Run the LLM chain with structured JSON output
         from modules.openrouter.context import set_ai_context
-        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
         chain = self.research_based_prompt | json_llm | StrOutputParser()
 
         try:
@@ -840,7 +842,7 @@ Be concrete and specific to this company's actual products/services. Return ONLY
         }
 
         from modules.openrouter.context import set_ai_context
-        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
         chain = self.b2b_prompt | json_llm | StrOutputParser()
 
         try:
@@ -893,7 +895,7 @@ Be concrete and specific to this company's actual products/services. Return ONLY
         }
 
         from modules.openrouter.context import set_ai_context
-        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
         chain = self.b2c_prompt | json_llm | StrOutputParser()
 
         try:
@@ -1064,7 +1066,7 @@ Return ONLY valid JSON:
 
         try:
             from modules.openrouter.context import set_ai_context
-            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
             chain = variation_prompt | json_llm | StrOutputParser()
             with set_ai_context(store_id=store_id, agent_name="ad_copy_variations"):
                 response = await chain.ainvoke(prompt_data)
@@ -1137,7 +1139,7 @@ Return ONLY valid JSON:
 
         try:
             from modules.openrouter.context import set_ai_context
-            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
             chain = short_prompt | json_llm | StrOutputParser()
             with set_ai_context(store_id=store_id, agent_name="ad_copy_short"):
                 response = await chain.ainvoke({
