@@ -511,7 +511,55 @@ async def scrape_url_stream(
                 if not keyword_seeds:
                     keyword_seeds = [f"{business_type}{loc_suffix}"]
 
-                competitors, keywords, trends = await asyncio.gather(
+                # Get Meta access token for Ad Library (any connected account works)
+                meta_access_token = None
+                try:
+                    from modules.marketing.models import MetaAdAccount
+                    meta_account = db.query(MetaAdAccount).filter(
+                        MetaAdAccount.is_connected == True,
+                        MetaAdAccount.is_active == True,
+                    ).first()
+                    if meta_account:
+                        meta_access_token = meta_account.access_token
+                        logger.info(f"[Research] Using Meta token from account: {meta_account.account_name}")
+                except Exception as token_err:
+                    logger.debug(f"[Research] No Meta token available: {token_err}")
+
+                # Build Ad Library search function
+                def _fetch_ad_library():
+                    if not meta_access_token:
+                        return []
+                    try:
+                        from modules.marketing.router import fetch_ads_library
+                        # Build search term from products/services
+                        search_parts = []
+                        if products:
+                            search_parts.extend(products[:2])
+                        elif business_type and business_type.lower() != "business":
+                            search_parts.append(business_type)
+                        if not search_parts and business_name:
+                            search_parts.append(business_name)
+                        search_term = " ".join(search_parts[:2]) if search_parts else business_type
+
+                        # Map country
+                        ad_countries = [country_code] if country_code != "US" else ["US"]
+
+                        logger.info(f"[Research] Ad Library search: '{search_term}' in {ad_countries}")
+                        result = fetch_ads_library(
+                            access_token=meta_access_token,
+                            search_term=search_term,
+                            ad_type="ALL",
+                            limit=10,
+                            ad_reached_countries=ad_countries
+                        )
+                        ads = result.get("data", []) if isinstance(result, dict) else []
+                        logger.info(f"[Research] Ad Library found {len(ads)} competitor ads")
+                        return ads
+                    except Exception as ad_err:
+                        logger.warning(f"[Research] Ad Library failed: {ad_err}")
+                        return []
+
+                competitors, keywords, trends, ad_library_ads = await asyncio.gather(
                     asyncio.to_thread(
                         research_agent._search_competitors_enhanced,
                         business_type, location, products,
@@ -525,6 +573,7 @@ async def scrape_url_stream(
                         research_agent._search_industry_trends,
                         business_type, current_year
                     ),
+                    asyncio.to_thread(_fetch_ad_library),
                 )
 
                 # Stream competitors
@@ -546,8 +595,26 @@ async def scrape_url_stream(
                     yield f"data: {json.dumps({'event': 'trend', 'title': trend.get('title', ''), 'source': trend.get('source', ''), 'insight': (trend.get('insight', '') or '')[:200]})}\n\n"
                     await asyncio.sleep(0.05)
 
+                # Stream Ad Library competitor ads
+                for ad in ad_library_ads[:8]:
+                    ad_creative = ad.get("ad_creative_bodies", [])
+                    ad_title = ad.get("ad_creative_link_titles", [])
+                    page_name = ad.get("page_name", "")
+                    ad_event = {
+                        'event': 'ad_library_ad',
+                        'page_name': page_name,
+                        'page_id': ad.get("page_id", ""),
+                        'ad_text': ad_creative[0][:200] if ad_creative else "",
+                        'ad_title': ad_title[0] if ad_title else "",
+                        'ad_start': ad.get("ad_delivery_start_time", ""),
+                        'is_active': ad.get("ad_delivery_stop_time") is None,
+                        'platforms': ad.get("publisher_platforms", []),
+                    }
+                    yield f"data: {json.dumps(ad_event)}\n\n"
+                    await asyncio.sleep(0.05)
+
                 # Send summary
-                yield f"data: {json.dumps({'event': 'market_research_summary', 'competitors_found': len(clean_competitors), 'keywords_found': len(keywords), 'trends_found': len(trends)})}\n\n"
+                yield f"data: {json.dumps({'event': 'market_research_summary', 'competitors_found': len(clean_competitors), 'keywords_found': len(keywords), 'trends_found': len(trends), 'ad_library_ads_found': len(ad_library_ads)})}\n\n"
                 await asyncio.sleep(0.1)
 
                 logger.info(f"Market research complete: {len(clean_competitors)} competitors, {len(keywords)} keywords, {len(trends)} trends")
