@@ -78,18 +78,32 @@ except ImportError:
     analyze_brand_from_screenshot_sync = None
     extract_store_info_from_website = None
 
-# LLM Configuration: Use OpenAI directly, or OpenRouter if key is set
+# LLM Configuration: Anthropic (primary) → OpenRouter → OpenAI (fallback)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-if OPENROUTER_API_KEY:
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+LLM_PROVIDER = "none"
+
+if ANTHROPIC_API_KEY:
+    try:
+        from langchain_anthropic import ChatAnthropic
+        LLM_PROVIDER = "anthropic"
+    except ImportError:
+        ChatAnthropic = None
+elif OPENROUTER_API_KEY:
     try:
         from modules.openrouter.langchain_adapter import ChatOpenRouter
-        OPENROUTER_AVAILABLE = True
+        LLM_PROVIDER = "openrouter"
     except ImportError:
-        from langchain_openai import ChatOpenAI as ChatOpenRouter
-        OPENROUTER_AVAILABLE = False
-else:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
-    OPENROUTER_AVAILABLE = False
+        pass
+
+if LLM_PROVIDER == "none":
+    try:
+        from langchain_openai import ChatOpenAI
+        LLM_PROVIDER = "openai"
+    except ImportError:
+        pass
+
+OPENROUTER_AVAILABLE = LLM_PROVIDER == "openrouter"
 
 # Import Redis cache
 from utils.cache import RedisCache, CacheConfig, generate_cache_key
@@ -121,16 +135,27 @@ class MarketResearchAgent:
     """AI Agent for conducting comprehensive market research with REAL data"""
 
     def __init__(self):
-        self.llm = ChatOpenRouter(
-            model="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
-            temperature=0.3
-        )
-        self.embeddings = OpenAIEmbeddings()
+        # Initialize LLM based on available provider
+        if LLM_PROVIDER == "anthropic":
+            self.llm = ChatAnthropic(model="claude-sonnet-4-20250514", temperature=0.3, max_tokens=4096)
+        elif LLM_PROVIDER == "openrouter":
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4-20250514", temperature=0.3)
+        elif LLM_PROVIDER == "openai":
+            self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+        else:
+            self.llm = None
+
+        self.embeddings = None
+        try:
+            self.embeddings = OpenAIEmbeddings()
+        except Exception:
+            logger.warning("[MarketResearchAgent] OpenAI embeddings not available")
+
         self.tavily = TavilyClient(api_key=tavily_api_key) if TAVILY_AVAILABLE else None
         self.cache = RedisCache()
         self.serper_available = SERPER_AVAILABLE
         logger.info(
-            f"[MarketResearchAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}, "
+            f"[MarketResearchAgent] Initialized with LLM={LLM_PROVIDER}, "
             f"Tavily: {TAVILY_AVAILABLE}, Serper: {SERPER_AVAILABLE}, Cache: {self.cache.is_connected}"
         )
 
@@ -1735,8 +1760,13 @@ Format your response with clear section headers.
         # Parse the response
         sections = self._parse_research_response(research_text)
 
-        # Generate embedding for the full research
-        embedding = self.embeddings.embed_query(research_text)
+        # Generate embedding for the full research (optional — may fail if OpenAI has no credits)
+        embedding = None
+        if self.embeddings:
+            try:
+                embedding = self.embeddings.embed_query(research_text)
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Embedding generation failed: {e}")
 
         # Store in database
         db = SessionLocal()
