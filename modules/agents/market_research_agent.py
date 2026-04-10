@@ -967,10 +967,15 @@ Extract and return a JSON object with these fields:
     "call_to_actions": ["CTA 1", "CTA 2"],
     "pricing_info": "Any pricing information found or 'Not available'",
     "geographic_coverage": "Countries/regions served",
-    "keyword_seeds": ["short search-friendly keyword 1", "keyword 2", "keyword 3"]
+    "keyword_seeds": ["buy laptops Harare", "printers Zimbabwe", "IT store near me"]
 }}
 
-For keyword_seeds: Generate 5-10 short, generic search terms (2-4 words max) that potential customers would type into Google to find this business. Use category-level terms (e.g. "laptops Zimbabwe", "IT store Harare"), NOT full product names. These will be used for Google Autocomplete keyword research.
+For keyword_seeds: Generate 5-10 short Google search queries (2-4 words each) that real customers would type when looking to buy this business's products or services. Rules:
+- Use generic product CATEGORIES not specific model names (e.g. "laptops Zimbabwe" NOT "HP ProBook 460 G10")
+- Include the city or country name for local businesses
+- Think like a buyer: "buy laptops Harare", "cheap printers Zimbabwe", "IT equipment shop Harare"
+- Do NOT repeat the company name or industry classification verbatim
+- Do NOT use long phrases - keep each seed under 5 words
 
 Only include fields where you found relevant information. Be accurate and only extract what's explicitly stated.
 Return ONLY valid JSON, no other text.
@@ -1463,12 +1468,26 @@ Return ONLY valid JSON, no other text.
                     keyword_seeds.append(seed.strip())
             logger.info(f"[MarketResearchAgent] Using {len(keyword_seeds)} AI-generated keyword seeds: {keyword_seeds}")
 
-        # Fallback: use business type and company name
+        # Fallback: build from navigation categories + products
         if not keyword_seeds:
-            if business_type and location:
-                keyword_seeds.append(f"{business_type} {location}")
-            if company_name and location:
-                keyword_seeds.append(f"{company_name} {location}")
+            for nav in structured_data.get("navigation_structure", []):
+                for item in nav.get("items", []):
+                    if item and len(item) < 25 and location:
+                        keyword_seeds.append(f"{item} {location}")
+            categories = set()
+            for sp in structured_data.get("services_products", []):
+                cat = sp.get("category", "").strip()
+                if cat and len(cat) < 25:
+                    categories.add(cat)
+            for cat in categories:
+                if location:
+                    keyword_seeds.append(f"{cat} {location}")
+            # Last resort
+            if not keyword_seeds:
+                if business_type and location:
+                    keyword_seeds.append(f"{business_type} {location}")
+                if company_name and location:
+                    keyword_seeds.append(f"{company_name} {location}")
 
         competitors, trends, audience_data, autocomplete_keywords = await asyncio.gather(
             asyncio.to_thread(
@@ -2069,18 +2088,32 @@ async def research_website_directly(
                 keyword_seeds.append(seed.strip())
         logger.info(f"[MarketResearchAgent] Using {len(keyword_seeds)} AI-generated keyword seeds: {keyword_seeds}")
 
-    # Fallback: if AI didn't generate seeds, use company name + industry
+    # Fallback: if AI didn't generate seeds, build from navigation categories + products
     if not keyword_seeds:
-        if company_name:
-            seed = f"{company_name}{location_suffix}"
+        # Try navigation categories first (e.g. "Laptops", "Printers")
+        for nav in structured_data.get("navigation_structure", []):
+            for item in nav.get("items", []):
+                if item and len(item) < 25:
+                    seed = f"{item}{location_suffix}"
+                    if seed.lower() not in seen_seeds:
+                        seen_seeds.add(seed.lower())
+                        keyword_seeds.append(seed)
+
+        # Try product categories
+        categories = set()
+        for sp in structured_data.get("services_products", []):
+            cat = sp.get("category", "").strip()
+            if cat and len(cat) < 25:
+                categories.add(cat)
+        for cat in categories:
+            seed = f"{cat}{location_suffix}"
             if seed.lower() not in seen_seeds:
                 seen_seeds.add(seed.lower())
                 keyword_seeds.append(seed)
-        if industry and industry != "business":
-            industry_seed = f"{industry}{location_suffix}"
-            if industry_seed.lower() not in seen_seeds:
-                seen_seeds.add(industry_seed.lower())
-                keyword_seeds.append(industry_seed)
+
+        # Last resort: company name
+        if not keyword_seeds and company_name:
+            keyword_seeds.append(f"{company_name}{location_suffix}")
 
     # Last resort: use domain name
     if not keyword_seeds:
