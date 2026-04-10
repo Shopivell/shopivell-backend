@@ -1941,7 +1941,13 @@ async def research_website_directly(
             industry = ", ".join(service_headings[:3])
 
     if not location or location == "Global":
-        location = country_name_map.get(country_code, "")
+        # For country-specific TLDs, use the country name
+        if country_code != "US":
+            location = country_name_map.get(country_code, "")
+        else:
+            # .com domains: no country info available, leave empty
+            # Serper/Autocomplete will work without location context
+            location = ""
 
     # Extract products/services for competitor search
     products = []
@@ -1970,23 +1976,25 @@ async def research_website_directly(
     target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
 
     # Build keyword seeds from extracted data
+    # Use location if available, otherwise use business_name for context
+    location_suffix = f" {location}" if location else ""
     keyword_seeds = []
-    if products and location:
+    if products:
         for p in products[:5]:
-            keyword_seeds.append(f"{p} {location}")
+            keyword_seeds.append(f"{p}{location_suffix}")
     if structured_data.get("services_products"):
         for sp in structured_data["services_products"][:5]:
             name = sp.get("name", "")
-            if name and location:
-                keyword_seeds.append(f"{name} {location}")
-    if industry and location and industry != "business":
-        keyword_seeds.append(f"{industry} {location}")
-    if company_name and location:
-        keyword_seeds.append(f"{company_name} {location}")
-    # Last resort: use domain name + location
-    if not keyword_seeds and location:
+            if name:
+                keyword_seeds.append(f"{name}{location_suffix}")
+    if industry and industry != "business":
+        keyword_seeds.append(f"{industry}{location_suffix}")
+    if company_name:
+        keyword_seeds.append(f"{company_name}{location_suffix}")
+    # Last resort: use domain name
+    if not keyword_seeds:
         domain_name = domain.split(".")[0]
-        keyword_seeds.append(f"{domain_name} {location}")
+        keyword_seeds.append(f"{domain_name}{location_suffix}")
 
     competitors, trends, audience_insights, autocomplete_keywords = await asyncio.gather(
         asyncio.to_thread(agent._search_competitors_enhanced, industry, location, products, domain, country_code, company_name),
