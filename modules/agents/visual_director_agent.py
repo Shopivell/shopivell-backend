@@ -64,7 +64,7 @@ class VisualDirectorAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-3.5-sonnet", temperature=0.7)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.7)
             logger.info("[VisualDirectorAgent] Initialized with OpenRouter (Claude)")
         else:
             self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.7)
