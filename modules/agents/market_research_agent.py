@@ -1955,7 +1955,6 @@ async def research_website_directly(
     raw_content = website_data.get("content", "")
     if not industry or industry == "business":
         # Extract services/headings from raw content
-        import re
         headings = re.findall(r'#{1,3}\s+(.+)', raw_content)
         # Clean headings: remove markdown links, keep text only
         cleaned_headings = []
@@ -2002,7 +2001,6 @@ async def research_website_directly(
 
     # Fallback: extract services from headings when AI extraction fails
     if not products and raw_content:
-        import re
         headings = re.findall(r'#{2,3}\s+(.+)', raw_content)
         skip_patterns = [
             'navigation', 'menu', 'footer', 'faq', 'frequently',
