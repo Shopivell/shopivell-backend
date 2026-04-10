@@ -2039,8 +2039,9 @@ async def research_website_directly(
     target_audience_str = ", ".join(structured_data.get("target_audiences", ["business professionals"]))
 
     # Build keyword seeds from extracted data
-    # Use location if available, otherwise use business_name for context
-    location_suffix = f" {location}" if location else ""
+    # Use short location for seeds (country name only, not full geographic_coverage)
+    short_location = country_name_map.get(country_code, "") if country_code != "US" else ""
+    location_suffix = f" {short_location}" if short_location else ""
     keyword_seeds = []
     if products:
         for p in products[:5]:
