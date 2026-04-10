@@ -298,8 +298,11 @@ class MarketResearchAgent:
         expand_alphabet: bool = True
     ) -> List[Dict[str, str]]:
         """
-        Get keyword suggestions using Google Autocomplete API (free, no key needed).
-        Includes alphabet expansion for comprehensive keyword discovery.
+        Comprehensive keyword discovery using multiple sources:
+        1. Google Autocomplete (free, real search suggestions)
+        2. Google Autocomplete alphabet expansion (a-z variations)
+        3. Serper related searches (Google's "People also search for")
+        4. Tavily keyword-oriented search (content-extracted keywords)
 
         Args:
             seed_keywords: Seed keywords to expand
@@ -307,16 +310,16 @@ class MarketResearchAgent:
             expand_alphabet: Whether to do a-z expansion on top seeds
 
         Returns:
-            List of keyword suggestion dicts
+            List of keyword suggestion dicts with source attribution
         """
-        cache_key = generate_cache_key(f"autocomplete:{':'.join(seed_keywords[:5])}:{country_code}", prefix="mra:kw:")
+        cache_key = generate_cache_key(f"keywords:{':'.join(seed_keywords[:5])}:{country_code}", prefix="mra:kw:")
         cached = self.cache.get(cache_key)
         if cached is not None:
             return cached
 
-        all_keywords = set()
+        all_keywords = {}  # keyword -> source
 
-        # Step 1: Direct autocomplete for each seed
+        # Source 1: Google Autocomplete (direct suggestions)
         for seed in seed_keywords[:10]:
             try:
                 response = requests.get(
@@ -329,11 +332,12 @@ class MarketResearchAgent:
                     data = response.json()
                     suggestions = data[1] if len(data) > 1 else []
                     for s in suggestions:
-                        all_keywords.add(s)
+                        if s.lower() not in all_keywords:
+                            all_keywords[s.lower()] = "google_autocomplete"
             except Exception as e:
                 logger.warning(f"[MarketResearchAgent] Autocomplete failed for '{seed}': {e}")
 
-        # Step 2: Alphabet expansion on top 3 seeds
+        # Source 2: Alphabet expansion on top 3 seeds
         if expand_alphabet:
             for seed in seed_keywords[:3]:
                 for letter in "abcdefghijklmnopqrstuvwxyz":
@@ -348,12 +352,53 @@ class MarketResearchAgent:
                             data = response.json()
                             suggestions = data[1] if len(data) > 1 else []
                             for s in suggestions:
-                                all_keywords.add(s)
+                                if s.lower() not in all_keywords:
+                                    all_keywords[s.lower()] = "google_autocomplete"
                     except Exception:
                         continue
 
-        result = [{"keyword": kw, "source": "google_autocomplete"} for kw in sorted(all_keywords)]
-        logger.info(f"[MarketResearchAgent] Autocomplete found {len(result)} keywords from {len(seed_keywords)} seeds")
+        # Source 3: Serper related searches (Google's "People also search for")
+        if self.serper_available:
+            for seed in seed_keywords[:3]:
+                try:
+                    serper_result = self._serper_search(seed, country=country_code.lower(), num=5)
+                    # Extract "related searches" from Serper
+                    for related in serper_result.get("relatedSearches", []):
+                        query = related.get("query", "")
+                        if query and query.lower() not in all_keywords:
+                            all_keywords[query.lower()] = "serper_related"
+                    # Extract "people also ask" questions as keyword ideas
+                    for paa in serper_result.get("peopleAlsoAsk", []):
+                        question = paa.get("question", "")
+                        if question and question.lower() not in all_keywords:
+                            all_keywords[question.lower()] = "serper_paa"
+                except Exception as e:
+                    logger.warning(f"[MarketResearchAgent] Serper keyword search failed for '{seed}': {e}")
+
+        # Source 4: Tavily content-based keyword extraction
+        if self.tavily:
+            try:
+                tavily_query = f"{seed_keywords[0]} popular searches related keywords"
+                search_result = self.tavily.search(
+                    query=tavily_query,
+                    search_depth="basic",
+                    max_results=3
+                )
+                for result in search_result.get("results", []):
+                    content = result.get("content", "")
+                    # Extract quoted phrases or list items that look like keywords
+                    # Look for patterns like "keyword1, keyword2" or bullet points
+                    import re as _re
+                    phrases = _re.findall(r'"([^"]{3,40})"', content)
+                    for phrase in phrases:
+                        if phrase.lower() not in all_keywords and len(phrase.split()) <= 5:
+                            all_keywords[phrase.lower()] = "tavily"
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Tavily keyword search failed: {e}")
+
+        result = [{"keyword": kw, "source": src} for kw, src in sorted(all_keywords.items())]
+        logger.info(f"[MarketResearchAgent] Keyword discovery found {len(result)} keywords from {len(seed_keywords)} seeds "
+                     f"(autocomplete + serper + tavily)")
         self.cache.set(cache_key, result, ttl=CacheConfig.TTL_LONG)
         return result
 
@@ -1361,80 +1406,116 @@ Return ONLY valid JSON, no other text.
         return self._search_competitors(business_type, location, products, company_name=company_name, domain=domain)
 
     def _search_industry_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
-        """Search for real industry trends"""
-        if not self.tavily:
-            return []
+        """Search for real industry trends using Tavily + Serper combined"""
+        cache_key = generate_cache_key(f"{industry}:{year}", prefix="mra:trends:")
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"[MarketResearchAgent] Cache HIT for trends search")
+            return cached_result
 
-        try:
-            query = f"{industry} industry trends {year} market growth statistics"
+        trends = []
+        seen_urls = set()
 
-            # Check cache
-            cache_key = generate_cache_key(query, prefix="mra:trends:")
-            cached_result = self.cache.get(cache_key)
-            if cached_result is not None:
-                logger.info(f"[MarketResearchAgent] Cache HIT for trends search")
-                return cached_result
+        query = f"{industry} industry trends {year} market growth statistics"
+        logger.info(f"[MarketResearchAgent] Searching trends: {query}")
 
-            logger.info(f"[MarketResearchAgent] Searching trends: {query}")
+        # Source 1: Tavily (deep content extraction)
+        if self.tavily:
+            try:
+                search_result = self.tavily.search(
+                    query=query,
+                    search_depth="advanced",
+                    max_results=6
+                )
+                for result in search_result.get("results", []):
+                    url = result.get("url", "")
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        trends.append({
+                            "title": result.get("title", ""),
+                            "source": url,
+                            "insight": result.get("content", "")[:400],
+                            "search_engine": "tavily"
+                        })
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Tavily trends search failed: {e}")
 
-            search_result = self.tavily.search(
-                query=query,
-                search_depth="advanced",
-                max_results=8
-            )
+        # Source 2: Serper (Google SERP results with different perspective)
+        if self.serper_available:
+            try:
+                serper_query = f"{industry} trends {year} forecast outlook"
+                serper_result = self._serper_search(serper_query, num=6)
+                for result in serper_result.get("organic", []):
+                    url = result.get("link", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        trends.append({
+                            "title": result.get("title", ""),
+                            "source": url,
+                            "insight": result.get("snippet", "")[:400],
+                            "search_engine": "serper"
+                        })
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Serper trends search failed: {e}")
 
-            trends = []
-            for result in search_result.get("results", []):
-                trends.append({
-                    "title": result.get("title", ""),
-                    "source": result.get("url", ""),
-                    "insight": result.get("content", "")[:400]
-                })
-
-            self.cache.set(cache_key, trends, ttl=CacheConfig.TTL_LONG)
-            return trends
-
-        except Exception as e:
-            logger.error(f"[MarketResearchAgent] Trend search error: {e}")
-            return []
+        self.cache.set(cache_key, trends, ttl=CacheConfig.TTL_LONG)
+        return trends
 
     def _search_audience_insights(self, target_audience: str, industry: str) -> List[Dict[str, Any]]:
-        """Search for audience behavior and preferences"""
-        if not self.tavily:
-            return []
+        """Search for audience behavior and preferences using Tavily + Serper combined"""
+        cache_key = generate_cache_key(f"{target_audience}:{industry}", prefix="mra:audience:")
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"[MarketResearchAgent] Cache HIT for audience search")
+            return cached_result
 
-        try:
-            query = f"{target_audience} buying behavior preferences {industry} consumer insights"
+        insights = []
+        seen_urls = set()
 
-            # Check cache
-            cache_key = generate_cache_key(query, prefix="mra:audience:")
-            cached_result = self.cache.get(cache_key)
-            if cached_result is not None:
-                logger.info(f"[MarketResearchAgent] Cache HIT for audience search")
-                return cached_result
+        query = f"{target_audience} buying behavior preferences {industry} consumer insights"
+        logger.info(f"[MarketResearchAgent] Searching audience insights: {query}")
 
-            logger.info(f"[MarketResearchAgent] Searching audience insights: {query}")
+        # Source 1: Tavily (deep content)
+        if self.tavily:
+            try:
+                search_result = self.tavily.search(
+                    query=query,
+                    search_depth="advanced",
+                    max_results=5
+                )
+                for result in search_result.get("results", []):
+                    url = result.get("url", "")
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        insights.append({
+                            "title": result.get("title", ""),
+                            "source": url,
+                            "insight": result.get("content", "")[:400],
+                            "search_engine": "tavily"
+                        })
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Tavily audience search failed: {e}")
 
-            search_result = self.tavily.search(
-                query=query,
-                search_depth="advanced",
-                max_results=6
-            )
+        # Source 2: Serper (Google results for demographics/behavior data)
+        if self.serper_available:
+            try:
+                serper_query = f"{industry} customer demographics target market {target_audience}"
+                serper_result = self._serper_search(serper_query, num=5)
+                for result in serper_result.get("organic", []):
+                    url = result.get("link", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        insights.append({
+                            "title": result.get("title", ""),
+                            "source": url,
+                            "insight": result.get("snippet", "")[:400],
+                            "search_engine": "serper"
+                        })
+            except Exception as e:
+                logger.warning(f"[MarketResearchAgent] Serper audience search failed: {e}")
 
-            insights = []
-            for result in search_result.get("results", []):
-                insights.append({
-                    "title": result.get("title", ""),
-                    "source": result.get("url", ""),
-                    "insight": result.get("content", "")[:400]
-                })
-
-            self.cache.set(cache_key, insights, ttl=CacheConfig.TTL_LONG)
-            return insights
-
-        except Exception as e:
-            logger.error(f"[MarketResearchAgent] Audience search error: {e}")
-            return []
+        self.cache.set(cache_key, insights, ttl=CacheConfig.TTL_LONG)
+        return insights
 
     def _parse_research_response(self, response_text: str) -> Dict[str, str]:
         """Parse the AI response into structured sections"""
@@ -2383,20 +2464,28 @@ async def research_website_directly(
                 {
                     "title": t.get("title", ""),
                     "source": t.get("source", ""),
-                    "insight": t.get("insight", "")[:300]
+                    "insight": t.get("insight", "")[:300],
+                    "search_engine": t.get("search_engine", "unknown")
                 }
-                for t in trends[:8]
+                for t in trends[:12]
             ],
             "audience_insights": [
                 {
                     "title": a.get("title", ""),
                     "source": a.get("source", ""),
-                    "insight": a.get("insight", "")[:300]
+                    "insight": a.get("insight", "")[:300],
+                    "search_engine": a.get("search_engine", "unknown")
                 }
-                for a in audience_insights[:6]
+                for a in audience_insights[:10]
             ],
             "keywords": {
-                "autocomplete": [kw.get("keyword", "") for kw in autocomplete_keywords],
+                "all": [kw.get("keyword", "") for kw in autocomplete_keywords],
+                "by_source": {
+                    "google_autocomplete": [kw["keyword"] for kw in autocomplete_keywords if kw.get("source") == "google_autocomplete"],
+                    "serper_related": [kw["keyword"] for kw in autocomplete_keywords if kw.get("source") == "serper_related"],
+                    "serper_paa": [kw["keyword"] for kw in autocomplete_keywords if kw.get("source") == "serper_paa"],
+                    "tavily": [kw["keyword"] for kw in autocomplete_keywords if kw.get("source") == "tavily"],
+                },
                 "related_searches": related_keywords,
                 "total": len(autocomplete_keywords) + len(related_keywords),
                 "seed_keywords_used": keyword_seeds[:8]
