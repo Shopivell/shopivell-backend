@@ -1,212 +1,208 @@
 # AI Agents Module - Shopivell Ad Generation System
 
-## System Architecture
+## Agent Responsibilities
+
+| Agent | Single Job |
+|-------|-----------|
+| **Market Research Agent** | "WHAT exists" — scrapes websites, finds competitors, trends, keywords |
+| **Creative Strategist** | "WHO to target" — generates audiences, Meta interest targeting, hooks |
+| **Creative Angles** | "WHAT angle to take" — generates positioning per audience |
+| **Ad Copy Agent** | "WHAT to say" — writes copy for a given audience + angle |
+| **Ad Creative Agent** | "WHAT to show" — generates image prompts for a given angle |
+
+## Pipeline Architecture
 
 ```
-                              USER INPUT (Campaign Brief)
-                                        |
-                                        v
-                    +------------------------------------------+
-                    |      CREATIVE STRATEGIST AGENT          |
-                    |         (GPT-4o via OpenRouter)          |
-                    |  - Analyzes audience & objectives        |
-                    |  - Generates 3-5 creative angles         |
-                    |  - Selects emotional hooks               |
-                    +------------------------------------------+
-                                        |
-                                        v
-              +-------------------------+-------------------------+
-              |                         |                         |
-              v                         v                         v
-+---------------------------+  +---------------------------+  +---------------------------+
-|   COPYWRITER AGENT        |  |  AD COPY AGENT            |  |  VISUAL DIRECTOR AGENT    |
-|   (Claude Sonnet)         |  |  (Claude Sonnet)          |  |  (Claude Sonnet)          |
-| - Meta ad copy            |  | - Headlines & CTAs        |  | - Image prompts           |
-| - Primary text            |  | - Variations              |  | - Video concepts          |
-| - Hashtags                |  | - A/B test versions       |  | - Shot breakdowns         |
-+---------------------------+  +---------------------------+  +---------------------------+
-              |                         |                         |
-              +-------------------------+-------------------------+
-                                        |
-                                        v
-                    +------------------------------------------+
-                    |        COMPLIANCE AGENT                  |
-                    |         (Claude Haiku)                   |
-                    |  - Meta policy checking                  |
-                    |  - Content safety validation             |
-                    |  - Prompt sanitization                   |
-                    +------------------------------------------+
-                                        |
-                         +--------------+--------------+
-                         |                             |
-                    COMPLIANT?                    NOT COMPLIANT
-                         |                             |
-                         v                             v
-                    PROCEED               FEEDBACK LOOP #1
-                         |              (Regenerate with suggestions)
-                         |                             |
-                         +<----------------------------+
-                         |
-                         v
-                    +------------------------------------------+
-                    |       MEDIA GENERATOR AGENT              |
-                    |  Images: Nano Banana Pro (Gemini 3)      |
-                    |  Videos: Veo 3.1 Fast                    |
-                    +------------------------------------------+
-                                        |
-                                        v
-                    +------------------------------------------+
-                    |       AD CREATIVE AGENT                  |
-                    |         (Claude Sonnet)                  |
-                    |  - Final creative assembly               |
-                    |  - Image + Copy combination              |
-                    +------------------------------------------+
-                                        |
-                                        v
-                    +------------------------------------------+
-                    |         META ADS API                     |
-                    |  - Campaign creation                     |
-                    |  - Ad set configuration                  |
-                    |  - Creative upload                       |
-                    +------------------------------------------+
-                                        |
-                                        v
-                    +------------------------------------------+
-                    |       PERFORMANCE OPTIMIZER AGENT        |
-                    |         (GPT-4o)                         |
-                    |  - A/B test analysis                     |
-                    |  - Performance metrics                   |
-                    |  - Budget recommendations                |
-                    +------------------------------------------+
-                                        |
-                                        v
-                         FEEDBACK LOOP #2
-                    (If underperforming, trigger new creative)
-                                        |
-                         +<-------------+
-                         |
-                    Back to Creative Strategist
+                         Website URL / Campaign Brief
+                                    |
+                                    v
+                 +--------------------------------------+
+                 |       MARKET RESEARCH AGENT          |
+                 |         (Claude Sonnet 4)            |
+                 |                                      |
+                 |  - Scrapes website (Tavily/BS4/PW)   |
+                 |  - Finds competitors (Serper+Tavily) |
+                 |  - Industry trends (Tavily+Serper)   |
+                 |  - Keyword discovery (Autocomplete)  |
+                 |  - Structured data extraction (AI)   |
+                 +--------------------------------------+
+                                    |
+                    Research data flows into all agents
+                                    |
+         +-------------+------------+------------+-------------+
+         |             |            |            |             |
+         v             v            v            v             v
+   +-----------+ +-----------+ +---------+ +-----------+ +---------+
+   |   SWOT    | | Creative  | | Ad Copy | |Ad Creative| |Screenshot|
+   | Analysis  | | Strategist| |  Agent  | |   Agent   | | Capture |
+   |   (AI)    | | (audiences| | (copy)  | | (images)  | |(Playwright)
+   +-----------+ +-----------+ +---------+ +-----------+ +---------+
+                       |              |
+                       |    Audiences flow into Ad Copy
+                       +-------->-----+
 ```
+
+## How They Connect
+
+### Standalone Research (POST /api/agents/research/website)
+
+All run in parallel after data collection:
+1. **SWOT** — AI analyzes strengths/weaknesses/opportunities/threats
+2. **Creative Strategist** — generates 4-5 targetable audiences
+3. **Ad Copy Agent** — receives audiences from Strategist, generates copy per audience x platform
+4. **Ad Creative Agent** — generates 2 image prompts (Trust + Problem/Solution angles)
+5. **Screenshot** — captures homepage via Playwright
+
+### Campaign Pipeline (POST /api/agents/campaigns/{id}/pipeline)
+
+Sequential steps:
+1. **Market Research Agent** — full research on campaign URL
+2. **Creative Angles Agent** — generates 3-10 positioning angles
+3. **Ad Copy Agent** — generates copy for each angle
+4. **Visual Director Agent** — generates image/video prompts per angle
+
+## Agent Details
+
+### Market Research Agent (`market_research_agent.py`)
+
+**Input:** Website URL
+**Output:** Company info, services, competitors, trends, audience insights, keywords, SWOT, ad copy, creatives, screenshot
+
+Data sources:
+- Tavily (website scraping + search)
+- Serper (Google SERP + Maps + related searches)
+- DataForSEO (competitor keyword overlap)
+- Google Autocomplete (keyword suggestions)
+- Playwright (JS-rendered pages)
+- BeautifulSoup (HTML fallback)
+
+### Creative Strategist (`creative_strategist_agent.py`)
+
+**Input:** Research data (services, value props, location, website audiences)
+**Output:** Targetable audience segments with demographics, pain points, urgency, platform, CTA
+
+Also provides:
+- Meta interest targeting tags (25-40 tags across 6 categories)
+- Audience demographics (age, gender, location, languages)
+- Job titles and industries to target
+- Custom audience suggestions (lookalikes, website visitors)
+- Ad set recommendations
+
+### Creative Angles Agent (`creative_angles_agent.py`)
+
+**Input:** Campaign brief + market research
+**Output per angle:**
+- `angle_name` — e.g. "Trust Builder", "Fear of Missing Out"
+- `value_proposition` — unique value this angle presents
+- `emotion_target` — emotion to evoke (relief, excitement, fear)
+- `visual_direction` — what the image should look like
+- `reasoning` — why this angle fits the research
+
+### Ad Copy Agent (`ad_copy_agent.py`)
+
+**Input:** Research data + audiences (from Creative Strategist)
+**Output per audience x platform:**
+- Hooks (3 types: pattern interrupt, question, social proof)
+- Headlines (3 variations, max 40 chars)
+- Primary Text (short/medium/long or story/benefits/urgency)
+- Descriptions (2 variations, max 30 words)
+- Call to Action (from Meta's available CTAs)
+
+Supports B2B (LinkedIn-style) and B2C (consumer-style) copy.
+
+### Ad Creative Agent (`ad_creative_agent.py`)
+
+**Input:** Product info + creative angle
+**Output:**
+- `image_prompt` — detailed 10-element prompt for AI image generation
+- `ad_angle` — 1-2 sentence creative direction
+- `headline` — short headline for text overlay
+- `bullet_points` — 3 key benefits
+- `cta_text` — button text
+
+Image prompts follow a strict format: art style, scene setup, subject, action, scenario, lighting, lens/camera, color theme, mood, technical specs. Generates CLEAN base images with no text — leaves space for programmatic text overlay.
 
 ## Model Assignments
 
-| Task Type | Model | Reasoning |
-|-----------|-------|-----------|
-| Strategy/Research | GPT-4o | Best for complex analysis |
-| Creative Writing | Claude Sonnet | Superior nuanced copy |
-| Policy Checking | Claude Haiku | Fast, cheap, context-aware |
-| Image Generation | Nano Banana Pro | Best quality, native text, $0.04/image |
-| Video Generation | Veo 3.1 Fast | Best quality, native audio, $0.15/sec |
+| Agent | Model | Via |
+|-------|-------|-----|
+| Market Research (extraction) | Claude Sonnet 4 | OpenRouter / Anthropic direct |
+| Creative Strategist | Claude Sonnet 4 | OpenRouter / Anthropic direct |
+| Creative Angles | Claude Sonnet 4 | OpenRouter / Anthropic direct |
+| Ad Copy Agent | Claude Sonnet 4 | OpenRouter / Anthropic direct |
+| Ad Creative Agent | Claude Sonnet 4 (primary), GPT-4o (fallback) | OpenRouter |
+| Copywriter Agent | Claude Sonnet 4 | OpenRouter / Anthropic direct |
 
-## Agents (10 Total)
+All agents use OpenRouter as primary with Anthropic SDK as fallback.
 
-| # | Agent | Model | Purpose | Cost Est. |
-|---|-------|-------|---------|-----------|
-| 1 | Creative Strategist | GPT-4o | Strategy & hooks generation | ~$0.01/campaign |
-| 2 | Copywriter | Claude Sonnet | Meta ad copy writing | ~$0.005/variation |
-| 3 | Ad Copy | Claude Sonnet | Headlines & CTAs | ~$0.003/ad |
-| 4 | Visual Director | Claude Sonnet | Image/video prompts | ~$0.005/prompt |
-| 5 | Ad Creative | Claude Sonnet | Final creative assembly | ~$0.003/creative |
-| 6 | Compliance | Claude Haiku | Policy checking | ~$0.0003/check |
-| 7 | Media Generator | Nano Banana Pro / Veo 3 | Image & video generation | ~$0.04/img, $0.15/sec |
-| 8 | Performance Optimizer | GPT-4o | Performance analysis | ~$0.01/analysis |
+## API Endpoints
 
-**Estimated Total Cost per Ad Creative: ~$0.10 - $1.50** (depending on video inclusion)
+### Research
+| Method | Endpoint | Agent |
+|--------|----------|-------|
+| POST | `/api/agents/research/website?url=...` | Market Research + all agents |
+| POST | `/api/agents/campaigns/{id}/research` | Market Research (campaign) |
 
-## Industry Templates (10 Industries)
+### Audiences & Strategy
+| Method | Endpoint | Agent |
+|--------|----------|-------|
+| POST | `/api/agents/audience/generate?url=...` | Creative Strategist |
+| POST | `/api/agents/audience/compare` | Creative Strategist |
 
-Meta-safe templates with specific backgrounds, subjects, props, and avoidance rules:
+### Creative Angles
+| Method | Endpoint | Agent |
+|--------|----------|-------|
+| POST | `/api/agents/campaigns/{id}/angles` | Creative Angles |
+| GET | `/api/agents/campaigns/{id}/angles` | (DB lookup) |
 
-| Industry | Key Features |
-|----------|-------------|
-| `security` | No weapons, focus on technology and monitoring |
-| `food_restaurant` | Appetizing imagery, no health claims |
-| `retail_ecommerce` | Product focus, clean composition |
-| `tech_saas` | Modern interfaces, no fake data |
-| `beauty_cosmetics` | Product shots, no before/after |
-| `health_fitness` | Equipment focus, no body transformation |
-| `real_estate` | Property features, no discriminatory content |
-| `professional_services` | Trust signals, no guaranteed results |
-| `education` | Learning materials, no job guarantees |
-| `automotive` | Vehicle details, no dangerous driving |
+### Ad Copy
+| Method | Endpoint | Agent |
+|--------|----------|-------|
+| POST | `/api/agents/campaigns/{id}/copy` | Ad Copy Agent |
+| POST | `/api/agents/ad-copy/from-research` | Ad Copy Agent |
 
-## Feedback Loops
-
-### Loop #1: Compliance Feedback
-When content violates Meta policy, the Compliance Agent provides suggestions and triggers regeneration through the Visual Director.
-
-### Loop #2: Optimizer Feedback
-When ads underperform (low CTR, high CPA, low ROAS), the Performance Optimizer triggers new creative generation through the Creative Strategist.
-
-## File Structure
-
-```
-modules/agents/
-├── README.md                      # This file
-├── __init__.py                    # Agent exports
-├── models.py                      # Database models
-├── creative_strategist_agent.py   # Strategy & hooks (GPT-4o)
-├── copywriter_agent.py            # Ad copy writing (Claude Sonnet)
-├── ad_copy_agent.py               # Headlines & CTAs (Claude Sonnet)
-├── visual_director_agent.py       # Visual prompts (Claude Sonnet)
-├── ad_creative_agent.py           # Creative assembly (Claude Sonnet)
-├── compliance_agent.py            # Policy checking (Claude Haiku)
-├── media_generator_agent.py       # Image/Video gen (Nano Banana/Veo 3)
-└── performance_optimizer_agent.py # Performance (GPT-4o)
-```
+### Full Pipeline
+| Method | Endpoint | Agents |
+|--------|----------|--------|
+| POST | `/api/agents/campaigns/{id}/pipeline` | All (sequential) |
 
 ## Environment Variables
 
 ```env
 # Required
-OPENROUTER_API_KEY=your_openrouter_key
-GEMINI_API_KEY=your_gemini_key
+OPENROUTER_API_KEY=your_openrouter_key    # Routes to Claude/GPT-4o
+TAVILY_API_KEY=your_tavily_key            # Website scraping + search
+SERPER_API_KEY=your_serper_key            # Google SERP + Maps
 
-# Optional fallbacks
-OPENAI_API_KEY=your_openai_key
-STABILITY_API_KEY=your_stability_key
-REPLICATE_API_TOKEN=your_replicate_key
-RUNWAY_API_KEY=your_runway_key
-LUMA_API_KEY=your_luma_key
+# Optional
+ANTHROPIC_API_KEY=your_anthropic_key      # Direct fallback
+OPENAI_API_KEY=your_openai_key            # GPT-4o fallback
+DATAFORSEO_LOGIN=your_login               # Competitor keyword data
+DATAFORSEO_PASSWORD=your_password
+META_ACCESS_TOKEN=your_meta_token         # Ad Library access
+SCREENSHOTONE_ACCESS_KEY=your_key         # Screenshot fallback
 ```
 
-## Usage Example
+## File Structure
 
-```python
-from modules.agents import (
-    CreativeStrategistAgent,
-    CopywriterAgent,
-    VisualDirectorAgent,
-    ComplianceAgent,
-    MediaGeneratorAgent
-)
-
-# 1. Generate creative strategy
-strategist = CreativeStrategistAgent()
-angles = await strategist.generate_angles(campaign)
-
-# 2. Generate copy for each angle
-copywriter = CopywriterAgent()
-copies = await copywriter.generate_all_copy(campaign)
-
-# 3. Generate visual prompts
-visual_director = VisualDirectorAgent()
-visuals = await visual_director.generate_full_visual_package(campaign, angle)
-
-# 4. Check compliance
-compliance = ComplianceAgent()
-check = await compliance.check_compliance(
-    visuals["image_prompt"],
-    {"industry": "security"}
-)
-
-# 5. Generate final media (with industry template)
-if check["is_compliant"]:
-    generator = MediaGeneratorAgent()
-    image = await generator.generate_industry_ad_image(
-        industry="security",
-        product_name=campaign.product_name,
-        product_description=campaign.product_description,
-        headline_text=copies[0]["headline"]
-    )
+```
+modules/agents/
+├── README.md                         # This file
+├── __init__.py                       # Agent exports
+├── models.py                         # Database models (Campaign, MarketResearch, CreativeAngle, AdCopy)
+├── router.py                         # API endpoints
+├── schemas.py                        # Request/response schemas
+│
+├── market_research_agent.py          # Research orchestrator
+├── creative_strategist_agent.py      # Audience + targeting generation
+├── creative_angles_agent.py          # Creative angle positioning
+├── ad_copy_agent.py                  # Ad copy generation (B2B + B2C)
+├── ad_creative_agent.py              # Image prompt generation
+│
+├── copywriter_agent.py               # Meta copy (used in campaign service)
+├── visual_director_agent.py          # Visual direction (used in pipeline)
+├── compliance_agent.py               # Meta policy checking
+├── media_generator_agent.py          # Image/video generation (Gemini/Veo)
+├── monitor_optimizer_agent.py        # Performance optimization
+└── competitive_intelligence_agent.py # DataForSEO competitor analysis
 ```
