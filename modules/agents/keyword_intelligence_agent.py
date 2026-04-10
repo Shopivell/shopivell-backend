@@ -31,11 +31,15 @@ DATAFORSEO_PASSWORD = os.getenv("DATAFORSEO_PASSWORD")
 DATAFORSEO_AVAILABLE = bool(DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD)
 
 
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+SERPER_AVAILABLE = bool(SERPER_API_KEY)
+
+
 class KeywordIntelligenceAgent:
     """
     AI Agent for keyword research and competitive intelligence.
 
-    Uses DataForSEO API (primary) with Google autocomplete as fallback.
+    Pipeline: DataForSEO (search volume data) → Serper (related searches) → Google Autocomplete (free).
     """
 
     def __init__(self):
@@ -43,10 +47,14 @@ class KeywordIntelligenceAgent:
         if self.dataforseo_available:
             creds = f"{DATAFORSEO_LOGIN}:{DATAFORSEO_PASSWORD}"
             self.dataforseo_auth = base64.b64encode(creds.encode()).decode()
-            logger.info("[KeywordIntelligenceAgent] Initialized with DataForSEO")
         else:
             self.dataforseo_auth = None
-            logger.info("[KeywordIntelligenceAgent] Initialized (DataForSEO not configured, using fallback)")
+
+        self.serper_available = SERPER_AVAILABLE
+        logger.info(
+            f"[KeywordIntelligenceAgent] Initialized - "
+            f"DataForSEO: {self.dataforseo_available}, Serper: {SERPER_AVAILABLE}"
+        )
 
     def _dataforseo_request(self, endpoint: str, payload: List[Dict]) -> Dict:
         """Make a request to DataForSEO API."""
@@ -182,51 +190,106 @@ class KeywordIntelligenceAgent:
             "source": "dataforseo"
         }
 
-    def research_keywords_autocomplete(
+    def research_keywords_serper(
         self,
         seed_keywords: List[str],
         country_code: str = "ZW"
     ) -> Dict[str, Any]:
         """
-        Fallback: Get keyword suggestions from Google Autocomplete.
-
-        Free alternative when DataForSEO is not available.
+        Get keyword ideas from Serper.dev Google SERP related searches + People Also Ask.
         """
-        all_suggestions = []
+        if not self.serper_available:
+            return {"success": False, "error": "Serper not configured", "keywords": []}
 
-        for seed in seed_keywords:
-            try:
-                response = requests.get(
-                    "https://suggestqueries.google.com/complete/search",
-                    params={
-                        "client": "firefox",
-                        "q": seed,
-                        "gl": country_code.lower()
-                    },
-                    headers={"User-Agent": "Mozilla/5.0"}
+        all_keywords = set()
+        try:
+            for seed in seed_keywords[:5]:
+                response = requests.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    json={"q": seed, "gl": country_code.lower(), "hl": "en", "num": 10},
+                    timeout=15
                 )
-
                 if response.status_code == 200:
                     data = response.json()
-                    suggestions = data[1] if len(data) > 1 else []
-                    for suggestion in suggestions:
-                        all_suggestions.append({
-                            "keyword": suggestion,
-                            "search_volume": None,  # Not available from autocomplete
-                            "cpc": None,
-                            "competition": None,
-                            "seed_keyword": seed,
-                            "source": "google_autocomplete"
-                        })
-            except Exception as e:
-                logger.warning(f"[KeywordIntelligenceAgent] Autocomplete failed for '{seed}': {e}")
+                    for rs in data.get("relatedSearches", []):
+                        q = rs.get("query", "")
+                        if q:
+                            all_keywords.add(q)
+                    for paa in data.get("peopleAlsoAsk", []):
+                        q = paa.get("question", "")
+                        if q:
+                            all_keywords.add(q)
+        except Exception as e:
+            logger.warning(f"[KeywordIntelligenceAgent] Serper keyword search failed: {e}")
+
+        keywords = [
+            {"keyword": kw, "search_volume": None, "cpc": None, "competition": None, "source": "serper_related"}
+            for kw in sorted(all_keywords)
+        ]
 
         return {
             "success": True,
-            "keywords": all_suggestions,
-            "total_found": len(all_suggestions),
-            "source": "google_autocomplete",
-            "note": "Search volume/CPC data requires DataForSEO API key"
+            "keywords": keywords,
+            "total_found": len(keywords),
+            "source": "serper"
+        }
+
+    def research_keywords_autocomplete(
+        self,
+        seed_keywords: List[str],
+        country_code: str = "ZW",
+        expand_alphabet: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Get keyword suggestions from Google Autocomplete with alphabet expansion.
+        Free, no API key needed, works for any local market.
+        """
+        all_keywords = set()
+
+        # Direct autocomplete for each seed
+        for seed in seed_keywords[:10]:
+            try:
+                response = requests.get(
+                    "https://suggestqueries.google.com/complete/search",
+                    params={"client": "firefox", "q": seed, "gl": country_code.lower()},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    for s in response.json()[1]:
+                        all_keywords.add(s)
+            except Exception:
+                continue
+
+        # Alphabet expansion on top 3 seeds
+        if expand_alphabet:
+            for seed in seed_keywords[:3]:
+                for letter in "abcdefghijklmnopqrstuvwxyz":
+                    try:
+                        response = requests.get(
+                            "https://suggestqueries.google.com/complete/search",
+                            params={"client": "firefox", "q": f"{seed} {letter}", "gl": country_code.lower()},
+                            headers={"User-Agent": "Mozilla/5.0"},
+                            timeout=5
+                        )
+                        if response.status_code == 200:
+                            for s in response.json()[1]:
+                                all_keywords.add(s)
+                    except Exception:
+                        continue
+
+        keywords = [
+            {"keyword": kw, "search_volume": None, "cpc": None, "competition": None,
+             "seed_keyword": "", "source": "google_autocomplete"}
+            for kw in sorted(all_keywords)
+        ]
+
+        return {
+            "success": True,
+            "keywords": keywords,
+            "total_found": len(keywords),
+            "source": "google_autocomplete"
         }
 
     async def research_keywords(
@@ -239,37 +302,64 @@ class KeywordIntelligenceAgent:
         """
         Research keywords with automatic provider selection.
 
-        Uses DataForSEO if available, falls back to Google Autocomplete.
-
-        Args:
-            seed_keyword: Primary keyword to research
-            country_code: Target country code
-            additional_seeds: Additional seed keywords
-            limit: Max results
-
-        Returns:
-            Dict with keyword data and clusters
+        Pipeline: DataForSEO (search volume) → Serper (related searches) + Autocomplete (free).
         """
         seeds = [seed_keyword]
         if additional_seeds:
             seeds.extend(additional_seeds)
 
-        # Get raw keyword data
+        # Try DataForSEO first (has search volume data)
         if self.dataforseo_available:
             keyword_data = self.research_keywords_dataforseo(seeds, country_code, limit=limit)
+            if keyword_data.get("success") and keyword_data.get("keywords"):
+                # Enrich with autocomplete keywords not in DataForSEO
+                autocomplete = self.research_keywords_autocomplete(seeds, country_code, expand_alphabet=False)
+                existing = {kw["keyword"].lower() for kw in keyword_data["keywords"]}
+                for kw in autocomplete.get("keywords", []):
+                    if kw["keyword"].lower() not in existing:
+                        keyword_data["keywords"].append(kw)
+                keyword_data["total_found"] = len(keyword_data["keywords"])
+                # Continue to clustering below
+                keyword_data_result = keyword_data
+            else:
+                keyword_data_result = None
         else:
-            keyword_data = self.research_keywords_autocomplete(seeds, country_code)
+            keyword_data_result = None
 
-        if not keyword_data.get("success"):
-            return keyword_data
+        # Fallback: combine Serper + Autocomplete
+        if not keyword_data_result:
+            all_keywords = {}
+
+            # Serper related searches
+            if self.serper_available:
+                serper_data = self.research_keywords_serper(seeds, country_code)
+                for kw in serper_data.get("keywords", []):
+                    all_keywords[kw["keyword"].lower()] = kw
+
+            # Google Autocomplete with alphabet expansion
+            autocomplete_data = self.research_keywords_autocomplete(seeds, country_code)
+            for kw in autocomplete_data.get("keywords", []):
+                if kw["keyword"].lower() not in all_keywords:
+                    all_keywords[kw["keyword"].lower()] = kw
+
+            combined = list(all_keywords.values())
+            keyword_data_result = {
+                "success": True,
+                "keywords": combined,
+                "total_found": len(combined),
+                "source": "serper+autocomplete" if self.serper_available else "google_autocomplete"
+            }
+
+        if not keyword_data_result.get("success"):
+            return keyword_data_result
 
         # Cluster keywords by intent using LLM
-        keywords = keyword_data.get("keywords", [])
+        keywords = keyword_data_result.get("keywords", [])
         if keywords:
             clusters = await self.get_keyword_clusters(keywords)
-            keyword_data["clusters"] = clusters
+            keyword_data_result["clusters"] = clusters
 
-        return keyword_data
+        return keyword_data_result
 
     async def get_keyword_clusters(
         self,
