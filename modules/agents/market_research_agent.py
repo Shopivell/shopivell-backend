@@ -600,6 +600,138 @@ class MarketResearchAgent:
         logger.error(f"[MarketResearchAgent] BeautifulSoup failed after {retries + 1} attempts: {last_error}")
         return {"content": "", "error": last_error, "success": False}
 
+    async def _scrape_with_playwright(self, url: str) -> Dict[str, Any]:
+        """
+        Scrape a JS-rendered page using Playwright headless browser.
+        Used as final fallback when both Tavily and BeautifulSoup return thin content.
+        """
+        if not PLAYWRIGHT_AVAILABLE:
+            return {"content": "", "error": "Playwright not available", "success": False}
+
+        try:
+            from playwright.async_api import async_playwright
+            import platform as platform_mod
+
+            logger.info(f"[MarketResearchAgent] Playwright scraping: {url}")
+
+            async with async_playwright() as p:
+                is_linux = platform_mod.system() == "Linux"
+                launch_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] if is_linux else []
+
+                browser = await p.chromium.launch(headless=True, args=launch_args)
+                context = await browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                except Exception:
+                    # Try HTTP fallback
+                    if url.startswith("https://"):
+                        await page.goto(url.replace("https://", "http://"), wait_until="domcontentloaded", timeout=30000)
+                    else:
+                        raise
+
+                # Wait for JS to render content
+                try:
+                    await page.wait_for_selector("body", state="visible", timeout=5000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(3000)
+
+                # Scroll to trigger lazy loading
+                try:
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                    await page.wait_for_timeout(1000)
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(1000)
+                except Exception:
+                    pass
+
+                # Extract text content from the rendered page
+                content = await page.evaluate("""() => {
+                    // Remove script, style, nav, footer elements
+                    const removeSelectors = ['script', 'style', 'noscript', 'iframe'];
+                    removeSelectors.forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => el.remove());
+                    });
+
+                    const parts = [];
+
+                    // Title
+                    const title = document.title;
+                    if (title) parts.push('# ' + title);
+
+                    // Meta description
+                    const metaDesc = document.querySelector('meta[name="description"]');
+                    if (metaDesc) parts.push('Description: ' + metaDesc.content);
+
+                    // Headings
+                    document.querySelectorAll('h1, h2, h3').forEach(h => {
+                        const text = h.textContent.trim();
+                        if (text && text.length > 2) {
+                            const level = h.tagName[1];
+                            parts.push('#'.repeat(level) + ' ' + text);
+                        }
+                    });
+
+                    // Paragraphs
+                    document.querySelectorAll('p').forEach(p => {
+                        const text = p.textContent.trim();
+                        if (text && text.length > 20) parts.push(text);
+                    });
+
+                    // List items
+                    document.querySelectorAll('li').forEach(li => {
+                        const text = li.textContent.trim();
+                        if (text && text.length > 10 && text.length < 200) parts.push('• ' + text);
+                    });
+
+                    // Product cards / grid items (common patterns)
+                    document.querySelectorAll('[class*="product"], [class*="card"], [class*="item"]').forEach(el => {
+                        const text = el.textContent.trim().replace(/\\s+/g, ' ');
+                        if (text && text.length > 20 && text.length < 500) {
+                            parts.push(text);
+                        }
+                    });
+
+                    return parts.join('\\n\\n');
+                }""")
+
+                # Extract contact info
+                page_text = await page.evaluate("() => document.body.textContent")
+
+                await browser.close()
+
+                if not content or len(content.strip()) < 50:
+                    return {"content": "", "error": "Playwright got no meaningful content", "success": False}
+
+                logger.info(f"[MarketResearchAgent] Playwright extracted {len(content)} chars from {url}")
+
+                # Extract contacts from rendered text
+                emails = list(set(EMAIL_PATTERN.findall(page_text))) if page_text else []
+                emails = [e for e in emails if not any(x in e.lower() for x in ['example.com', 'test.com', '.png', '.jpg'])]
+                phones = [ph for ph in set(PHONE_PATTERN.findall(page_text)) if _validate_phone(ph)] if page_text else []
+
+                return {
+                    "content": content[:15000],
+                    "url": url,
+                    "success": True,
+                    "contact_info": {
+                        "emails": emails[:10],
+                        "phones": phones[:10],
+                        "social_media": {}
+                    },
+                    "statistics": self._extract_statistics(content),
+                    "source": "playwright"
+                }
+
+        except Exception as e:
+            logger.error(f"[MarketResearchAgent] Playwright scrape error for {url}: {e}")
+            return {"content": "", "error": str(e), "success": False}
+
     def _scrape_website(self, url: str) -> Dict[str, Any]:
         """Scrape the target website to understand the business"""
         # Validate URL upfront
@@ -1395,6 +1527,30 @@ Return ONLY valid JSON, no other text.
                 logger.info(f"[MarketResearchAgent] Performing deep multi-page scrape")
                 multi_page_data = self._scrape_multiple_pages(source_url)
 
+            # Re-scrape thin pages with Playwright (JS-rendered pages)
+            if multi_page_data.get("pages") and PLAYWRIGHT_AVAILABLE:
+                min_content_length = 500
+                thin_pages = [
+                    p for p in multi_page_data["pages"]
+                    if len(p.get("content", "")) < min_content_length
+                ]
+                if thin_pages:
+                    logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright")
+                    for thin_page in thin_pages:
+                        pw_result = await self._scrape_with_playwright(thin_page["url"])
+                        if pw_result.get("success") and len(pw_result.get("content", "")) > len(thin_page.get("content", "")):
+                            old_content = thin_page["content"]
+                            thin_page["content"] = pw_result["content"][:5000]
+                            thin_page["source"] = "playwright"
+                            multi_page_data["combined_content"] = multi_page_data["combined_content"].replace(
+                                f"--- PAGE: {thin_page['url']} ---\n{old_content}",
+                                f"--- PAGE: {thin_page['url']} ---\n{pw_result['content'][:5000]}"
+                            )
+                            if pw_result.get("contact_info"):
+                                multi_page_data["all_contacts"]["emails"].extend(pw_result["contact_info"].get("emails", []))
+                                multi_page_data["all_contacts"]["phones"].extend(pw_result["contact_info"].get("phones", []))
+                            logger.info(f"[MarketResearchAgent] Playwright improved {thin_page['url']}: {len(old_content)} -> {len(thin_page['content'])} chars")
+
             # AI-powered structured extraction if enabled
             if extract_structure and website_data.get("content"):
                 logger.info(f"[MarketResearchAgent] Extracting structured data with AI")
@@ -1950,6 +2106,36 @@ async def research_website_directly(
     multi_page_data = {}
     if deep_scrape:
         multi_page_data = agent._scrape_multiple_pages(url)
+
+    # Step 2.5: Re-scrape thin pages with Playwright (JS-rendered pages)
+    if multi_page_data.get("pages") and PLAYWRIGHT_AVAILABLE:
+        min_content_length = 500
+        thin_pages = [
+            p for p in multi_page_data["pages"]
+            if len(p.get("content", "")) < min_content_length
+        ]
+        if thin_pages:
+            logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright")
+            for thin_page in thin_pages:
+                pw_result = await agent._scrape_with_playwright(thin_page["url"])
+                if pw_result.get("success") and len(pw_result.get("content", "")) > len(thin_page.get("content", "")):
+                    # Replace thin content with Playwright content
+                    old_content = thin_page["content"]
+                    thin_page["content"] = pw_result["content"][:5000]
+                    thin_page["source"] = "playwright"
+
+                    # Update combined_content
+                    multi_page_data["combined_content"] = multi_page_data["combined_content"].replace(
+                        f"--- PAGE: {thin_page['url']} ---\n{old_content}",
+                        f"--- PAGE: {thin_page['url']} ---\n{pw_result['content'][:5000]}"
+                    )
+
+                    # Aggregate any new contacts
+                    if pw_result.get("contact_info"):
+                        multi_page_data["all_contacts"]["emails"].extend(pw_result["contact_info"].get("emails", []))
+                        multi_page_data["all_contacts"]["phones"].extend(pw_result["contact_info"].get("phones", []))
+
+                    logger.info(f"[MarketResearchAgent] Playwright improved {thin_page['url']}: {len(old_content)} -> {len(thin_page['content'])} chars")
 
     # Step 3: Extract structured data if enabled
     structured_data = {}
