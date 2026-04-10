@@ -50,11 +50,12 @@ class CreativeAnglesAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="anthropic/claude-sonnet-4" if OPENROUTER_AVAILABLE else "claude-sonnet-4-20250514",
             temperature=0.8  # Higher temperature for more creative outputs
         )
+        self._supports_json_mode = OPENROUTER_AVAILABLE
         self.embeddings = OpenAIEmbeddings()
-        logger.info(f"[CreativeAnglesAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        logger.info(f"[CreativeAnglesAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'Anthropic direct'}")
 
         self.prompt = ChatPromptTemplate.from_template("""
 Based on the market research and campaign brief, generate {num_angles} creative angles:
@@ -299,7 +300,7 @@ Recommendations: {research.recommendations or 'Not available'}
 
             # Run the LLM chain with structured JSON output
             from modules.openrouter.context import set_ai_context
-            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
             chain = self.prompt | json_llm | StrOutputParser()
             with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_angles"):
                 angles_text = await chain.ainvoke(campaign_data)

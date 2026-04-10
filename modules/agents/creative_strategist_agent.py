@@ -113,11 +113,13 @@ class CreativeStrategistAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="openai/gpt-4o", temperature=0.8)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.8)
+            self._supports_json_mode = True
         else:
             self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
+            self._supports_json_mode = False
         self.embeddings = OpenAIEmbeddings()
-        logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'Anthropic direct'}")
 
         # NEW: Meta Audience Targeting Prompt
         self.meta_audience_prompt = ChatPromptTemplate.from_template("""
@@ -432,7 +434,7 @@ Return ONLY valid JSON, no markdown.
         logger.info(f"[CreativeStrategistAgent] Generating Meta audience for: {company}")
 
         from modules.openrouter.context import set_ai_context
-        json_llm = self.llm.bind(response_format={"type": "json_object"})
+        json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
         chain = self.meta_audience_prompt | json_llm | StrOutputParser()
         with set_ai_context(agent_name="creative_strategist"):
             response = await chain.ainvoke(prompt_data)
@@ -721,7 +723,7 @@ Recommendations: {research.recommendations or 'Not available'}
             }
 
             from modules.openrouter.context import set_ai_context
-            json_llm = self.llm.bind(response_format={"type": "json_object"})
+            json_llm = self.llm.bind(response_format={"type": "json_object"}) if self._supports_json_mode else self.llm
             chain = self.hook_generation_prompt | json_llm | StrOutputParser()
             with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="creative_strategist"):
                 response = await chain.ainvoke(prompt_data)

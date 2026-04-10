@@ -71,7 +71,7 @@ class CopywriterAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-3.5-sonnet", temperature=0.9)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.9)
             logger.info("[CopywriterAgent] Initialized with OpenRouter (Claude)")
         else:
             self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.9)
