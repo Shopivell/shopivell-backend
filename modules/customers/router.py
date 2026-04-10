@@ -10,6 +10,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 from database import get_db
+from utils.cache import cache, CacheConfig, generate_cache_key
 from .models import Customer, CustomerSegment, CustomerSegmentMembership, CustomerRequest
 from .schemas import (
     CustomerResponse, CustomerCreate, CustomerUpdate, BulkCustomerCreate, BulkCustomerResponse,
@@ -258,8 +259,16 @@ def get_customers(
     db: Session = Depends(get_db)
 ):
     """Get paginated list of customers with optional filtering"""
+    cache_key = generate_cache_key(
+        "customers", skip, limit, customer_type, status, search,
+        prefix="cust:"
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     query = db.query(Customer)
-    
+
     # Apply filters
     if customer_type:
         query = query.filter(Customer.customer_type == customer_type)
@@ -273,17 +282,19 @@ def get_customers(
             (Customer.email.ilike(search_filter)) |
             (Customer.phone.ilike(search_filter))
         )
-    
+
     total_count = query.count()
     customers = query.offset(skip).limit(limit).all()
-    
-    return CustomerListResponse(
+
+    result = CustomerListResponse(
         customers=customers,
         total_count=total_count,
         page=skip // limit + 1,
         page_size=limit,
         total_pages=(total_count + limit - 1) // limit
     )
+    cache.set(cache_key, result.model_dump(), CacheConfig.TTL_MEDIUM)
+    return result
 
 @customer_router.get("/drafts/latest")
 def get_latest_draft_customer(

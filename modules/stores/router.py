@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from database import get_db
+from utils.cache import cache, CacheConfig, generate_cache_key, invalidator
 from modules.users.models import User
 from modules.stores.models import Store, StoreSetupStep, StoreSetupSession
 from modules.stores.schemas import (
@@ -907,16 +908,22 @@ async def create_store(
 async def get_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
     """Get store details - only works if store exists"""
     try:
+        cache_key = generate_cache_key("store", store_id, prefix="store:")
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         store = db.query(Store).filter(Store.id == store_id).first()
-        
+
         if not store:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Store not found"
             )
-            
+
+        cache.set(cache_key, StoreResponse.model_validate(store).model_dump(), CacheConfig.TTL_MEDIUM)
         return store
-        
+
     except HTTPException:
         raise
     except Exception as e:

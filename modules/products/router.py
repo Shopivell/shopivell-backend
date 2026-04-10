@@ -15,6 +15,7 @@ from modules.products.schemas import (
     CollectionCreate, CollectionResponse, CollectionUpdate, CollectionListResponse,
     InventoryListResponse, InventoryItemResponse, InventoryUpdate
 )
+from utils.cache import cache, CacheConfig, generate_cache_key, invalidator
 
 products_router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -428,6 +429,15 @@ async def get_products(
     db: Session = Depends(get_db)
 ):
     try:
+        # Check cache
+        cache_key = generate_cache_key(
+            "products", skip, limit, store_id, category, status, vendor, search,
+            prefix="prod:"
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         # Build query with filters
         query = db.query(Product)
 
@@ -447,20 +457,22 @@ async def get_products(
                 Product.description.ilike(f"%{search}%") |
                 Product.sku.ilike(f"%{search}%")
             )
-        
+
         # Get total count
         total = query.count()
-        
+
         # Apply pagination
         products = query.offset(skip).limit(limit).all()
-        
-        return ProductListResponse(
+
+        result = ProductListResponse(
             products=products,
             total=total,
             page=skip // limit + 1,
             size=len(products)
         )
-        
+        cache.set(cache_key, result.model_dump(), CacheConfig.TTL_MEDIUM)
+        return result
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -805,9 +817,10 @@ async def create_product(product_data: ProductCreate, db: Session = Depends(get_
         
         db.commit()
         db.refresh(db_product)
-        
+        invalidator.invalidate_product()
+
         return db_product
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -818,8 +831,7 @@ async def create_product(product_data: ProductCreate, db: Session = Depends(get_
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating product: {str(e)}"
         )
-    
-# UPDATE product
+
 # UPDATE product
 @products_router.put("/{product_id}", response_model=ProductResponse)
 async def update_product(
@@ -868,9 +880,10 @@ async def update_product(
         
         db.commit()
         db.refresh(db_product)
-        
+        invalidator.invalidate_product()
+
         return db_product
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -901,9 +914,10 @@ async def delete_product(product_id: uuid.UUID, db: Session = Depends(get_db)):
         
         db.delete(db_product)
         db.commit()
-        
+        invalidator.invalidate_product()
+
         return None
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -929,6 +943,15 @@ async def get_collections(
     db: Session = Depends(get_db)
 ):
     try:
+        # Check cache
+        cache_key = generate_cache_key(
+            "collections", skip, limit, store_id, collection_type, search,
+            prefix="prod:"
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         # Build query with filters
         query = db.query(Collection)
 
@@ -940,20 +963,22 @@ async def get_collections(
             query = query.filter(Collection.collection_type == collection_type)
         if search:
             query = query.filter(Collection.title.ilike(f"%{search}%"))
-        
+
         # Get total count
         total = query.count()
-        
+
         # Apply pagination
         collections = query.offset(skip).limit(limit).all()
-        
-        return CollectionListResponse(
+
+        result = CollectionListResponse(
             collections=collections,
             total=total,
             page=skip // limit + 1,
             size=len(collections)
         )
-        
+        cache.set(cache_key, result.model_dump(), CacheConfig.TTL_MEDIUM)
+        return result
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1022,9 +1047,10 @@ async def create_collection(collection_data: CollectionCreate, db: Session = Dep
         
         db.commit()
         db.refresh(db_collection)
-        
+        invalidator.invalidate_product()
+
         return db_collection
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -1071,9 +1097,10 @@ async def update_collection(
         
         db.commit()
         db.refresh(db_collection)
-        
+        invalidator.invalidate_product()
+
         return db_collection
-        
+
     except HTTPException:
         db.rollback()
         raise
@@ -1104,9 +1131,10 @@ async def delete_collection(collection_id: uuid.UUID, db: Session = Depends(get_
         
         db.delete(db_collection)
         db.commit()
-        
+        invalidator.invalidate_product()
+
         return None
-        
+
     except HTTPException:
         db.rollback()
         raise
