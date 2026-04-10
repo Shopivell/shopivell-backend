@@ -283,7 +283,7 @@ Return ONLY valid JSON, no other text.
 
     async def _generate_with_openrouter(self, prompt_text: str, model_name: str, product_name: str, visual_direction: str, angle_value_proposition: str) -> Dict[str, Any]:
         """Generate creative using OpenRouter with structured JSON output."""
-        max_tokens = 800
+        max_tokens = 2000
 
         logger.info(f"[AdCreativeAgent] Using OpenRouter ({model_name}, max_tokens={max_tokens})")
 
