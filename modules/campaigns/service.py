@@ -637,19 +637,53 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
             screenshot_url = None
             screenshot_thumbnail_url = None
             screenshot_base64_data = None
+
+            # Try Playwright first
             if SCREENSHOT_AVAILABLE:
                 try:
-                    print(f"[Screenshot] Capturing homepage screenshot for campaign...")
+                    print(f"[Screenshot] Capturing homepage screenshot with Playwright...")
                     screenshot_result = capture_homepage_screenshot_sync(base_url, full_page=True)
                     if screenshot_result.get("success"):
-                        screenshot_url = screenshot_result.get("screenshot_url")  # Cloudinary URL
+                        screenshot_url = screenshot_result.get("screenshot_url")  # MinIO URL
                         screenshot_thumbnail_url = screenshot_result.get("thumbnail_url")
-                        screenshot_base64_data = screenshot_result.get("screenshot_base64")  # Raw for cropping
-                        print(f"[Screenshot] Captured: {screenshot_url}")
+                        screenshot_base64_data = screenshot_result.get("screenshot_base64")
+                        print(f"[Screenshot] Playwright captured: {screenshot_url}")
                     else:
-                        print(f"[Screenshot] Failed: {screenshot_result.get('error')}")
+                        print(f"[Screenshot] Playwright failed: {screenshot_result.get('error')}")
                 except Exception as screenshot_err:
-                    print(f"[Screenshot] Error: {screenshot_err}")
+                    print(f"[Screenshot] Playwright error: {screenshot_err}")
+
+            # Fallback: ScreenshotOne API → download → upload to MinIO
+            if not screenshot_url:
+                try:
+                    from modules.stores.scraping_service import (
+                        capture_screenshot_via_api, upload_screenshot_to_storage,
+                        SCREENSHOTONE_CONFIGURED, SCREENSHOT_MINIO_AVAILABLE
+                    )
+                    if SCREENSHOTONE_CONFIGURED:
+                        print(f"[Screenshot] Falling back to ScreenshotOne API...")
+                        api_result = capture_screenshot_via_api(base_url)
+                        if api_result.get("success"):
+                            ss_bytes = api_result["screenshot_bytes"]
+                            screenshot_base64_data = __import__('base64').b64encode(ss_bytes).decode("utf-8")
+
+                            # Upload to MinIO
+                            if SCREENSHOT_MINIO_AVAILABLE:
+                                import uuid as _uuid
+                                ss_filename = f"{domain.replace('.', '_')}_{_uuid.uuid4().hex[:8]}.png"
+                                upload_result = upload_screenshot_to_storage(ss_bytes, ss_filename)
+                                if upload_result.get("success"):
+                                    screenshot_url = upload_result.get("secure_url")
+                                    screenshot_thumbnail_url = upload_result.get("thumbnail_url")
+                                    print(f"[Screenshot] ScreenshotOne → MinIO: {screenshot_url}")
+                                else:
+                                    print(f"[Screenshot] MinIO upload failed: {upload_result.get('error')}")
+                            else:
+                                print(f"[Screenshot] ScreenshotOne captured (base64 only, no MinIO)")
+                        else:
+                            print(f"[Screenshot] ScreenshotOne failed: {api_result.get('error')}")
+                except Exception as ss_fallback_err:
+                    print(f"[Screenshot] ScreenshotOne fallback error: {ss_fallback_err}")
 
             return {
                 "url": url,
