@@ -791,13 +791,18 @@ If no information can be extracted, return an empty array: []
 
                         await browser.close()
 
-                        if pw_content and len(pw_content) > len(content):
-                            print(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (was {len(content)})")
-                            content = pw_content
+                        if pw_content and len(pw_content) > 200:
+                            print(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (Tavily had {len(content)})")
+                            # If extract failed, Playwright content IS the primary content
+                            # Prepend it so AI sees it first
+                            if extract_failed:
+                                content = f"=== PAGE: {url} (Playwright rendered) ===\n{pw_content}\n\n{content}"
+                            else:
+                                content = pw_content + "\n\n" + content
                             scraped_data["content"] = content
                             scraped_data["pages_extracted"] = max(scraped_data.get("pages_extracted", 0), 1)
-                        if pw_images and not images:
-                            images = pw_images
+                        if pw_images:
+                            images = pw_images + (images or [])
                             scraped_data["images"] = images
                             print(f"[StoreScrapingAgent] Playwright found {len(pw_images)} images")
 
