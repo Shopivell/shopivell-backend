@@ -283,6 +283,7 @@ If no information can be extracted, return an empty array: []
             all_content = []
             extracted_pages = []
             all_images = []
+            extract_success = False  # Track if Tavily extract got actual page content
 
             # Extract from multiple pages
             try:
@@ -304,6 +305,7 @@ If no information can be extracted, return an empty array: []
                         if images:
                             all_images.extend(images)
 
+                    extract_success = len(extracted_pages) > 0
                     print(f"[StoreScrapingAgent] Successfully extracted {len(extracted_pages)} pages with content")
                     logger.info(f"[StoreScrapingAgent] Successfully extracted {len(extracted_pages)} pages")
                 else:
@@ -352,6 +354,7 @@ If no information can be extracted, return an empty array: []
                 "domain": domain,
                 "content": combined_content[:25000],
                 "pages_extracted": len(all_content),
+                "extract_success": extract_success,
                 "images": all_images[:20],
                 "extracted_at": datetime.utcnow().isoformat()
             }
@@ -704,9 +707,10 @@ If no information can be extracted, return an empty array: []
         content = scraped_data.get("content", "")
         images = scraped_data.get("images", [])
 
-        # Step 1.5: If Tavily returned thin/empty content, try Playwright (JS-rendered SPAs)
-        if len(content) < 500:
-            print(f"[StoreScrapingAgent] Tavily content too thin ({len(content)} chars), trying Playwright...")
+        # Step 1.5: If Tavily extract failed (SPA/JS-rendered), try Playwright
+        extract_failed = not scraped_data.get("extract_success", False)
+        if extract_failed or len(content) < 500:
+            print(f"[StoreScrapingAgent] Tavily extract {'failed' if extract_failed else 'thin'} ({len(content)} chars), trying Playwright...")
             try:
                 if SCREENSHOT_AVAILABLE:
                     from playwright.async_api import async_playwright
