@@ -264,8 +264,8 @@ def facebook_business_callback_post(
         
         # 2. Connect account
         oauth_data = FacebookOAuthRequest(access_token=user_access_token)
-        result = connect_facebook_account(oauth_data, db)
-        
+        result = connect_facebook_account(oauth_data, db, current_user=current_user)
+
         return result
         
     except Exception as e:
@@ -278,7 +278,8 @@ def facebook_business_callback_post(
 @business_router.post("/connect", response_model=FacebookOAuthResponse)
 def connect_facebook_account(
     oauth_data: FacebookOAuthRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """Connect Facebook Business Account and fetch pages"""
     try:
