@@ -40,13 +40,18 @@ except ImportError:
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# Import OpenRouter adapter (with fallback to ChatOpenAI)
+# Import OpenRouter adapter (with fallback to Anthropic direct)
 try:
     from modules.openrouter.langchain_adapter import ChatOpenRouter
-    OPENROUTER_AVAILABLE = True
+    OPENROUTER_AVAILABLE = bool(os.getenv("OPENROUTER_API_KEY"))
 except ImportError:
-    from langchain_openai import ChatOpenAI as ChatOpenRouter
     OPENROUTER_AVAILABLE = False
+
+if not OPENROUTER_AVAILABLE:
+    try:
+        from langchain_anthropic import ChatAnthropic as ChatOpenRouter
+    except ImportError:
+        from langchain_openai import ChatOpenAI as ChatOpenRouter
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -747,6 +752,7 @@ If no information can be extracted, return an empty array: []
 
         except Exception as e:
             logger.error(f"[StoreScrapingAgent] Store info extraction error: {e}")
+            print(f"[StoreScrapingAgent] AI EXTRACTION FAILED: {e}")
             store_data = {}
 
         # Step 4: MERGE RESULTS - Direct extraction takes priority for contact info
