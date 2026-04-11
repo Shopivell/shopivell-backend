@@ -13,6 +13,7 @@ class FacebookBusinessAccount(Base):
     business_name = Column(String(255), nullable=False)
     access_token = Column(Text, nullable=False)
     user_id = Column(String(255), nullable=False)  # Facebook user ID
+    shopivell_user_id = Column(String(255), nullable=True, index=True)  # Shopivell user ID for filtering
     expires_at = Column(DateTime, nullable=True)
     is_connected = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)

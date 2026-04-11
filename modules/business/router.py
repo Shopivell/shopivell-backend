@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlparse
 from pydantic import BaseModel
 
 from database import get_db
+from dependencies import get_current_user, get_current_user_optional, CurrentUser
 from .models import FacebookBusinessAccount, FacebookPage, InstagramAccount
 from .schemas import (
     FacebookBusinessAccountResponse, FacebookCallbackRequest, FacebookOAuthUrlRequest, FacebookOAuthUrlRequest, FacebookPageResponse,
@@ -239,6 +240,7 @@ def process_facebook_authentication(code: str, db: Session) -> dict:
 def facebook_business_callback_post(
     request_data: FacebookCallbackRequest,
     db: Session = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """OAuth callback for Facebook business account connection (POST from React)"""
     try:
@@ -316,6 +318,8 @@ def connect_facebook_account(
             FacebookBusinessAccount.business_account_id == business_account_id
         ).first()
 
+        shopivell_uid = current_user.id if current_user else None
+
         if existing_business:
             existing_business.access_token = long_lived_token
             existing_business.business_name = business_name
@@ -323,6 +327,8 @@ def connect_facebook_account(
             existing_business.is_connected = True
             existing_business.expires_at = expires_at
             existing_business.updated_at = datetime.utcnow()
+            if shopivell_uid:
+                existing_business.shopivell_user_id = shopivell_uid
             business_account = existing_business
         else:
             business_account = FacebookBusinessAccount(
@@ -331,7 +337,8 @@ def connect_facebook_account(
                 access_token=long_lived_token,
                 user_id=user_id,
                 expires_at=expires_at,
-                is_connected=True
+                is_connected=True,
+                shopivell_user_id=shopivell_uid
             )
             db.add(business_account)
             db.commit()
@@ -494,14 +501,22 @@ def get_facebook_pages_list(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     business_account_id: Optional[uuid.UUID] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_current_user_optional)
 ):
-    """Get all connected Facebook pages"""
+    """Get connected Facebook pages, filtered by authenticated user"""
     query = db.query(FacebookPage).filter(FacebookPage.is_connected == True)
-    
+
+    # Filter by the authenticated user's business accounts
+    if current_user:
+        user_business_ids = db.query(FacebookBusinessAccount.id).filter(
+            FacebookBusinessAccount.shopivell_user_id == current_user.id
+        ).subquery()
+        query = query.filter(FacebookPage.business_account_id.in_(user_business_ids))
+
     if business_account_id:
         query = query.filter(FacebookPage.business_account_id == business_account_id)
-    
+
     pages = query.offset(skip).limit(limit).all()
     total_count = query.count()
     
@@ -1154,6 +1169,7 @@ def get_instagram_oauth_url(request_data: FacebookOAuthUrlRequest):
 def instagram_callback(
     request_data: FacebookCallbackRequest,
     db: Session = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_current_user_optional),
 ):
     """OAuth callback for Instagram Business connection.
     Uses the same Facebook OAuth flow but fetches Instagram Business accounts."""
@@ -1201,6 +1217,8 @@ def instagram_callback(
             FacebookBusinessAccount.business_account_id == business_account_id_str
         ).first()
 
+        ig_shopivell_uid = current_user.id if current_user else None
+
         if existing_business:
             existing_business.access_token = long_lived_token
             existing_business.business_name = business_name
@@ -1208,6 +1226,8 @@ def instagram_callback(
             existing_business.is_connected = True
             existing_business.expires_at = expires_at
             existing_business.updated_at = datetime.utcnow()
+            if ig_shopivell_uid:
+                existing_business.shopivell_user_id = ig_shopivell_uid
             business_account = existing_business
         else:
             business_account = FacebookBusinessAccount(
@@ -1216,7 +1236,8 @@ def instagram_callback(
                 access_token=long_lived_token,
                 user_id=user_id,
                 expires_at=expires_at,
-                is_connected=True
+                is_connected=True,
+                shopivell_user_id=ig_shopivell_uid
             )
             db.add(business_account)
             db.commit()
@@ -1297,16 +1318,23 @@ def instagram_callback(
 def get_instagram_accounts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[CurrentUser] = Depends(get_current_user_optional)
 ):
-    """Get all connected Instagram Business accounts"""
-    accounts = db.query(InstagramAccount).filter(
+    """Get connected Instagram Business accounts, filtered by authenticated user"""
+    query = db.query(InstagramAccount).filter(
         InstagramAccount.is_connected == True
-    ).offset(skip).limit(limit).all()
+    )
 
-    total_count = db.query(InstagramAccount).filter(
-        InstagramAccount.is_connected == True
-    ).count()
+    # Filter by the authenticated user's business accounts
+    if current_user:
+        user_business_ids = db.query(FacebookBusinessAccount.id).filter(
+            FacebookBusinessAccount.shopivell_user_id == current_user.id
+        ).subquery()
+        query = query.filter(InstagramAccount.business_account_id.in_(user_business_ids))
+
+    accounts = query.offset(skip).limit(limit).all()
+    total_count = query.count()
 
     return InstagramAccountListResponse(
         accounts=[InstagramAccountResponse.model_validate(acc) for acc in accounts],

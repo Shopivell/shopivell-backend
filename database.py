@@ -220,3 +220,22 @@ def run_column_migrations():
             print("[OK] Verified agencies table exists")
         except Exception as e:
             print(f"[WARN] Could not create agencies table: {e}")
+
+        # Add shopivell_user_id to facebook_business_accounts for user-level filtering
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'facebook_business_accounts' AND column_name = 'shopivell_user_id'
+                    ) THEN
+                        ALTER TABLE facebook_business_accounts ADD COLUMN shopivell_user_id VARCHAR(255);
+                        CREATE INDEX IF NOT EXISTS ix_fba_shopivell_user_id ON facebook_business_accounts(shopivell_user_id);
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified shopivell_user_id column exists in facebook_business_accounts table")
+        except Exception as e:
+            print(f"[WARN] Could not add shopivell_user_id column: {e}")
