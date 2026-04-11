@@ -706,8 +706,8 @@ If no information can be extracted, return an empty array: []
         # Step 1.5: If Tavily extract failed (SPA/JS-rendered), try Playwright
         extract_failed = not scraped_data.get("extract_success", False)
         if extract_failed or len(content) < 500:
-            print(f"[StoreScrapingAgent] Tavily extract {'failed' if extract_failed else 'thin'} ({len(content)} chars), trying Playwright...")
-            print(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE={SCREENSHOT_AVAILABLE}, PLAYWRIGHT check starting...")
+            logger.warning(f"[StoreScrapingAgent] Tavily extract {'failed' if extract_failed else 'thin'} ({len(content)} chars), extract_success={scraped_data.get('extract_success')}, trying Playwright...")
+            logger.warning(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE={SCREENSHOT_AVAILABLE}")
             try:
                 if SCREENSHOT_AVAILABLE:
                     from playwright.async_api import async_playwright
@@ -788,8 +788,9 @@ If no information can be extracted, return an empty array: []
 
                         await browser.close()
 
+                        logger.warning(f"[StoreScrapingAgent] Playwright raw content: {len(pw_content) if pw_content else 0} chars, images: {len(pw_images) if pw_images else 0}")
                         if pw_content and len(pw_content) > 200:
-                            print(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (Tavily had {len(content)})")
+                            logger.warning(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (Tavily had {len(content)})")
                             # If extract failed, Playwright content REPLACES Tavily search junk
                             # (Tavily search may return results about the hosting platform, not the site)
                             if extract_failed:
@@ -804,13 +805,15 @@ If no information can be extracted, return an empty array: []
                             print(f"[StoreScrapingAgent] Playwright found {len(pw_images)} images")
 
                 else:
-                    print(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE is False, skipping Playwright")
+                    logger.warning(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE is False, skipping Playwright")
             except Exception as e:
-                print(f"[StoreScrapingAgent] Playwright fallback failed: {e}")
+                logger.error(f"[StoreScrapingAgent] Playwright fallback FAILED: {e}")
                 import traceback
-                traceback.print_exc()
+                logger.error(traceback.format_exc())
+        else:
+            logger.info(f"[StoreScrapingAgent] Skipping Playwright (extract_success={not extract_failed}, content={len(content)} chars)")
 
-        print(f"[StoreScrapingAgent] Content after Playwright step: {len(content)} chars, first 200: {content[:200]}")
+        logger.warning(f"[StoreScrapingAgent] Content after step 1.5: {len(content)} chars, preview: {content[:150]}")
         if not content:
             logger.warning("[StoreScrapingAgent] No content scraped, returning fallback")
             return self._generate_fallback_data(url)
@@ -858,8 +861,9 @@ If no information can be extracted, return an empty array: []
             logger.info(f"[StoreScrapingAgent] AI extracted: {list(store_data.keys())}")
 
         except Exception as e:
-            logger.error(f"[StoreScrapingAgent] Store info extraction error: {e}")
-            print(f"[StoreScrapingAgent] AI EXTRACTION FAILED: {e}")
+            logger.error(f"[StoreScrapingAgent] AI EXTRACTION FAILED: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             store_data = {}
 
         # Step 4: MERGE RESULTS - Direct extraction takes priority for contact info
