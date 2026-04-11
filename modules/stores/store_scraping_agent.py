@@ -707,6 +707,7 @@ If no information can be extracted, return an empty array: []
         extract_failed = not scraped_data.get("extract_success", False)
         if extract_failed or len(content) < 500:
             print(f"[StoreScrapingAgent] Tavily extract {'failed' if extract_failed else 'thin'} ({len(content)} chars), trying Playwright...")
+            print(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE={SCREENSHOT_AVAILABLE}, PLAYWRIGHT check starting...")
             try:
                 if SCREENSHOT_AVAILABLE:
                     from playwright.async_api import async_playwright
@@ -802,9 +803,14 @@ If no information can be extracted, return an empty array: []
                             scraped_data["images"] = images
                             print(f"[StoreScrapingAgent] Playwright found {len(pw_images)} images")
 
+                else:
+                    print(f"[StoreScrapingAgent] SCREENSHOT_AVAILABLE is False, skipping Playwright")
             except Exception as e:
                 print(f"[StoreScrapingAgent] Playwright fallback failed: {e}")
+                import traceback
+                traceback.print_exc()
 
+        print(f"[StoreScrapingAgent] Content after Playwright step: {len(content)} chars, first 200: {content[:200]}")
         if not content:
             logger.warning("[StoreScrapingAgent] No content scraped, returning fallback")
             return self._generate_fallback_data(url)
