@@ -95,12 +95,12 @@ class StoreScrapingAgent:
             print(f"[StoreScrapingAgent] WARNING: Tavily not available! TAVILY_AVAILABLE={TAVILY_AVAILABLE}, API_KEY={'SET' if tavily_api_key else 'NOT SET'}")
             logger.warning("[StoreScrapingAgent] Tavily not available - scraping will be limited")
 
-        # Initialize LLM via OpenRouter or OpenAI
+        # Initialize LLM via OpenRouter or Anthropic direct
         self.llm = ChatOpenRouter(
-            model="openai/gpt-4o-mini" if OPENROUTER_AVAILABLE else "gpt-4o-mini",
+            model="anthropic/claude-sonnet-4" if OPENROUTER_AVAILABLE else "claude-sonnet-4-20250514",
             temperature=0.2
         )
-        logger.info(f"[StoreScrapingAgent] LLM initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'OpenAI'}")
+        logger.info(f"[StoreScrapingAgent] LLM initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'Anthropic direct'}")
 
         # Store info extraction prompt
         self.store_info_prompt = ChatPromptTemplate.from_template("""
@@ -145,27 +145,35 @@ EXTRACT THESE FIELDS (return null only if truly not found):
    - "minimalist" = Minimalist & Clean aesthetic
    - "eco_friendly" = Eco-Friendly & Sustainable focus
 
-6. services_products: List the main products/services offered (comma-separated)
+6. services_products: List of main products/services as a JSON array of objects
    - Look at navigation menu, product categories, services listed
-   - Be specific, not generic
+   - Be specific with names and descriptions
+   - Include category if visible
 
 7. color_theme: The PRIMARY brand color as hex code
-   - Pick a color that fits the brand/industry
+   - Extract from the website's actual CSS/design if visible
    - Common examples: Blue=#2563EB, Green=#16A34A, Red=#DC2626
 
-8. business_type: Describe the business in 2-4 words
-   - Examples: "Coffee Shop", "Athletic Apparel", "SaaS Platform", "Security Services"
+8. business_type: Describe the business in 2-4 specific words
+   - Examples: "IT Equipment Store", "Security Services", "Appliance Repairs", "Coffee Shop"
+   - Do NOT use generic terms like "Business" or "Company"
+
+9. brand_style: Describe the brand's visual style in 1-2 sentences
+   - What does the website look and feel like?
+   - Examples: "Modern and clean with bold orange accents", "Corporate and professional with blue tones"
 
 WEBSITE CONTENT:
 {content}
 
 CRITICAL RULES:
 - ONLY extract information that ACTUALLY APPEARS in the content above
+- For store_name: Use the FULL company name, not abbreviated (e.g. "Reliable Modern Technologies" not "Reliabletech")
+- For services_products: Return as JSON array, not a comma-separated string
 - If you cannot find an email/phone, use null - DO NOT INVENT ONE
 - Return ONLY valid JSON, no markdown or explanation
 
 JSON FORMAT:
-{{"store_name": "...", "store_email": "...", "store_phone": "...", "store_voice": "...", "store_tone": "...", "services_products": "...", "color_theme": "#...", "business_type": "..."}}
+{{"store_name": "Full Business Name", "store_email": "...", "store_phone": "...", "store_voice": "2-3 sentences about what the business does and their value proposition", "store_tone": "professional", "services_products": [{{"name": "Service 1", "description": "Brief description", "category": "Category"}}, {{"name": "Service 2", "description": "Brief description", "category": "Category"}}], "color_theme": "#...", "business_type": "Specific Type", "brand_style": "Visual style description"}}
 """)
 
         # FAQ extraction prompt - Enhanced to extract comprehensive business information
@@ -548,19 +556,39 @@ If no information can be extracted, return an empty array: []
         if not image_urls:
             return None
 
-        # Logo detection patterns (ordered by priority)
-        logo_patterns = [
-            r'logo', r'brand', r'icon', r'favicon', r'header[-_]?img',
-            r'site[-_]?logo', r'company[-_]?logo', r'main[-_]?logo'
+        # Skip patterns — these contain "logo" but are NOT the actual company logo
+        skip_patterns = [
+            r'brands[-_]?logo', r'partner[-_]?logo', r'client[-_]?logo',
+            r'logos[-_]?banner', r'brand[-_]?logos', r'brands[-_]?logos',
+            r'sponsor[-_]?logo', r'payment[-_]?logo', r'trusted[-_]?logo',
         ]
 
-        # First pass: look for explicit logo patterns in URL
+        # Logo detection patterns (ordered by priority — most specific first)
+        logo_patterns = [
+            r'site[-_]?logo', r'company[-_]?logo', r'main[-_]?logo',
+            r'header[-_]?logo', r'/logo\.', r'logo[-_]?img',
+            r'favicon', r'icon',
+        ]
+
+        # First pass: look for explicit logo patterns in URL (but skip partner/brand logos)
         for img_url in image_urls:
             img_lower = img_url.lower()
+            # Skip partner/brand logo banners
+            if any(re.search(sp, img_lower) for sp in skip_patterns):
+                continue
             for pattern in logo_patterns:
                 if re.search(pattern, img_lower):
                     logger.info(f"[StoreScrapingAgent] Found logo via pattern '{pattern}': {img_url[:80]}")
                     return img_url
+
+        # Second pass: look for generic "logo" in URL (still skip partner logos)
+        for img_url in image_urls:
+            img_lower = img_url.lower()
+            if any(re.search(sp, img_lower) for sp in skip_patterns):
+                continue
+            if 'logo' in img_lower:
+                logger.info(f"[StoreScrapingAgent] Found logo via generic 'logo' match: {img_url[:80]}")
+                return img_url
 
         # Second pass: look for domain name in image URL (likely brand asset)
         domain_base = domain.split('.')[0].lower()
@@ -1072,9 +1100,9 @@ Return ONLY valid JSON in this format:
         """Apply default values for missing fields."""
         result = store_data.copy()
 
-        # Store name default
+        # Store name default — use domain name only as last resort
         if not result.get("store_name"):
-            domain_name = domain.split('.')[0].capitalize()
+            domain_name = domain.split('.')[0].replace('-', ' ').replace('_', ' ').title()
             result["store_name"] = domain_name
 
         # Store tone default and validation
@@ -1086,9 +1114,23 @@ Return ONLY valid JSON in this format:
         if not result.get("color_theme"):
             result["color_theme"] = "#3B82F6"
 
-        # Business type default
-        if not result.get("business_type"):
-            result["business_type"] = "Business"
+        # Business type — use industry from brand analysis if available, never leave as "Business"
+        if not result.get("business_type") or result.get("business_type") == "Business":
+            # Try to infer from services
+            services = result.get("services_products")
+            if isinstance(services, list) and services:
+                first_service = services[0]
+                cat = first_service.get("category", "") if isinstance(first_service, dict) else ""
+                if cat:
+                    result["business_type"] = cat
+            elif isinstance(services, str) and services:
+                result["business_type"] = services.split(",")[0].strip()
+            else:
+                result["business_type"] = "Business"
+
+        # Brand style default
+        if not result.get("brand_style"):
+            result["brand_style"] = None
 
         # Generate store_link from store name
         if result.get("store_name"):
