@@ -314,37 +314,33 @@ If no information can be extracted, return an empty array: []
                 print(f"[StoreScrapingAgent] Extraction error: {e}")
                 logger.error(f"[StoreScrapingAgent] Extraction error: {e}")
 
-            # Also do a search for more context, especially contact info
-            try:
-                print(f"[StoreScrapingAgent] Starting Tavily search for {domain}...")
-                logger.info(f"[StoreScrapingAgent] Searching for {domain} information...")
-                search_queries = [
-                    f"site:{domain} contact email phone address",
-                    f"site:{domain} about services products",
-                    f"site:{domain} FAQ help",
-                    f"{domain} contact phone email",  # Also search without site: restriction
-                ]
+            # Also do a quick search for contact info (only if extract got few pages)
+            if len(extracted_pages) < 3:
+                try:
+                    print(f"[StoreScrapingAgent] Starting Tavily search for {domain}...")
+                    search_queries = [
+                        f"site:{domain} contact email phone about services",
+                        f"{domain} contact phone email",
+                    ]
 
-                for query in search_queries:
-                    search_result = self.tavily.search(
-                        query=query,
-                        search_depth="advanced",
-                        include_raw_content=True,
-                        max_results=5
-                    )
-                    for result in search_result.get("results", []):
-                        content = result.get("raw_content") or result.get("content", "")
-                        result_url = result.get("url", "")
+                    for query in search_queries:
+                        search_result = self.tavily.search(
+                            query=query,
+                            search_depth="basic",
+                            include_raw_content=True,
+                            max_results=3
+                        )
+                        for result in search_result.get("results", []):
+                            result_content = result.get("raw_content") or result.get("content", "")
+                            result_url = result.get("url", "")
 
-                        if content and len(content) > 100 and result_url not in extracted_pages:
-                            all_content.append(f"=== SEARCH: {result_url} ===\n{content}")
-                            extracted_pages.append(result_url)
+                            if result_content and len(result_content) > 100 and result_url not in extracted_pages:
+                                all_content.append(f"=== SEARCH: {result_url} ===\n{result_content}")
+                                extracted_pages.append(result_url)
 
-                print(f"[StoreScrapingAgent] Search complete, total sources: {len(all_content)}")
-                logger.info(f"[StoreScrapingAgent] Search complete, total sources: {len(all_content)}")
-            except Exception as e:
-                print(f"[StoreScrapingAgent] Search error: {e}")
-                logger.error(f"[StoreScrapingAgent] Search error: {e}")
+                    print(f"[StoreScrapingAgent] Search complete, total sources: {len(all_content)}")
+                except Exception as e:
+                    print(f"[StoreScrapingAgent] Search error: {e}")
 
             combined_content = "\n\n".join(all_content)
             print(f"[StoreScrapingAgent] Final content length: {len(combined_content)} chars, {len(all_content)} sources, {len(all_images)} images")
@@ -848,7 +844,7 @@ If no information can be extracted, return an empty array: []
                 store_response = await store_chain.ainvoke({
                     "url": url,
                     "domain": domain,
-                    "content": content[:20000]
+                    "content": content[:12000]
                 })
 
             store_response = self._clean_json_response(store_response)
@@ -891,7 +887,7 @@ If no information can be extracted, return an empty array: []
                 faq_response = await faq_chain.ainvoke({
                     "url": url,
                     "domain": domain,
-                    "content": content[:15000]
+                    "content": content[:10000]
                 })
 
             faq_response = self._clean_json_response(faq_response)
