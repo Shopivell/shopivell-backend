@@ -700,13 +700,109 @@ If no information can be extracted, return an empty array: []
         # Step 1: Scrape website content
         scraped_data = self._scrape_website(url)
 
-        if not scraped_data.get("content"):
-            logger.warning("[StoreScrapingAgent] No content scraped, returning fallback")
-            return self._generate_fallback_data(url)
-
         domain = scraped_data.get("domain", "")
         content = scraped_data.get("content", "")
         images = scraped_data.get("images", [])
+
+        # Step 1.5: If Tavily returned thin/empty content, try Playwright (JS-rendered SPAs)
+        if len(content) < 500:
+            print(f"[StoreScrapingAgent] Tavily content too thin ({len(content)} chars), trying Playwright...")
+            try:
+                if SCREENSHOT_AVAILABLE:
+                    from playwright.async_api import async_playwright
+                    import platform as platform_mod
+
+                    async with async_playwright() as p:
+                        is_linux = platform_mod.system() == "Linux"
+                        launch_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] if is_linux else []
+                        browser = await p.chromium.launch(headless=True, args=launch_args)
+                        context = await browser.new_context(
+                            viewport={"width": 1920, "height": 1080},
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        )
+                        page = await context.new_page()
+
+                        try:
+                            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        except Exception:
+                            if url.startswith("https://"):
+                                await page.goto(url.replace("https://", "http://"), wait_until="domcontentloaded", timeout=30000)
+                            else:
+                                raise
+
+                        try:
+                            await page.wait_for_selector("body", state="visible", timeout=5000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(3000)
+
+                        # Scroll to trigger lazy loading
+                        try:
+                            await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+                            await page.wait_for_timeout(1000)
+                            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await page.wait_for_timeout(1000)
+                        except Exception:
+                            pass
+
+                        # Extract text content
+                        pw_content = await page.evaluate("""() => {
+                            document.querySelectorAll('script, style, noscript, iframe').forEach(el => el.remove());
+                            const parts = [];
+                            const title = document.title;
+                            if (title) parts.push('# ' + title);
+                            const metaDesc = document.querySelector('meta[name="description"]');
+                            if (metaDesc) parts.push('Description: ' + metaDesc.content);
+                            document.querySelectorAll('h1, h2, h3').forEach(h => {
+                                const text = h.textContent.trim();
+                                if (text && text.length > 2) parts.push('#'.repeat(h.tagName[1]) + ' ' + text);
+                            });
+                            document.querySelectorAll('p').forEach(p => {
+                                const text = p.textContent.trim();
+                                if (text && text.length > 15) parts.push(text);
+                            });
+                            document.querySelectorAll('li').forEach(li => {
+                                const text = li.textContent.trim();
+                                if (text && text.length > 10 && text.length < 200) parts.push('- ' + text);
+                            });
+                            document.querySelectorAll('a').forEach(a => {
+                                const href = a.href;
+                                const text = a.textContent.trim();
+                                if (text && href && text.length > 2 && text.length < 50) parts.push('[' + text + '](' + href + ')');
+                            });
+                            return parts.join('\\n\\n');
+                        }""")
+
+                        # Extract images
+                        pw_images = await page.evaluate("""() => {
+                            const imgs = [];
+                            document.querySelectorAll('img').forEach(img => {
+                                const src = img.src || img.dataset.src;
+                                if (src && !src.startsWith('data:') && src.length > 10) {
+                                    imgs.push({url: src, alt: img.alt || ''});
+                                }
+                            });
+                            return imgs;
+                        }""")
+
+                        await browser.close()
+
+                        if pw_content and len(pw_content) > len(content):
+                            print(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (was {len(content)})")
+                            content = pw_content
+                            scraped_data["content"] = content
+                            scraped_data["pages_extracted"] = max(scraped_data.get("pages_extracted", 0), 1)
+                        if pw_images and not images:
+                            images = pw_images
+                            scraped_data["images"] = images
+                            print(f"[StoreScrapingAgent] Playwright found {len(pw_images)} images")
+
+            except Exception as e:
+                print(f"[StoreScrapingAgent] Playwright fallback failed: {e}")
+
+        if not content:
+            logger.warning("[StoreScrapingAgent] No content scraped, returning fallback")
+            return self._generate_fallback_data(url)
 
         # Fallback: Extract images from HTML if Tavily returned none
         if not images:
