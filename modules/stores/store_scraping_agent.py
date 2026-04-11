@@ -789,10 +789,10 @@ If no information can be extracted, return an empty array: []
 
                         if pw_content and len(pw_content) > 200:
                             print(f"[StoreScrapingAgent] Playwright extracted {len(pw_content)} chars (Tavily had {len(content)})")
-                            # If extract failed, Playwright content IS the primary content
-                            # Prepend it so AI sees it first
+                            # If extract failed, Playwright content REPLACES Tavily search junk
+                            # (Tavily search may return results about the hosting platform, not the site)
                             if extract_failed:
-                                content = f"=== PAGE: {url} (Playwright rendered) ===\n{pw_content}\n\n{content}"
+                                content = f"=== PAGE: {url} (Playwright rendered) ===\n{pw_content}"
                             else:
                                 content = pw_content + "\n\n" + content
                             scraped_data["content"] = content
