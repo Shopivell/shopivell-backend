@@ -786,6 +786,34 @@ If no information can be extracted, return an empty array: []
                             return imgs;
                         }""")
 
+                        # Capture screenshot while browser is still open (avoid launching Playwright twice)
+                        try:
+                            screenshot_bytes = await page.screenshot(full_page=False, type="png")
+                            if screenshot_bytes:
+                                # Save and upload screenshot
+                                from modules.stores.scraping_service import SCREENSHOT_DIR, upload_screenshot_to_storage, SCREENSHOT_MINIO_AVAILABLE
+                                import uuid as uuid_module
+                                pw_domain = urlparse(url).netloc.replace("www.", "").replace(".", "_")
+                                pw_filename = f"{pw_domain}_{uuid_module.uuid4().hex[:8]}.png"
+                                pw_screenshot_path = SCREENSHOT_DIR / pw_filename
+                                with open(pw_screenshot_path, "wb") as f:
+                                    f.write(screenshot_bytes)
+                                scraped_data["_pw_screenshot"] = {
+                                    "success": True,
+                                    "screenshot_path": str(pw_screenshot_path),
+                                    "screenshot_filename": pw_filename,
+                                    "screenshot_bytes": screenshot_bytes,
+                                }
+                                # Upload to MinIO if available
+                                if SCREENSHOT_MINIO_AVAILABLE:
+                                    storage_result = upload_screenshot_to_storage(screenshot_bytes, pw_filename)
+                                    if storage_result.get("success"):
+                                        scraped_data["_pw_screenshot"]["screenshot_url"] = storage_result.get("url")
+                                        scraped_data["_pw_screenshot"]["thumbnail_url"] = storage_result.get("thumbnail_url")
+                                logger.info(f"[StoreScrapingAgent] Playwright screenshot captured: {pw_filename}")
+                        except Exception as ss_err:
+                            logger.warning(f"[StoreScrapingAgent] Playwright screenshot failed: {ss_err}")
+
                         await browser.close()
 
                         logger.warning(f"[StoreScrapingAgent] Playwright raw content: {len(pw_content) if pw_content else 0} chars, images: {len(pw_images) if pw_images else 0}")
@@ -947,9 +975,16 @@ If no information can be extracted, return an empty array: []
         result["scraped_at"] = scraped_data.get("extracted_at")
 
         # Step 8: Capture homepage screenshot and analyze brand with Gemini
-        if SCREENSHOT_AVAILABLE and capture_homepage_screenshot_sync:
-            logger.info(f"[StoreScrapingAgent] Capturing full homepage screenshot...")
+        # Skip if Playwright already captured a screenshot during SPA content extraction
+        pw_screenshot = scraped_data.get("_pw_screenshot")
+        if pw_screenshot and pw_screenshot.get("success"):
+            logger.info(f"[StoreScrapingAgent] Using Playwright screenshot from content extraction (skipping second capture)")
+            screenshot_data = pw_screenshot
+        elif SCREENSHOT_AVAILABLE and capture_homepage_screenshot_sync:
+            logger.info(f"[StoreScrapingAgent] Capturing homepage screenshot...")
             screenshot_data = capture_homepage_screenshot_sync(url, full_page=False)
+        else:
+            screenshot_data = {}
 
             if screenshot_data.get("success"):
                 result["homepage_screenshot"] = {
