@@ -278,7 +278,7 @@ If no information can be extracted, return an empty array: []
             ]
 
             # Build URLs to extract
-            urls_to_extract = [base_url + page for page in priority_pages[:15]]
+            urls_to_extract = [base_url + page for page in priority_pages[:8]]
 
             all_content = []
             extracted_pages = []
@@ -949,7 +949,7 @@ If no information can be extracted, return an empty array: []
         # Step 8: Capture homepage screenshot and analyze brand with Gemini
         if SCREENSHOT_AVAILABLE and capture_homepage_screenshot_sync:
             logger.info(f"[StoreScrapingAgent] Capturing full homepage screenshot...")
-            screenshot_data = capture_homepage_screenshot_sync(url, full_page=True)
+            screenshot_data = capture_homepage_screenshot_sync(url, full_page=False)
 
             if screenshot_data.get("success"):
                 result["homepage_screenshot"] = {
