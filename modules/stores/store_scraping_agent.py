@@ -1149,28 +1149,20 @@ Return ONLY valid JSON in this format:
 """)
 
         try:
-            # Use OpenAI directly for better extraction (bypass OpenRouter for this)
-            from openai import OpenAI
-            openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            # Use the agent's configured LLM (OpenRouter -> Claude) — the
+            # OpenAI-direct path silently failed when OPENAI_API_KEY was not
+            # set on the deployed backend, returning 0 products even when the
+            # site (e.g. reliabletech.co.zw) clearly has products.
+            from modules.openrouter.context import set_ai_context
+            products_chain = products_prompt | self.llm | StrOutputParser()
+            with set_ai_context(agent_name="store_scraping_products"):
+                products_response = await products_chain.ainvoke({
+                    "url": url,
+                    "domain": domain,
+                    "content": content[:30000],
+                })
 
-            response = openai_client.chat.completions.create(
-                model="gpt-4o",  # Use stronger model for accurate extraction
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert at extracting product and pricing information from websites. Always return valid JSON only. Be specific and accurate - extract actual product names and prices."
-                    },
-                    {
-                        "role": "user",
-                        "content": products_prompt.format(url=url, domain=domain, content=content[:30000])
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=3000
-            )
-
-            products_response = response.choices[0].message.content.strip()
-            products_response = self._clean_json_response(products_response)
+            products_response = self._clean_json_response(products_response.strip())
             data = json.loads(products_response)
 
             # Validate and normalize products
