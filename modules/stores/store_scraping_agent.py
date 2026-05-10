@@ -4,10 +4,19 @@
 import os
 import re
 import json
+import time
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from dotenv import load_dotenv
 from datetime import datetime
+
+# Module-level cache for Tavily-scraped content. Keyed by URL.
+# Both extract_store_info and extract_products call _scrape_website with the
+# same URL during a single store-creation flow — caching the result here
+# halves the Tavily call volume and prevents one of the two calls from
+# being silently rate-limited to empty content.
+_SCRAPE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_SCRAPE_CACHE_TTL_SECONDS = 600  # 10 minutes
 
 # Import Tavily
 try:
@@ -252,6 +261,19 @@ If no information can be extracted, return an empty array: []
         print(f"[StoreScrapingAgent] _scrape_website called for: {url}")
         print(f"[StoreScrapingAgent] Tavily client available: {self.tavily is not None}")
 
+        # Cache hit: reuse content if we scraped this URL recently.
+        cache_key = url.rstrip('/').lower()
+        cached = _SCRAPE_CACHE.get(cache_key)
+        if cached:
+            cached_at, cached_data = cached
+            age = time.time() - cached_at
+            if age < _SCRAPE_CACHE_TTL_SECONDS and cached_data.get("content"):
+                print(f"[StoreScrapingAgent] Cache HIT for {url} (age {int(age)}s) — skipping Tavily call")
+                logger.info(f"[StoreScrapingAgent] Cache hit for {url} (age {int(age)}s)")
+                return cached_data
+            elif age >= _SCRAPE_CACHE_TTL_SECONDS:
+                _SCRAPE_CACHE.pop(cache_key, None)
+
         if not self.tavily:
             print("[StoreScrapingAgent] ERROR: Tavily not available, returning empty content")
             logger.warning("[StoreScrapingAgent] Tavily not available")
@@ -345,7 +367,7 @@ If no information can be extracted, return an empty array: []
             combined_content = "\n\n".join(all_content)
             print(f"[StoreScrapingAgent] Final content length: {len(combined_content)} chars, {len(all_content)} sources, {len(all_images)} images")
 
-            return {
+            result = {
                 "url": url,
                 "domain": domain,
                 "content": combined_content[:25000],
@@ -354,6 +376,14 @@ If no information can be extracted, return an empty array: []
                 "images": all_images[:20],
                 "extracted_at": datetime.utcnow().isoformat()
             }
+
+            # Cache only non-empty scrapes — caching empty content would defeat
+            # the point if Tavily transiently returned nothing.
+            if combined_content:
+                _SCRAPE_CACHE[cache_key] = (time.time(), result)
+                print(f"[StoreScrapingAgent] Cached scrape for {url} ({len(combined_content)} chars)")
+
+            return result
 
         except Exception as e:
             print(f"[StoreScrapingAgent] FATAL Scraping error: {e}")
