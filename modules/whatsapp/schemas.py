@@ -57,7 +57,6 @@ class WhatsAppMessageCreate(WhatsAppMessageBase):
     whatsapp_account_id: uuid.UUID
     message_id: str
     message_text: Optional[str] = None
-    template_name: Optional[str] = None
     meta_data: Optional[Dict[str, Any]] = None
 
 class WhatsAppMessageResponse(WhatsAppMessageBase):
@@ -68,7 +67,6 @@ class WhatsAppMessageResponse(WhatsAppMessageBase):
     message_id: str
     wamid: Optional[str] = None
     message_text: Optional[str] = None
-    template_name: Optional[str] = None
     media_url: Optional[str] = None
     media_id: Optional[str] = None
     meta_data: Optional[Dict[str, Any]] = None
@@ -83,20 +81,6 @@ class WhatsAppTextMessage(BaseModel):
     to: str = Field(..., description="Recipient phone number in international format")
     body: str = Field(..., description="Message text content")
     preview_url: bool = False
-
-class WhatsAppTemplateMessage(BaseModel):
-    to: str = Field(..., description="Recipient phone number in international format")
-    template_name: str = Field(..., description="Template name")
-    language_code: str = Field(default="en", description="Template language code")
-    components: Optional[List[Dict[str, Any]]] = None
-
-class WhatsAppMessageRequest(BaseModel):
-    messaging_product: str = "whatsapp"
-    recipient_type: str = "individual"
-    to: str
-    type: str
-    text: Optional[WhatsAppTextMessage] = None
-    template: Optional[WhatsAppTemplateMessage] = None
 
 # Webhook Schemas
 class WhatsAppWebhookPayload(BaseModel):
@@ -272,17 +256,12 @@ class BulkMessageRecipient(BaseModel):
     """Single recipient for bulk messaging"""
     phone_number: str = Field(..., description="Phone number in E.164 format (e.g., 263771234567)")
     name: Optional[str] = Field(None, description="Optional name for personalization")
-    custom_variables: Optional[Dict[str, str]] = Field(None, description="Custom variables for template personalization")
 
 
 class BulkMessageRequest(BaseModel):
-    """Request schema for bulk messaging"""
+    """Request schema for bulk text messaging (24-hour window only)"""
     recipients: List[BulkMessageRecipient] = Field(..., min_length=1, max_length=1000, description="List of recipients")
-    message_type: str = Field("template", description="Message type: 'template' or 'text'")
-    template_name: Optional[str] = Field(None, description="Template name (required for template messages)")
-    language_code: str = Field("en_US", description="Template language code")
-    text_message: Optional[str] = Field(None, description="Text message content (required for text messages)")
-    components: Optional[List[Dict[str, Any]]] = Field(None, description="Template components for personalization")
+    text_message: str = Field(..., description="Text message content")
 
     class Config:
         json_schema_extra = {
@@ -291,9 +270,7 @@ class BulkMessageRequest(BaseModel):
                     {"phone_number": "263771234567", "name": "John"},
                     {"phone_number": "263772345678", "name": "Jane"}
                 ],
-                "message_type": "template",
-                "template_name": "hello_world",
-                "language_code": "en_US"
+                "text_message": "Hi! Thanks for reaching out — how can we help you today?"
             }
         }
 
@@ -313,6 +290,7 @@ class BulkMessageResponse(BaseModel):
     total_recipients: int
     successful: int
     failed: int
+    skipped: int = 0  # Recipients excluded for missing opt-in / opt-out (policy compliance)
     results: List[BulkMessageResult]
     message: str
 

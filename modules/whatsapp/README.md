@@ -14,8 +14,7 @@ The AI Sales Assistant is designed to:
 ## Features
 
 ### Core WhatsApp Features
-- Message sending (text, image, document)
-- Template messages (pre-approved)
+- Message sending (text, image, document) within the 24-hour customer window
 - Interactive buttons
 - Automated responses
 - Order notifications
@@ -220,7 +219,6 @@ async def handle_fallback(db, store_id, phone_number, query):
 
 ### Core WhatsApp Endpoints
 - `POST /v1/whatsapp/send` - Send message
-- `POST /v1/whatsapp/template` - Send template message
 - `GET /v1/whatsapp/conversations` - List conversations
 - `POST /v1/whatsapp/webhook` - Incoming webhook handler
 - `PUT /v1/whatsapp/settings` - Update settings
@@ -330,8 +328,11 @@ Each store can customize:
 - **Text**: Plain text messages
 - **Image**: Product images, catalogs
 - **Document**: PDFs, price lists
-- **Template**: Pre-approved WhatsApp templates
 - **Interactive Buttons**: Quick reply options
+
+> Note: Template messaging was removed entirely (June 2026) after WABA
+> accounts were blocked by Meta for template-message quality. Only messages
+> within the 24-hour customer service window are supported.
 
 ## Scalability Considerations
 

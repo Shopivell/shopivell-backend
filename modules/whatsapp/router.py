@@ -22,9 +22,10 @@ from modules.whatsapp.interactive_messages import build_flow_message, build_text
 from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsAppLead, AdCampaign, WhatsAppConversation, WhatsAppConversationMessage, CRMTask
 from .store_router import StoreRouter
 from .profile_service import get_customer_name_from_contacts, generate_avatar_url, should_update_profile_picture
+from . import consent
 from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
-    WhatsAppMessageSendResponse, WhatsAppTextMessage, WhatsAppTemplateMessage,
+    WhatsAppMessageSendResponse, WhatsAppTextMessage,
     WhatsAppAccountsListResponse, WhatsAppMessagesListResponse,
     WhatsAppWebhookVerification, WhatsAppWebhookPayload,
     BulkMessageRequest, BulkMessageResponse, BulkMessageResult,
@@ -227,7 +228,6 @@ def save_message_to_db(
     direction: str,
     status: str,
     message_text: Optional[str] = None,
-    template_name: Optional[str] = None,
     wamid: Optional[str] = None,
     meta_data: Optional[Dict[str, Any]] = None
 ):
@@ -243,7 +243,6 @@ def save_message_to_db(
             direction=direction,
             status=status,
             message_text=message_text,
-            template_name=template_name,
             meta_data=meta_data,
             timestamp=datetime.utcnow()
         )
@@ -550,80 +549,9 @@ def delete_whatsapp_account(
         raise HTTPException(status_code=500, detail=f"Failed to delete: {str(e)}")
 
 # WhatsApp Messaging Endpoints
-
-@whatsapp_router.post("/accounts/{account_id}/send-template", response_model=WhatsAppMessageSendResponse)
-def send_whatsapp_template_message(
-    account_id: uuid.UUID,
-    template_data: WhatsAppTemplateMessage,
-    db: Session = Depends(get_db)
-):
-    """Send a template message via WhatsApp"""
-    whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-    
-    try:
-        # Prepare template payload
-        template_payload = {
-            "name": template_data.template_name,
-            "language": {
-                "code": template_data.language_code
-            }
-        }
-        
-        if template_data.components:
-            template_payload["components"] = template_data.components
-        
-        # Send message via WhatsApp API
-        result = send_whatsapp_message_request(
-            phone_number_id=whatsapp_account.phone_number_id,
-            access_token=access_token,
-            to=template_data.to,
-            message_type="template",
-            message_data={
-                "template": template_payload
-            }
-        )
-        
-        # Extract message IDs
-        message_id = result.get("messages", [{}])[0].get("id")
-        wamid = result.get("messages", [{}])[0].get("wamid")
-        
-        # Save to database
-        saved_message = save_message_to_db(
-            db=db,
-            whatsapp_account_id=account_id,
-            message_id=message_id or f"temp_{datetime.utcnow().timestamp()}",
-            from_number=whatsapp_account.phone_number,
-            to_number=template_data.to,
-            message_type="template",
-            direction="outbound",
-            status="sent",
-            template_name=template_data.template_name,
-            wamid=wamid,
-            meta_data=result
-        )
-        
-        # 🔔 REAL-TIME PUSH: Broadcast the new outgoing message
-        if saved_message:
-            message_response = WhatsAppMessageResponse.model_validate(saved_message)
-            asyncio.run(manager.broadcast_message(
-                str(account_id),
-                message_response.model_dump()
-            ))
-        
-        return WhatsAppMessageSendResponse(
-            success=True,
-            message_id=message_id,
-            wamid=wamid,
-            message="Template message sent successfully"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send template message: {str(e)}"
-        )
+# NOTE: Template messaging has been removed entirely — WABA accounts were
+# blocked by Meta for template-message quality (2 accounts blocked June 2026).
+# Only text messages within the 24-hour customer service window are supported.
 
 @whatsapp_router.post("/accounts/{account_id}/send-bulk", response_model=BulkMessageResponse)
 def send_bulk_whatsapp_messages(
@@ -633,56 +561,72 @@ def send_bulk_whatsapp_messages(
     db: Session = Depends(get_db)
 ):
     """
-    Send bulk WhatsApp messages to multiple recipients.
-    Supports both template messages and text messages (within 24-hour window).
+    Send bulk WhatsApp text messages to multiple recipients
+    (within the 24-hour customer service window).
+
+    Policy compliance (WhatsApp Business Messaging Policy):
+    - Opted-out (STOP) numbers are never messaged.
+    - Sends are throttled to avoid spike-sending patterns that damage quality
+      rating (delay configurable via WHATSAPP_BULK_SEND_DELAY_SECONDS).
     """
+    import time as _time
+
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+
+    send_delay = float(os.getenv("WHATSAPP_BULK_SEND_DELAY_SECONDS", "1.0"))
 
     results: List[BulkMessageResult] = []
     successful = 0
     failed = 0
+    skipped = 0
+    seen_numbers = set()
 
     for recipient in bulk_data.recipients:
         try:
             # Clean phone number
             to_clean = recipient.phone_number.replace(" ", "").replace("+", "").strip()
 
-            if bulk_data.message_type == "template":
-                # Send template message
-                template_payload = {
-                    "name": bulk_data.template_name or "hello_world",
-                    "language": {
-                        "code": bulk_data.language_code
+            # Deduplicate within this batch
+            if to_clean in seen_numbers:
+                results.append(BulkMessageResult(
+                    phone_number=to_clean,
+                    success=False,
+                    error="skipped: duplicate recipient in batch"
+                ))
+                skipped += 1
+                continue
+            seen_numbers.add(to_clean)
+
+            # COMPLIANCE: never message opted-out numbers
+            if consent.is_suppressed(db, account_id, to_clean):
+                results.append(BulkMessageResult(
+                    phone_number=to_clean,
+                    success=False,
+                    error="skipped: recipient has opted out (STOP)"
+                ))
+                skipped += 1
+                continue
+
+            # Throttle between sends (skip delay before the first send)
+            if successful + failed > 0 and send_delay > 0:
+                _time.sleep(send_delay)
+
+            # Send text message (requires active 24-hour window)
+            if not bulk_data.text_message:
+                raise ValueError("text_message is required")
+
+            result = send_whatsapp_message_request(
+                phone_number_id=whatsapp_account.phone_number_id,
+                access_token=access_token,
+                to=to_clean,
+                message_type="text",
+                message_data={
+                    "text": {
+                        "body": bulk_data.text_message,
+                        "preview_url": False
                     }
                 }
-
-                if bulk_data.components:
-                    template_payload["components"] = bulk_data.components
-
-                result = send_whatsapp_message_request(
-                    phone_number_id=whatsapp_account.phone_number_id,
-                    access_token=access_token,
-                    to=to_clean,
-                    message_type="template",
-                    message_data={"template": template_payload}
-                )
-            else:
-                # Send text message (requires active 24-hour window)
-                if not bulk_data.text_message:
-                    raise ValueError("text_message is required for text messages")
-
-                result = send_whatsapp_message_request(
-                    phone_number_id=whatsapp_account.phone_number_id,
-                    access_token=access_token,
-                    to=to_clean,
-                    message_type="text",
-                    message_data={
-                        "text": {
-                            "body": bulk_data.text_message,
-                            "preview_url": False
-                        }
-                    }
-                )
+            )
 
             # Extract message IDs
             message_id = result.get("messages", [{}])[0].get("id")
@@ -695,11 +639,10 @@ def send_bulk_whatsapp_messages(
                 message_id=message_id or f"bulk_{datetime.utcnow().timestamp()}",
                 from_number=whatsapp_account.phone_number,
                 to_number=to_clean,
-                message_type=bulk_data.message_type,
+                message_type="text",
                 direction="outbound",
                 status="sent",
-                message_text=bulk_data.text_message if bulk_data.message_type == "text" else None,
-                template_name=bulk_data.template_name if bulk_data.message_type == "template" else None,
+                message_text=bulk_data.text_message,
                 wamid=wamid,
                 meta_data=result
             )
@@ -730,85 +673,25 @@ def send_bulk_whatsapp_messages(
             failed += 1
             logger.error(f"Bulk message failed for {recipient.phone_number}: {str(e)}")
 
+    if skipped:
+        logger.info(
+            f"Bulk send on account {account_id}: {skipped} recipient(s) skipped "
+            f"for compliance (opt-out / missing opt-in / duplicate)"
+        )
+
     return BulkMessageResponse(
         success=failed == 0,
         total_recipients=len(bulk_data.recipients),
         successful=successful,
         failed=failed,
+        skipped=skipped,
         results=results,
-        message=f"Sent {successful}/{len(bulk_data.recipients)} messages successfully"
+        message=(
+            f"Sent {successful}/{len(bulk_data.recipients)} messages successfully"
+            + (f" ({skipped} skipped for compliance)" if skipped else "")
+        )
     )
 
-
-@whatsapp_router.post("/accounts/{account_id}/send-hello-world")
-def send_whatsapp_hello_world(
-    account_id: uuid.UUID,
-    to: str = Query(..., description="Recipient phone number"),
-    db: Session = Depends(get_db)
-):
-    """Send hello_world template message (Step 2 from instructions)"""
-    whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-    
-    try:
-        # Send hello_world template
-        result = send_whatsapp_message_request(
-            phone_number_id=whatsapp_account.phone_number_id,
-            access_token=access_token,
-            to=to,
-            message_type="template",
-            message_data={
-                "template": {
-                    "name": "hello_world",
-                    "language": {
-                        "code": "en_US"
-                    }
-                }
-            }
-        )
-        
-        # Extract message IDs
-        message_id = result.get("messages", [{}])[0].get("id")
-        wamid = result.get("messages", [{}])[0].get("wamid")
-        
-        # Save to database
-        saved_message = save_message_to_db(
-            db=db,
-            whatsapp_account_id=account_id,
-            message_id=message_id or f"temp_{datetime.utcnow().timestamp()}",
-            from_number=whatsapp_account.phone_number,
-            to_number=to,
-            message_type="template",
-            direction="outbound",
-            status="sent",
-            template_name="hello_world",
-            wamid=wamid,
-            meta_data=result
-        )
-        
-        # 🔔 REAL-TIME PUSH: Broadcast the new outgoing message
-        if saved_message:
-            message_response = WhatsAppMessageResponse.model_validate(saved_message)
-            asyncio.run(manager.broadcast_message(
-                str(account_id),
-                message_response.model_dump()
-            ))
-        
-        return {
-            "success": True,
-            "message": "Hello World template sent successfully",
-            "message_id": message_id,
-            "wamid": wamid,
-            "recipient": to,
-            "note": "Reply to this message to open customer service window for non-template messages"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send hello_world template: {str(e)}"
-        )
 
 # WebSocket Endpoint
 @whatsapp_router.websocket("/accounts/{account_id}/ws")
@@ -1085,6 +968,39 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
 
         logger.info(f"Incoming message from {from_number_clean}: {message_text}")
         logger.info(f"Message saved successfully, proceeding to auto-respond check")
+
+        # OPT-OUT / OPT-IN HANDLING (WhatsApp Business Messaging Policy):
+        # STOP must be honored immediately and permanently. Handle before any
+        # bot/flow logic so an opted-out user never gets an AI reply instead.
+        if message_type == "text" and consent.is_opt_out_message(message_text):
+            consent.record_opt_out(db, whatsapp_account.id, from_number_clean)
+            if access_token:
+                try:
+                    send_whatsapp_message_request(
+                        phone_number_id=whatsapp_account.phone_number_id,
+                        access_token=access_token,
+                        to=from_number_clean,
+                        message_type="text",
+                        message_data={"text": {"body": consent.OPT_OUT_CONFIRMATION, "preview_url": False}},
+                    )
+                except Exception as opt_err:
+                    logger.error(f"Failed to send opt-out confirmation: {opt_err}")
+            continue  # Never run bot/flow logic for an opt-out message
+
+        if message_type == "text" and consent.is_opt_in_message(message_text):
+            consent.record_opt_in(db, whatsapp_account.id, from_number_clean, source="inbound_message")
+            if access_token:
+                try:
+                    send_whatsapp_message_request(
+                        phone_number_id=whatsapp_account.phone_number_id,
+                        access_token=access_token,
+                        to=from_number_clean,
+                        message_type="text",
+                        message_data={"text": {"body": consent.OPT_IN_CONFIRMATION, "preview_url": False}},
+                    )
+                except Exception as opt_err:
+                    logger.error(f"Failed to send opt-in confirmation: {opt_err}")
+            continue
 
         # POST-FLOW PAYMENT: Handle EcoCash payment polling after Flow completes
         if message_text and access_token and message_type in ("text", "interactive"):
@@ -1716,36 +1632,37 @@ def test_send_message(
     account_id: uuid.UUID,
     to: str = Query(..., description="Your phone number in E.164 format (no spaces, no +)"),
     message: str = Query("Hello from WhatsApp API!", description="Message text"),
-    force_template: bool = Query(False, description="Force template even if 24-hour window exists"),
     db: Session = Depends(get_db)
 ):
     """Improved test endpoint to send WhatsApp messages"""
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-    
+
     try:
         # Clean phone number (remove spaces, +)
         to_clean = to.replace(" ", "").replace("+", "").strip()
-        
-        if force_template:
-            # Always send template (for new conversations)
-            result = send_template_message(whatsapp_account, access_token, to_clean, db)
+
+        # Check if we have an active conversation window (last 24 hours)
+        twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
+
+        recent_message = db.query(WhatsAppMessage).filter(
+            WhatsAppMessage.whatsapp_account_id == account_id,
+            WhatsAppMessage.from_number == to_clean,
+            WhatsAppMessage.direction == "inbound",
+            WhatsAppMessage.timestamp >= twenty_four_hours_ago
+        ).first()
+
+        if recent_message:
+            # User has messaged in last 24 hours, send regular text
+            result = send_text_message(whatsapp_account, access_token, to_clean, message, db)
         else:
-            # Check if we have an active conversation window (last 24 hours)
-            twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
-            
-            recent_message = db.query(WhatsAppMessage).filter(
-                WhatsAppMessage.whatsapp_account_id == account_id,
-                WhatsAppMessage.from_number == to_clean,
-                WhatsAppMessage.direction == "inbound",
-                WhatsAppMessage.timestamp >= twenty_four_hours_ago
-            ).first()
-            
-            if recent_message:
-                # User has messaged in last 24 hours, send regular text
-                result = send_text_message(whatsapp_account, access_token, to_clean, message, db)
-            else:
-                # No recent message, send template
-                result = send_template_message(whatsapp_account, access_token, to_clean, db)
+            # No active 24-hour window — cannot initiate a conversation
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "24-hour window expired — message not sent. The customer must "
+                    "message you first before you can reply."
+                )
+            )
         
         return {
             "success": True,
@@ -1757,6 +1674,8 @@ def test_send_message(
             "note": result.get("note")
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Test message error: {str(e)}")
         raise HTTPException(
@@ -1817,70 +1736,9 @@ def send_text_message(whatsapp_account, access_token, to, message, db):
         }
         
     except HTTPException as e:
-        # If text fails, fall back to template
-        logger.warning(f"Text message failed, falling back to template: {e.detail}")
-        return send_template_message(whatsapp_account, access_token, to, db)
-
-def send_template_message(whatsapp_account, access_token, to, db):
-    """Send hello_world template message"""
-    try:
-        result = send_whatsapp_message_request(
-            phone_number_id=whatsapp_account.phone_number_id,
-            access_token=access_token,
-            to=to,
-            message_type="template",
-            message_data={
-                "template": {
-                    "name": "hello_world",
-                    "language": {
-                        "code": "en_US"
-                    }
-                }
-            }
-        )
-        
-        message_id = result.get("messages", [{}])[0].get("id")
-        wamid = result.get("messages", [{}])[0].get("wamid")
-        
-        # Save to database
-        saved_message = save_message_to_db(
-            db=db,
-            whatsapp_account_id=whatsapp_account.id,
-            message_id=message_id or f"temp_{datetime.utcnow().timestamp()}",
-            from_number=whatsapp_account.phone_number,
-            to_number=to,
-            message_type="template",
-            direction="outbound",
-            status="sent",
-            template_name="hello_world",
-            wamid=wamid,
-            meta_data=result
-        )
-        
-        # 🔔 REAL-TIME PUSH: Broadcast the new outgoing message
-        if saved_message:
-            message_response = WhatsAppMessageResponse.model_validate(saved_message)
-            asyncio.run(manager.broadcast_message(
-                str(whatsapp_account.id),
-                message_response.model_dump()
-            ))
-        
-        return {
-            "success": True,
-            "message": "Template message sent successfully",
-            "message_id": message_id,
-            "wamid": wamid,
-            "recipient": to,
-            "type": "template",
-            "note": "Template message sent. Reply to it to open 24-hour customer service window."
-        }
-        
-    except Exception as e:
-        logger.error(f"Template message also failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Both text and template messages failed: {str(e)}"
-        )
+        # No template fallback — template messaging has been removed.
+        logger.error(f"Text message failed: {e.detail}")
+        raise
 
 # Conversions API Base URL (Used for Conversions)
 META_GRAPH_URL = "https://graph.facebook.com/v18.0" 
@@ -1986,40 +1844,24 @@ def send_conversion_event_background(
 def debug_send_test_message(
     account_id: uuid.UUID,
     to: str = Query(..., description="Recipient phone number"),
-    message_type: str = Query("template", description="Message type: 'text' or 'template'"),
     db: Session = Depends(get_db)
 ):
-    """Debug endpoint to test WhatsApp message sending"""
+    """Debug endpoint to test WhatsApp message sending (text only)"""
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-    
+
     try:
-        if message_type == "text":
-            # Try to send regular text message
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to,
-                "type": "text",
-                "text": {
-                    "body": "Test message from WhatsApp API",
-                    "preview_url": False
-                }
+        message_type = "text"
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "text",
+            "text": {
+                "body": "Test message from WhatsApp API",
+                "preview_url": False
             }
-        else:
-            # Send template message
-            payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to,
-                "type": "template",
-                "template": {
-                    "name": "hello_world",
-                    "language": {
-                        "code": "en_US"
-                    }
-                }
-            }
-        
+        }
+
         url = f"{WHATSAPP_API_BASE}/{whatsapp_account.phone_number_id}/messages"
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -2067,7 +1909,7 @@ def debug_send_test_message(
     
 # --- CONVERSIONS API ENDPOINT ---
 
-# Insert this endpoint after your existing messaging endpoints (e.g., after send_whatsapp_template_message)
+# Insert this endpoint after your existing messaging endpoints
 
 @whatsapp_router.post("/accounts/{account_id}/send-conversion", status_code=status.HTTP_202_ACCEPTED)
 def send_whatsapp_conversion_event(
@@ -2084,10 +1926,27 @@ def send_whatsapp_conversion_event(
     
     # 1. Retrieve the WhatsApp Account and CAPI Credentials from the database
     whatsapp_account, _ = get_whatsapp_client(account_id, db)
-    
+
+    # COMPLIANCE: customer data (even hashed) may only be shared with Meta if
+    # the customer has consent on record and has not opted out.
+    if event_data.phone_number:
+        if consent.is_suppressed(db, account_id, event_data.phone_number):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Customer has opted out — conversion event not sent to Meta."
+            )
+        if not consent.has_marketing_opt_in(db, account_id, event_data.phone_number):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Customer has no marketing consent on record — conversion "
+                    "event not sent to Meta (Business Tools Terms require consent)."
+                )
+            )
+
     capi_dataset_id = whatsapp_account.capi_dataset_id
     capi_access_token = whatsapp_account.capi_access_token # NOTE: DECRYPT HERE IF ENCRYPTED IN DB!
-    
+
     if not capi_dataset_id or not capi_access_token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2154,260 +2013,6 @@ def update_capi_settings(
 # You must also update your /send-conversion endpoint to use the 
 # database-saved capi_dataset_id instead of relying on the environment variable:
 
-@whatsapp_router.get("/accounts/{account_id}/templates")
-def get_all_message_templates(account_id: uuid.UUID, db: Session = Depends(get_db)):
-    """
-    Retrieves all message templates associated with the WABA ID 
-    using the Meta Graph API.
-    """
-    try:
-        # Step 1: Get WABA ID and Access Token
-        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-        
-        waba_id = whatsapp_account.waba_id
-        url = f"{WHATSAPP_API_BASE}/{waba_id}/message_templates"
-        
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        
-        logger.info(f"Fetching message templates for WABA ID: {waba_id}")
-        
-        # Step 2: Make the API Request
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
-        
-        result = response.json()
-        
-        logger.info(f"Successfully retrieved {len(result.get('data', []))} templates.")
-        
-        # Step 3: Return success response
-        return {
-            "success": True,
-            "templates": result.get("data", []),
-            "paging": result.get("paging")
-        }
-        
-    except requests.exceptions.HTTPError as e:
-        # Handle Meta API errors (4xx/5xx responses)
-        error_detail = "Failed to communicate with Meta API."
-        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        
-        try:
-            error_data = e.response.json()
-            error_message = error_data.get("error", {}).get("message")
-            
-            if error_message:
-                error_detail = f"Meta API error: {error_message}"
-            
-            status_code = e.response.status_code
-            
-            logger.error(f"Meta API error fetching templates (Status {status_code}): {error_detail}")
-        except:
-            # Handle cases where the response is not valid JSON
-            error_detail = f"Meta API returned status {e.response.status_code} but response body was unreadable."
-            status_code = e.response.status_code
-            logger.error(f"Unreadable Meta API error response: {error_detail}")
-        
-        raise HTTPException(
-            status_code=status_code,
-            detail=error_detail
-        )
-    
-    except requests.exceptions.RequestException as e:
-        # Handle network/connection errors (e.g., DNS error, timeout)
-        logger.error(f"Network error during template fetch: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Network error while connecting to Meta API: {str(e)}"
-        )
-        
-    except Exception as e:
-        # Handle other unexpected errors (e.g., issues with get_whatsapp_client)
-        logger.error(f"Unexpected error fetching templates: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected internal error occurred: {str(e)}"
-        )
-
-@whatsapp_router.post("/accounts/{account_id}/templates")
-def create_message_template(
-    account_id: uuid.UUID,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Create a new WhatsApp message template via Meta Graph API."""
-    try:
-        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-        waba_id = whatsapp_account.waba_id
-
-        import asyncio
-        body = asyncio.get_event_loop().run_until_complete(request.json()) if hasattr(request, 'json') else {}
-        # For sync endpoint, use a different approach
-        import json
-        raw = asyncio.new_event_loop().run_until_complete(request.body())
-        body = json.loads(raw)
-
-        url = f"{WHATSAPP_API_BASE}/{waba_id}/message_templates"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-
-        logger.info(f"Creating template: {body.get('name')} for WABA: {waba_id}")
-        response = requests.post(url, headers=headers, json=body, timeout=30)
-
-        if response.status_code in (200, 201):
-            return {"success": True, "template": response.json()}
-        else:
-            error_data = response.json()
-            logger.error(f"Meta API error creating template: {error_data}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=error_data.get("error", {}).get("message", "Failed to create template")
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating template: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@whatsapp_router.post("/accounts/{account_id}/templates/generate-defaults")
-def generate_default_templates(
-    account_id: uuid.UUID,
-    db: Session = Depends(get_db)
-):
-    """Generate default business templates: appointment reminder, welcome, follow-up, bulk promo."""
-    try:
-        whatsapp_account, access_token = get_whatsapp_client(account_id, db)
-        waba_id = whatsapp_account.waba_id
-
-        url = f"{WHATSAPP_API_BASE}/{waba_id}/message_templates"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-
-        templates = [
-            {
-                "name": "appointment_reminder",
-                "language": "en_US",
-                "category": "UTILITY",
-                "components": [
-                    {
-                        "type": "HEADER",
-                        "format": "TEXT",
-                        "text": "Appointment Reminder"
-                    },
-                    {
-                        "type": "BODY",
-                        "text": "Hi {{1}}, this is a reminder for your upcoming appointment on {{2}} at {{3}}. Please reply YES to confirm or call us to reschedule. We look forward to seeing you!",
-                        "example": {"body_text": [["John", "Monday 10 April", "2:00 PM"]]}
-                    },
-                    {
-                        "type": "FOOTER",
-                        "text": "Reply STOP to opt out"
-                    },
-                    {
-                        "type": "BUTTONS",
-                        "buttons": [
-                            {"type": "QUICK_REPLY", "text": "Confirm"},
-                            {"type": "QUICK_REPLY", "text": "Reschedule"}
-                        ]
-                    }
-                ]
-            },
-            {
-                "name": "welcome_new_customer",
-                "language": "en_US",
-                "category": "UTILITY",
-                "components": [
-                    {
-                        "type": "BODY",
-                        "text": "Hi {{1}}, welcome to {{2}}! Thank you for joining us. We offer quality products and services with fast support via WhatsApp. Feel free to message us anytime if you need help.",
-                        "example": {"body_text": [["Sarah", "Shopivell Store"]]}
-                    },
-                    {
-                        "type": "FOOTER",
-                        "text": "Reply STOP to opt out"
-                    }
-                ]
-            },
-            {
-                "name": "follow_up_message",
-                "language": "en_US",
-                "category": "UTILITY",
-                "components": [
-                    {
-                        "type": "HEADER",
-                        "format": "TEXT",
-                        "text": "Following Up"
-                    },
-                    {
-                        "type": "BODY",
-                        "text": "Hi {{1}}, we hope you enjoyed your recent experience with us! We'd love to hear your feedback.\n\nIs there anything else we can help you with? Feel free to reply to this message.",
-                        "example": {"body_text": [["David"]]}
-                    },
-                    {
-                        "type": "FOOTER",
-                        "text": "Reply STOP to opt out"
-                    },
-                    {
-                        "type": "BUTTONS",
-                        "buttons": [
-                            {"type": "QUICK_REPLY", "text": "Leave Feedback"},
-                            {"type": "QUICK_REPLY", "text": "Book Again"}
-                        ]
-                    }
-                ]
-            },
-            {
-                "name": "special_promotion",
-                "language": "en_US",
-                "category": "UTILITY",
-                "components": [
-                    {
-                        "type": "BODY",
-                        "text": "Hi {{1}}, we have a special offer for you: {{2}}. This offer is valid until {{3}}. Reply to this message or visit us to learn more.",
-                        "example": {"body_text": [["Mary", "20% off all services this weekend", "Sunday 13 April"]]}
-                    },
-                    {
-                        "type": "FOOTER",
-                        "text": "Reply STOP to opt out"
-                    }
-                ]
-            }
-        ]
-
-        results = []
-        for template in templates:
-            try:
-                resp = requests.post(url, headers=headers, json=template, timeout=30)
-                if resp.status_code in (200, 201):
-                    results.append({"name": template["name"], "status": "created", "id": resp.json().get("id")})
-                    logger.info(f"Template '{template['name']}' created successfully")
-                else:
-                    error = resp.json().get("error", {})
-                    # Template might already exist
-                    msg = error.get("message", "Unknown error")
-                    results.append({"name": template["name"], "status": "failed", "error": msg})
-                    logger.warning(f"Template '{template['name']}' failed: {msg}")
-            except Exception as e:
-                results.append({"name": template["name"], "status": "error", "error": str(e)})
-
-        created = len([r for r in results if r["status"] == "created"])
-        return {
-            "message": f"Created {created}/{len(templates)} templates",
-            "results": results
-        }
-
-    except Exception as e:
-        logger.error(f"Error generating default templates: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @whatsapp_router.post("/accounts/{account_id}/send-text", response_model=WhatsAppMessageSendResponse)
 def send_whatsapp_direct_text_message(
     account_id: uuid.UUID,
@@ -2415,11 +2020,21 @@ def send_whatsapp_direct_text_message(
     db: Session = Depends(get_db)
 ):
     """
-    Send a direct text message within the 24-hour window, or fall back to a template.
+    Send a direct text message within the 24-hour customer service window.
     """
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
     to_clean = message_data.to.replace(" ", "").replace("+", "").strip()
-    
+
+    # COMPLIANCE: opted-out (STOP) numbers may never be messaged, even within
+    # the 24-hour customer service window.
+    if consent.is_suppressed(db, account_id, to_clean):
+        return WhatsAppMessageSendResponse(
+            success=False,
+            message_id=None,
+            wamid=None,
+            message="Recipient has opted out (STOP) and cannot be messaged."
+        )
+
     # 1. Check for active 24-hour window
     twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
     
@@ -2434,7 +2049,6 @@ def send_whatsapp_direct_text_message(
         # 2. Window is open: Attempt to send non-template text message
         logger.info(f"24-hour window active for {to_clean}. Sending direct text.")
         
-        # NOTE: send_text_message already handles a potential fallback if the API still rejects it
         result = send_text_message(
             whatsapp_account, 
             access_token, 
@@ -2452,16 +2066,18 @@ def send_whatsapp_direct_text_message(
         )
         
     else:
-        # 3. Window is closed: Send template message (required by WhatsApp)
-        logger.warning(f"24-hour window closed for {to_clean}. Falling back to template.")
-        result = send_template_message(whatsapp_account, access_token, to_clean, db)
-        
-        # Map the utility dict result to the required Pydantic response model
+        # 3. Window is closed: conversations cannot be initiated by the
+        # business. Initiating outside the 24h window contributed to WABA
+        # quality blocks. Fail loudly instead.
+        logger.warning(f"24-hour window closed for {to_clean}. Message NOT sent.")
         return WhatsAppMessageSendResponse(
-            success=False, # Mark as failure to send requested text, but template sent
-            message_id=result.get("message_id"),
-            wamid=result.get("wamid"),
-            message="24-hour window expired. Sent default template message instead."
+            success=False,
+            message_id=None,
+            wamid=None,
+            message=(
+                "24-hour window expired — message not sent. The customer must "
+                "message you first before you can reply."
+            )
         )
     
 
@@ -2540,9 +2156,17 @@ async def chat_and_respond(
         logger.info(f"LEAD SCORE: {to_clean} = {lead.lead_score} | Status: {lead.lead_status}")
 
         # 4. Send to Meta CAPI if hot lead and not already sent
+        # COMPLIANCE: customer data (even hashed) is only shared with Meta if
+        # the customer has marketing opt-in on record and has not opted out
+        # (Meta Business Tools Terms require consent for shared data).
         capi_result = None
         is_hot_lead = lead.lead_score >= 80 if lead.lead_score else False
-        if is_hot_lead and not lead.conversion_sent:
+        has_consent = bool(lead.marketing_opt_in and lead.opted_out_at is None)
+        if is_hot_lead and not lead.conversion_sent and not has_consent:
+            logger.info(
+                f"Hot lead {to_clean} NOT sent to CAPI: no marketing consent on record"
+            )
+        if is_hot_lead and not lead.conversion_sent and has_consent:
             if whatsapp_account.capi_dataset_id and whatsapp_account.capi_access_token:
                 capi_result = send_capi_lead_event(
                     pixel_id=whatsapp_account.capi_dataset_id,

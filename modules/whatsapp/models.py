@@ -52,7 +52,6 @@ class WhatsAppMessage(Base):
     message_type = Column(String(50), nullable=False)
     direction = Column(String(10), nullable=False)
     status = Column(String(50), nullable=False, default="sent")
-    template_name = Column(String(255), nullable=True)
     message_text = Column(Text, nullable=True)
     media_url = Column(Text, nullable=True)
     media_id = Column(String(500), nullable=True)
@@ -89,6 +88,13 @@ class WhatsAppLead(Base):
     conversion_sent = Column(Boolean, default=False)  # Whether CAPI event was sent
     conversion_event_id = Column(String(255), nullable=True)
     conversion_sent_at = Column(DateTime, nullable=True)
+
+    # Marketing consent (WhatsApp Business Messaging Policy requires opt-in
+    # before sending marketing messages, and opt-outs must be honored)
+    marketing_opt_in = Column(Boolean, default=False, nullable=False)
+    opt_in_source = Column(String(100), nullable=True)  # checkout, inbound_message, manual, import
+    opt_in_at = Column(DateTime, nullable=True)
+    opted_out_at = Column(DateTime, nullable=True)  # Hard suppression: never message if set
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
