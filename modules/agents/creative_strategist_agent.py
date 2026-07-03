@@ -113,10 +113,10 @@ class CreativeStrategistAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.8)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4.6", temperature=0.8)
             self._supports_json_mode = True
         else:
-            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-6", temperature=0.8)
             self._supports_json_mode = False
         self.embeddings = OpenAIEmbeddings()
         logger.info(f"[CreativeStrategistAgent] Initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'Anthropic direct'}")

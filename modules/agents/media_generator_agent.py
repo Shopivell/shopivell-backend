@@ -59,9 +59,10 @@ if CLOUDINARY_CONFIGURED:
 
 
 class ImageProvider(Enum):
-    GEMINI_PRO = "gemini_pro"        # Gemini 3 Pro - Primary (direct API, native image gen + text)
+    GPT_IMAGE = "gpt_image"          # OpenAI gpt-image-2 - Primary (ChatGPT Images 2.0, best text rendering)
+    GEMINI_PRO = "gemini_pro"        # Gemini 3 Pro - direct API, native image gen + text
     IMAGEN = "imagen"                # Imagen 3 - Fallback
-    DALLE = "dalle"                  # OpenAI DALL-E 3
+    DALLE = "dalle"                  # OpenAI DALL-E 3 - legacy fallback
     STABILITY = "stability"          # Stability AI SD3
     REPLICATE = "replicate"          # Replicate Flux
 
@@ -433,19 +434,23 @@ class MediaGeneratorAgent:
         """Get list of available image providers based on API keys.
 
         Priority order:
-        1. GEMINI_PRO (Gemini 3 Pro via direct API) - Best quality with native text rendering
-        2. IMAGEN (Imagen 3) - High-quality fallback
-        3. DALLE (DALL-E 3) - OpenAI alternative
-        4. REPLICATE (Flux) - Good quality
-        5. STABILITY (SD3) - Stable Diffusion
+        1. GPT_IMAGE (gpt-image-2) - ChatGPT Images 2.0, best legible text + brand fidelity
+        2. GEMINI_PRO (Gemini 3 Pro via direct API) - native text rendering
+        3. IMAGEN (Imagen 3) - High-quality fallback
+        4. DALLE (DALL-E 3) - OpenAI legacy fallback
+        5. REPLICATE (Flux) - Good quality
+        6. STABILITY (SD3) - Stable Diffusion
         """
         providers = []
-        # Priority 1: Gemini 3 Pro via direct API - Best for ads with text
+        # Priority 1: gpt-image-2 (ChatGPT Images 2.0) - primary per product decision
+        if self.openai_api_key:
+            providers.append(ImageProvider.GPT_IMAGE)
+        # Priority 2: Gemini 3 Pro via direct API - strong fallback, native text
         if self.gemini_api_key:
             providers.append(ImageProvider.GEMINI_PRO)
-            # Priority 2: Imagen 3 also uses Gemini API key
+            # Priority 3: Imagen 3 also uses Gemini API key
             providers.append(ImageProvider.IMAGEN)
-        # Priority 3: DALL-E 3
+        # Priority 4: DALL-E 3 (legacy OpenAI fallback)
         if self.openai_api_key:
             providers.append(ImageProvider.DALLE)
         # Priority 4: Replicate/Flux
@@ -829,7 +834,9 @@ class MediaGeneratorAgent:
             try:
                 logger.info(f"[MediaGeneratorAgent] Trying image generation with {prov.value}")
 
-                if prov == ImageProvider.GEMINI_PRO:
+                if prov == ImageProvider.GPT_IMAGE:
+                    result = await self._generate_gpt_image(enhanced_prompt, aspect_ratio)
+                elif prov == ImageProvider.GEMINI_PRO:
                     result = await self._generate_gemini_pro_image(enhanced_prompt, aspect_ratio)
                 elif prov == ImageProvider.IMAGEN:
                     result = await self._generate_imagen_image(enhanced_prompt, aspect_ratio)
@@ -959,6 +966,50 @@ class MediaGeneratorAgent:
         modifier = style_modifiers.get(style, style_modifiers["professional"])
         return f"{prompt}. Style: {modifier}. 8K resolution. No text or watermarks."
 
+    async def _generate_gpt_image(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
+        """Generate image using OpenAI gpt-image-2 (ChatGPT Images 2.0, the state-of-the-art
+        image model released April 2026 with a reasoning step and accurate in-image text).
+
+        Same Image API as gpt-image-1: sizes 1024x1024 / 1536x1024 / 1024x1536 / auto,
+        quality low|medium|high|auto (not hd/standard), response is always base64
+        (no response_format / revised_prompt fields).
+        """
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key not configured")
+
+        # Map aspect ratio to gpt-image-2 supported sizes
+        size_map = {
+            "1:1": "1024x1024",
+            "16:9": "1536x1024",
+            "9:16": "1024x1536",
+            "4:5": "1024x1536",   # no native 4:5; portrait is the closest fit
+        }
+        size = size_map.get(aspect_ratio, "1024x1024")
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={
+                    "Authorization": f"Bearer {self.openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-image-2",
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": size,
+                    "quality": "high",
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            return {
+                "image_base64": data["data"][0]["b64_json"],
+                "revised_prompt": prompt,
+                "model": "gpt-image-2"
+            }
+
     async def _generate_dalle(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate image using OpenAI DALL-E 3"""
         if not self.openai_api_key:
@@ -1040,15 +1091,16 @@ class MediaGeneratorAgent:
             raise ValueError("Replicate/FAL API key not configured")
 
         async with httpx.AsyncClient(timeout=180.0) as client:
-            # Start the prediction
+            # Start the prediction. flux-1.1-pro is an official Replicate model, so it
+            # must use the model-specific endpoint with no `version` field. The generic
+            # /v1/predictions endpoint requires a version hash (a slug 422s there).
             response = await client.post(
-                "https://api.replicate.com/v1/predictions",
+                "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
                 headers={
                     "Authorization": f"Token {api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "version": "black-forest-labs/flux-1.1-pro",
                     "input": {
                         "prompt": prompt,
                         "aspect_ratio": aspect_ratio,

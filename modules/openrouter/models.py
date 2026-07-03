@@ -103,3 +103,68 @@ class StoreAIUsageSummary(Base):
     __table_args__ = (
         Index('ix_ai_summary_store_period', 'store_id', 'year', 'month', unique=True),
     )
+
+
+class StoreAICreditWallet(Base):
+    """
+    Per-store AI credit balance (one row per store).
+
+    available = max(0, allowance_total - allowance_used) + purchased_balance
+    Consumption deducts from the monthly tier allowance first, then purchased credits.
+    """
+    __tablename__ = "store_ai_credit_wallets"
+
+    id: Mapped[PG_UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    store_id: Mapped[PG_UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, unique=True, index=True
+    )
+
+    # Monthly tier allowance (reset each calendar month)
+    allowance_total: Mapped[int] = mapped_column(Integer, default=0)
+    allowance_used: Mapped[int] = mapped_column(Integer, default=0)
+    period_year: Mapped[int] = mapped_column(Integer, default=0)
+    period_month: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Purchased credits (persist until spent)
+    purchased_balance: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Lifetime stats
+    lifetime_granted: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_purchased: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_consumed: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class AICreditTransaction(Base):
+    """Append-only ledger of credit movements (grant / purchase / consume / adjust)."""
+    __tablename__ = "ai_credit_transactions"
+
+    id: Mapped[PG_UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    store_id: Mapped[PG_UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, index=True
+    )
+
+    # grant (monthly allowance) | purchase (top-up) | consume (message) | adjust (manual)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    credits: Mapped[int] = mapped_column(Integer, default=0)  # signed: + add, - consume
+    balance_after: Mapped[int] = mapped_column(Integer, default=0)
+
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # conversation/payment id
+    extra: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+
+    __table_args__ = (
+        Index('ix_ai_credit_tx_store_created', 'store_id', 'created_at'),
+    )

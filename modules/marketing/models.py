@@ -30,6 +30,11 @@ class MetaAdAccount(Base):
     # Status tracking
     is_connected = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
+    # Autopilot master switch. When False (default), automated rules run in
+    # advise-only/dry-run mode: the engine evaluates and logs what it WOULD do
+    # but makes no spend-affecting Meta changes. Must be explicitly enabled for
+    # live autonomous execution (pausing ads, changing budgets).
+    autopilot_enabled = Column(Boolean, default=False, nullable=False)
     last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -329,6 +334,7 @@ class MetaAdInsight(Base):
     conversions = Column(Integer, default=0)
     cost_per_conversion = Column(Float, default=0.0)
     conversion_rate = Column(Float, default=0.0)
+    revenue = Column(Float, default=0.0)  # Purchase conversion value (for ROAS)
     
     # Engagement metrics
     likes = Column(Integer, default=0)

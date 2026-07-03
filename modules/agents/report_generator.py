@@ -129,9 +129,7 @@ class WeeklyReportGenerator:
             func.sum(MetaAdInsight.spend).label("spend"),
             func.sum(MetaAdInsight.conversions).label("conversions"),
             func.sum(MetaAdInsight.reach).label("reach"),
-            func.avg(MetaAdInsight.ctr).label("avg_ctr"),
-            func.avg(MetaAdInsight.cpc).label("avg_cpc"),
-            func.avg(MetaAdInsight.cpm).label("avg_cpm"),
+            func.sum(MetaAdInsight.revenue).label("revenue"),
             func.avg(MetaAdInsight.frequency).label("avg_frequency"),
         ).join(MetaAd, MetaAdInsight.ad_id == MetaAd.id).filter(
             MetaAd.ad_account_id == account_id,
@@ -143,19 +141,33 @@ class WeeklyReportGenerator:
         clicks = int(results.clicks or 0)
         spend = float(results.spend or 0)
         conversions = int(results.conversions or 0)
+        revenue = float(results.revenue or 0)
+
+        # Rates are derived from the summed totals, NOT an average of per-row rates.
+        # Averaging daily/per-ad CTR (or CPC/CPM) is statistically wrong: the mean of
+        # rates != total clicks / total impressions once rows have different volumes.
+        ctr = (clicks / impressions * 100) if impressions > 0 else 0
+        cpc = (spend / clicks) if clicks > 0 else 0
+        cpm = (spend / impressions * 1000) if impressions > 0 else 0
+        roas = (revenue / spend) if spend > 0 else 0
 
         return {
             "impressions": impressions,
             "clicks": clicks,
             "spend": round(spend, 2),
             "conversions": conversions,
+            "revenue": round(revenue, 2),
             "reach": int(results.reach or 0),
-            "ctr": round(float(results.avg_ctr or 0), 2),
-            "cpc": round(float(results.avg_cpc or 0), 2),
-            "cpm": round(float(results.avg_cpm or 0), 2),
+            "ctr": round(ctr, 2),
+            "cpc": round(cpc, 2),
+            "cpm": round(cpm, 2),
             "frequency": round(float(results.avg_frequency or 0), 2),
             "cost_per_conversion": round(spend / conversions, 2) if conversions > 0 else 0,
-            "conversion_rate": round((conversions / clicks * 100), 2) if clicks > 0 else 0
+            "conversion_rate": round((conversions / clicks * 100), 2) if clicks > 0 else 0,
+            "roas": round(roas, 2),
+            # Revenue is only meaningful when purchase-value tracking is live; before
+            # that, revenue rows are all 0 and ROAS should be read as "not tracked".
+            "revenue_tracked": revenue > 0,
         }
 
     def _get_top_ads(self, db, account_id, start_date, end_date, limit=5) -> List[Dict]:
@@ -169,28 +181,35 @@ class WeeklyReportGenerator:
             func.sum(MetaAdInsight.clicks).label("clicks"),
             func.sum(MetaAdInsight.spend).label("spend"),
             func.sum(MetaAdInsight.conversions).label("conversions"),
-            func.avg(MetaAdInsight.ctr).label("avg_ctr"),
+            func.sum(MetaAdInsight.revenue).label("revenue"),
         ).join(MetaAd, MetaAdInsight.ad_id == MetaAd.id).filter(
             MetaAd.ad_account_id == account_id,
             MetaAdInsight.date >= start_date,
             MetaAdInsight.date < end_date
         ).group_by(MetaAd.id, MetaAd.name, MetaAd.ad_id
         ).having(func.sum(MetaAdInsight.impressions) > 100
-        ).order_by(func.avg(MetaAdInsight.ctr).desc()
+        ).order_by((func.sum(MetaAdInsight.clicks) * 1.0 / func.sum(MetaAdInsight.impressions)).desc()
         ).limit(limit).all()
 
-        return [
-            {
+        out = []
+        for r in results:
+            impressions = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            spend = float(r.spend or 0)
+            revenue = float(r.revenue or 0)
+            out.append({
                 "name": r.name,
                 "ad_id": r.ad_id,
-                "impressions": int(r.impressions or 0),
-                "clicks": int(r.clicks or 0),
-                "spend": round(float(r.spend or 0), 2),
+                "impressions": impressions,
+                "clicks": clicks,
+                "spend": round(spend, 2),
                 "conversions": int(r.conversions or 0),
-                "ctr": round(float(r.avg_ctr or 0), 2)
-            }
-            for r in results
-        ]
+                "revenue": round(revenue, 2),
+                # Derived from totals, consistent with _aggregate_metrics.
+                "ctr": round((clicks / impressions * 100) if impressions > 0 else 0, 2),
+                "roas": round((revenue / spend) if spend > 0 else 0, 2),
+            })
+        return out
 
     def _get_worst_ads(self, db, account_id, start_date, end_date, limit=3) -> List[Dict]:
         """Get worst performing ads by CTR (with minimum impressions)."""
@@ -202,27 +221,28 @@ class WeeklyReportGenerator:
             func.sum(MetaAdInsight.impressions).label("impressions"),
             func.sum(MetaAdInsight.clicks).label("clicks"),
             func.sum(MetaAdInsight.spend).label("spend"),
-            func.avg(MetaAdInsight.ctr).label("avg_ctr"),
         ).join(MetaAd, MetaAdInsight.ad_id == MetaAd.id).filter(
             MetaAd.ad_account_id == account_id,
             MetaAdInsight.date >= start_date,
             MetaAdInsight.date < end_date
         ).group_by(MetaAd.id, MetaAd.name, MetaAd.ad_id
         ).having(func.sum(MetaAdInsight.impressions) > 100
-        ).order_by(func.avg(MetaAdInsight.ctr).asc()
+        ).order_by((func.sum(MetaAdInsight.clicks) * 1.0 / func.sum(MetaAdInsight.impressions)).asc()
         ).limit(limit).all()
 
-        return [
-            {
+        out = []
+        for r in results:
+            impressions = int(r.impressions or 0)
+            clicks = int(r.clicks or 0)
+            out.append({
                 "name": r.name,
                 "ad_id": r.ad_id,
-                "impressions": int(r.impressions or 0),
-                "clicks": int(r.clicks or 0),
+                "impressions": impressions,
+                "clicks": clicks,
                 "spend": round(float(r.spend or 0), 2),
-                "ctr": round(float(r.avg_ctr or 0), 2)
-            }
-            for r in results
-        ]
+                "ctr": round((clicks / impressions * 100) if impressions > 0 else 0, 2),
+            })
+        return out
 
     def _get_daily_breakdown(self, db, account_id, start_date, end_date) -> List[Dict]:
         """Get daily aggregated metrics."""
@@ -257,7 +277,7 @@ class WeeklyReportGenerator:
     def _calculate_wow(self, current: Dict, previous: Dict) -> Dict[str, Any]:
         """Calculate week-over-week percentage changes."""
         changes = {}
-        for key in ["impressions", "clicks", "spend", "conversions", "ctr", "cpc"]:
+        for key in ["impressions", "clicks", "spend", "conversions", "revenue", "roas", "ctr", "cpc"]:
             curr_val = current.get(key, 0)
             prev_val = previous.get(key, 0)
             if prev_val > 0:
@@ -287,9 +307,13 @@ class WeeklyReportGenerator:
             prompt = ChatPromptTemplate.from_messages([
                 ("system", """You are a digital marketing analyst writing a concise weekly ad performance report.
 Write 3-4 short paragraphs covering:
-1. Overall performance summary (impressions, clicks, spend, conversions)
-2. Week-over-week trends (what improved, what declined)
-3. Top performers and why they might be working
+1. Overall performance. If revenue_tracked is true, LEAD with ROAS and revenue (the
+   bottom line), then impressions, clicks, spend, conversions. If revenue_tracked is
+   false, do NOT report ROAS as a real number — state that purchase-value tracking is
+   not set up and focus on CTR, CPC, conversions instead.
+2. Week-over-week trends (what improved, what declined). For cost metrics (spend, cpc)
+   a decrease is good; for ROAS/revenue/conversions an increase is good.
+3. Top performers and why they might be working (reference their ROAS when available)
 4. 2-3 actionable recommendations for next week
 
 Keep it concise and data-driven. Use specific numbers from the data."""),

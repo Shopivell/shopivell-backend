@@ -844,6 +844,37 @@ async def generate_faqs_with_ai(
 
     store_context = "\n".join(context_parts)
 
+    # Ground the FAQs in what customers actually search for: real Google
+    # autocomplete + People-Also-Ask style questions, localized to the store's
+    # market. Best-effort — if it fails, FAQ generation proceeds without it.
+    real_searches = []
+    try:
+        from modules.agents.keyword_intelligence_agent import KeywordIntelligenceAgent
+        kw_agent = KeywordIntelligenceAgent()
+
+        seeds = []
+        if store.products_or_services:
+            svc = store.products_or_services if isinstance(store.products_or_services, list) else [store.products_or_services]
+            seeds.extend([str(s).strip() for s in svc if s][:3])
+        if not seeds and store.business_type:
+            seeds.append(str(store.business_type))
+        if not seeds and store.store_name:
+            seeds.append(str(store.store_name))
+
+        if seeds:
+            primary = seeds[0]
+            # PAA-style question seeds for the primary product/service.
+            question_seeds = [f"how much is {primary}", f"how to {primary}", f"what is {primary}"]
+            cc = (store.country_code or "ZW").upper()
+            cities = [store.store_city] if store.store_city else None
+
+            ac = kw_agent.research_keywords_autocomplete(seeds + question_seeds, cc, expand_alphabet=False)
+            ranked = kw_agent._score_and_rank_keywords(ac.get("keywords", []), cc, cities)
+            # Real, non-foreign searches, highest intent/local first.
+            real_searches = [k["keyword"] for k in ranked if not k.get("is_foreign")][:12]
+    except Exception as e:
+        logger.warning(f"[FAQ] keyword grounding skipped: {e}")
+
     import os
     import json
     from openai import OpenAI
@@ -861,6 +892,11 @@ STORE INFORMATION:
 
 EXISTING FAQ QUESTIONS (do NOT duplicate these):
 {chr(10).join(existing_questions[:20]) if existing_questions else 'None'}
+
+REAL CUSTOMER SEARCHES (actual Google searches in this store's market — turn the
+relevant ones into natural FAQ questions and answer them; prioritise these over
+generic questions):
+{chr(10).join(real_searches) if real_searches else 'None available'}
 
 Generate FAQs in these categories: general, services, pricing, shipping, returns, support, account, products.
 Focus on questions relevant to this specific business type.

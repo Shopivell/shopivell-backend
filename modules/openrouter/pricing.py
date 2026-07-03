@@ -18,6 +18,15 @@ MODEL_PRICING = {
     },
 
     # Anthropic
+    "anthropic/claude-sonnet-4.6": {
+        "input": 3.00 / 1_000_000,
+        "output": 15.00 / 1_000_000,
+    },
+    "anthropic/claude-haiku-4.5": {
+        "input": 1.00 / 1_000_000,
+        "output": 5.00 / 1_000_000,
+    },
+    # Legacy (kept for historical cost records)
     "anthropic/claude-sonnet-4": {
         "input": 3.00 / 1_000_000,
         "output": 15.00 / 1_000_000,
@@ -31,6 +40,24 @@ MODEL_PRICING = {
         "output": 1.25 / 1_000_000,
     },
 
+    # Direct-API model IDs (callers that bypass OpenRouter)
+    "claude-sonnet-4-6": {
+        "input": 3.00 / 1_000_000,
+        "output": 15.00 / 1_000_000,
+    },
+    "claude-haiku-4-5": {
+        "input": 1.00 / 1_000_000,
+        "output": 5.00 / 1_000_000,
+    },
+    "gpt-4o-mini": {
+        "input": 0.15 / 1_000_000,
+        "output": 0.60 / 1_000_000,
+    },
+    "gpt-4o": {
+        "input": 2.50 / 1_000_000,
+        "output": 10.00 / 1_000_000,
+    },
+
     # Google
     "google/gemini-2.0-flash-exp": {
         "input": 0.0 / 1_000_000,
@@ -39,6 +66,14 @@ MODEL_PRICING = {
     "google/gemini-3-pro-image-preview": {
         "input": 1.25 / 1_000_000,
         "output": 5.00 / 1_000_000,
+    },
+    "google/gemini-3-pro-vision-preview": {
+        "input": 1.25 / 1_000_000,
+        "output": 5.00 / 1_000_000,
+    },
+    "google/gemma-3-27b-it:free": {
+        "input": 0.0,
+        "output": 0.0,
     },
 }
 

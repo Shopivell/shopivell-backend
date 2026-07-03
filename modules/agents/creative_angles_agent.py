@@ -50,7 +50,7 @@ class CreativeAnglesAgent:
 
     def __init__(self):
         self.llm = ChatOpenRouter(
-            model="anthropic/claude-sonnet-4" if OPENROUTER_AVAILABLE else "claude-sonnet-4-20250514",
+            model="anthropic/claude-sonnet-4.6" if OPENROUTER_AVAILABLE else "claude-sonnet-4-6",
             temperature=0.8  # Higher temperature for more creative outputs
         )
         self._supports_json_mode = OPENROUTER_AVAILABLE
@@ -65,6 +65,7 @@ Name: {campaign_name}
 Objective: {objective}
 Product: {product_description}
 Target: {target_audience}
+Target Location: {location}
 Keywords: {keywords}
 
 MARKET RESEARCH:
@@ -82,6 +83,7 @@ If keyword intelligence data is available, use it to:
 - Align angles with high-volume search terms people actually use
 - Create angles that match different search intents (transactional keywords for conversion angles, informational for awareness angles)
 - Reference specific keyword language in value propositions so ads match what people search for
+- If a Target Location is given, make at least one angle explicitly local: reference the city/country and use the local phrases above so the ad speaks to that market
 
 IMPORTANT: Return your response as valid JSON with this exact structure:
 {{
@@ -267,12 +269,19 @@ Recommendations: {research.recommendations or 'Not available'}
             keyword_intel_text = "No keyword data available"
             if keyword_data and keyword_data.get("success"):
                 kw_lines = []
-                top_kws = keyword_data.get("keywords", [])[:10]
+                all_kws = keyword_data.get("keywords", [])
+                # Drop foreign-market noise; local + high-intent first (already ranked).
+                filtered = [k for k in all_kws if not k.get("is_foreign")]
+                top_kws = (filtered or all_kws)[:10]
                 if top_kws:
                     kw_lines.append("Top searched keywords:")
                     for kw in top_kws:
                         vol = kw.get("search_volume")
                         kw_lines.append(f"  - \"{kw.get('keyword', '')}\" (volume: {vol if vol is not None else 'N/A'})")
+                # Surface local phrases so at least one angle can speak to the market.
+                local_terms = [k.get("keyword", "") for k in top_kws if k.get("is_local")][:6]
+                if local_terms:
+                    kw_lines.append(f"Local phrases customers use: {', '.join(local_terms)}")
                 clusters = keyword_data.get("clusters", {})
                 if clusters:
                     for intent in ["transactional", "commercial", "informational"]:
@@ -285,12 +294,26 @@ Recommendations: {research.recommendations or 'Not available'}
             # Get performance insights from past A/B tests (meta-learner feedback)
             perf_insights = self._get_angle_performance_insights()
 
+            # Derive target location from the campaign's store for local angles.
+            location_str = "Not specified"
+            if campaign.store_id:
+                try:
+                    from modules.stores.models import Store
+                    store = db.query(Store).filter(Store.id == campaign.store_id).first()
+                    if store:
+                        parts = [p for p in [store.store_city, store.country_code] if p]
+                        if parts:
+                            location_str = ", ".join(parts)
+                except Exception:
+                    pass
+
             # Prepare campaign data
             campaign_data = {
                 "campaign_name": campaign.name,
                 "objective": campaign.objective,
                 "product_description": campaign.product_description or "Not specified",
                 "target_audience": json.dumps(campaign.target_audience) if campaign.target_audience else "Not specified",
+                "location": location_str,
                 "keywords": ", ".join(campaign.keywords) if campaign.keywords else "Not specified",
                 "market_research": market_research,
                 "keyword_intelligence": keyword_intel_text,

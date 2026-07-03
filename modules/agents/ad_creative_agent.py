@@ -60,7 +60,7 @@ class AdCreativeAgent:
                     "X-Title": "Shopivell Ad Generator",
                 }
             )
-            self.primary_model = "anthropic/claude-sonnet-4"
+            self.primary_model = "anthropic/claude-sonnet-4.6"
             self.fallback_model = "openai/gpt-4o"
             logger.info("[AdCreativeAgent] Initialized with OpenRouter")
         elif OPENAI_AVAILABLE and openai_key:

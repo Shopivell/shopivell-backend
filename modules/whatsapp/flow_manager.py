@@ -113,7 +113,7 @@ class WhatsAppFlowManager:
 
         endpoint_url = os.getenv(
             "WHATSAPP_FLOWS_ENDPOINT_URL",
-            "https://shopivell-backend.onrender.com/v1/api/whatsapp/flow-endpoint",
+            "https://api.shopivell.com/v1/api/whatsapp/flow-endpoint",
         )
 
         # 1. Create

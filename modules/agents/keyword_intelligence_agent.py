@@ -35,12 +35,170 @@ SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 SERPER_AVAILABLE = bool(SERPER_API_KEY)
 
 
+# Single-word city names that are also common English words. Matching these as
+# a place on their own causes false "foreign" flags (e.g. "mobile" in "mobile app",
+# "reading" in "reading the manual"). They are ignored as one-word matches but
+# still count inside an unambiguous multi-word name (e.g. "new york", "reading uk").
+_AMBIGUOUS_PLACE_WORDS = {
+    "mobile", "reading", "nice", "split", "bath", "same", "hull", "york",
+    "deal", "worth", "bury", "march", "wells", "sale", "well", "most",
+    "of", "as", "may", "are", "is", "the", "best", "home", "general",
+}
+
+# Informal country abbreviations that geonamescache doesn't store as place names.
+# Mapped to the canonical country name so "...uk" / "...usa" are treated like the
+# full name (local when it's the target, foreign otherwise). Kept conservative:
+# only whole-token abbreviations unlikely to appear as ordinary English words
+# (deliberately excludes "us", which collides with "call us", "about us").
+_COUNTRY_ALIASES = {
+    "uk": "united kingdom",
+    "usa": "united states",
+    "uae": "united arab emirates",
+    "nz": "new zealand",
+    "sa": "south africa",
+}
+
+
+class _Gazetteer:
+    """
+    World place lookup backed by geonamescache. Knows every country and every
+    city above a population threshold, so foreign-market detection works without
+    a hand-maintained list. Built once and reused (module-level singleton).
+    """
+
+    def __init__(self, min_city_pop: int = 100000):
+        import geonamescache
+        gc = geonamescache.GeonamesCache()
+
+        countries = gc.get_countries()  # code -> {"name": ...}
+        self.code_to_name = {
+            code: (c.get("name") or "").lower()
+            for code, c in countries.items() if c.get("name")
+        }
+
+        self.code_to_cities = {}
+        self.all_city_tokens = set()
+        for c in gc.get_cities().values():
+            if (c.get("population") or 0) >= min_city_pop and c.get("name"):
+                name = c["name"].lower()
+                cc = c.get("countrycode", "")
+                self.code_to_cities.setdefault(cc, set()).add(name)
+                self.all_city_tokens.add(name)
+
+        self.all_country_tokens = set(self.code_to_name.values())
+        self.all_place_tokens = self.all_country_tokens | self.all_city_tokens
+        # Longest place name in words, so n-gram scanning covers "cape town",
+        # "united states", etc. Capped at 4 to bound work per keyword.
+        self.max_ngram = min(
+            max((len(t.split()) for t in self.all_place_tokens), default=1), 4
+        )
+
+    def country_name(self, code: str):
+        return self.code_to_name.get((code or "").upper())
+
+    def cities_for(self, code: str):
+        return self.code_to_cities.get((code or "").upper(), set())
+
+    def find_places(self, text: str) -> set:
+        """Return the set of place tokens (country/city names) mentioned in text."""
+        words = (text or "").lower().split()
+        found = set()
+        n = len(words)
+        for size in range(1, self.max_ngram + 1):
+            for i in range(n - size + 1):
+                gram = " ".join(words[i:i + size])
+                if size == 1:
+                    # Skip one-word names that are also common English words; they
+                    # only count as places inside a longer, unambiguous name.
+                    if gram in _AMBIGUOUS_PLACE_WORDS:
+                        continue
+                    # Resolve informal country abbreviations (uk, usa, ...).
+                    alias = _COUNTRY_ALIASES.get(gram)
+                    if alias:
+                        found.add(alias)
+                        continue
+                if gram in self.all_place_tokens:
+                    found.add(gram)
+        return found
+
+
+_GAZETTEER = None
+_GAZETTEER_TRIED = False
+
+
+def _get_gazetteer():
+    """Lazily build the gazetteer singleton. Returns None if geonamescache is
+    unavailable, so callers fall back to the inline reference map."""
+    global _GAZETTEER, _GAZETTEER_TRIED
+    if _GAZETTEER_TRIED:
+        return _GAZETTEER
+    _GAZETTEER_TRIED = True
+    try:
+        _GAZETTEER = _Gazetteer()
+        logger.info("[KeywordIntelligenceAgent] Gazetteer loaded (geonamescache)")
+    except Exception as e:
+        logger.warning(
+            f"[KeywordIntelligenceAgent] geonamescache unavailable, using inline geo map: {e}"
+        )
+        _GAZETTEER = None
+    return _GAZETTEER
+
+
 class KeywordIntelligenceAgent:
     """
     AI Agent for keyword research and competitive intelligence.
 
     Pipeline: DataForSEO (search volume data) → Serper (related searches) → Google Autocomplete (free).
     """
+
+    # Markets where Google Keyword Planner (DataForSEO's source) has no usable
+    # search-volume/CPC data, so a paid DataForSEO call returns mostly nulls.
+    # For these we skip DataForSEO entirely and go straight to the free
+    # Serper + autocomplete question/idea path. Extend as needed.
+    DATAFORSEO_LOW_DATA_MARKETS = {"ZW"}
+
+    # Buyer-intent terms and score weights (higher = closer to a purchase).
+    # Used to rank keywords when volume data is null (e.g. Zimbabwe).
+    INTENT_TERMS = {
+        "for sale": 6, "buy": 6, "near me": 6, "price": 5, "prices": 5,
+        "cost": 5, "quote": 5, "hire": 5, "supplier": 5, "suppliers": 5,
+        "installer": 5, "installation": 5, "install": 4, "rent": 4,
+        "company": 4, "companies": 4, "repair": 4, "repairs": 4,
+        "service": 3, "services": 3, "maintenance": 3, "motor": 3,
+        "spare": 3, "parts": 3, "automation": 2, "automated": 2,
+    }
+
+    # Neutral geographic reference (NOT a target list). Maps country code -> its
+    # own name + major cities. The *target* market is chosen per-request from
+    # campaign data, then "local" = the target's tokens and "foreign" = every
+    # other place in this reference. Nothing here is hardcoded to one customer's
+    # country; add a row when you start selling into a new market.
+    COUNTRY_CODE_TO_NAME = {
+        "ZW": "zimbabwe", "ZA": "south africa", "ZM": "zambia", "BW": "botswana",
+        "NA": "namibia", "MZ": "mozambique", "MW": "malawi", "TZ": "tanzania",
+        "UG": "uganda", "KE": "kenya", "NG": "nigeria", "GH": "ghana",
+        "US": "united states", "GB": "united kingdom", "CA": "canada",
+        "AU": "australia", "IN": "india", "MY": "malaysia", "PH": "philippines",
+        "SG": "singapore", "AE": "united arab emirates", "DE": "germany", "FR": "france",
+    }
+
+    COUNTRY_CITIES = {
+        "ZW": {"harare", "bulawayo", "mutare", "gweru", "kwekwe", "chitungwiza", "victoria falls", "zim"},
+        "ZA": {"johannesburg", "joburg", "cape town", "durban", "pretoria", "sandton", "port elizabeth"},
+        "ZM": {"lusaka", "ndola", "kitwe"},
+        "BW": {"gaborone", "francistown"},
+        "NA": {"windhoek"},
+        "KE": {"nairobi", "mombasa"},
+        "NG": {"lagos", "abuja", "kano"},
+        "GH": {"accra", "kumasi"},
+        "AU": {"melbourne", "brisbane", "perth", "sydney", "adelaide"},
+        "IN": {"chennai", "mumbai", "delhi", "bangalore", "bengaluru"},
+        "GB": {"london", "manchester", "birmingham"},
+        "US": {"new york", "los angeles", "chicago"},
+        "MY": {"kuala lumpur"},
+        "PH": {"manila"},
+        "AE": {"dubai", "abu dhabi"},
+    }
 
     def __init__(self):
         self.dataforseo_available = DATAFORSEO_AVAILABLE
@@ -297,7 +455,8 @@ class KeywordIntelligenceAgent:
         seed_keyword: str,
         country_code: str = "ZW",
         additional_seeds: List[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        target_cities: List[str] = None
     ) -> Dict[str, Any]:
         """
         Research keywords with automatic provider selection.
@@ -308,8 +467,18 @@ class KeywordIntelligenceAgent:
         if additional_seeds:
             seeds.extend(additional_seeds)
 
+        # Skip DataForSEO for markets Google has no volume data for (e.g. ZW):
+        # the call costs a credit but returns mostly nulls. Fall through to the
+        # free Serper + autocomplete path instead.
+        skip_dataforseo = (country_code or "").upper() in self.DATAFORSEO_LOW_DATA_MARKETS
+        if skip_dataforseo:
+            logger.info(
+                f"[KeywordIntelligenceAgent] Skipping DataForSEO for low-data market "
+                f"'{country_code}'; using Serper + autocomplete."
+            )
+
         # Try DataForSEO first (has search volume data)
-        if self.dataforseo_available:
+        if self.dataforseo_available and not skip_dataforseo:
             keyword_data = self.research_keywords_dataforseo(seeds, country_code, limit=limit)
             if keyword_data.get("success") and keyword_data.get("keywords"):
                 # Enrich with autocomplete keywords not in DataForSEO
@@ -353,13 +522,133 @@ class KeywordIntelligenceAgent:
         if not keyword_data_result.get("success"):
             return keyword_data_result
 
-        # Cluster keywords by intent using LLM
+        # Score + rank by buyer intent and local relevance. Essential when volume
+        # is null (e.g. ZW): it orders results by intent and pushes foreign-market
+        # noise ("...melbourne", "...malaysia") to the bottom.
         keywords = keyword_data_result.get("keywords", [])
         if keywords:
+            keywords = self._score_and_rank_keywords(keywords, country_code, target_cities)
+            keyword_data_result["keywords"] = keywords
+            keyword_data_result["top_local"] = [
+                k for k in keywords if k.get("is_local") and not k.get("is_foreign")
+            ][:20]
+
             clusters = await self.get_keyword_clusters(keywords)
             keyword_data_result["clusters"] = clusters
 
         return keyword_data_result
+
+    def _build_geo_context(self, country_code: str, target_cities: List[str] = None):
+        """
+        Derive geo context for the target market at request time.
+
+        Returns (local_tokens, foreign_tokens, gaz):
+          - local_tokens: target country name + code + its cities + campaign cities
+          - foreign_tokens: only used in inline-fallback mode (gaz is None)
+          - gaz: the gazetteer when available (foreign detected per-keyword instead)
+
+        With the gazetteer, "foreign" = any world place named in a keyword that is
+        not one of the target's local tokens. Without it, we fall back to the inline
+        reference map. Either way nothing is hardcoded to a specific country.
+        """
+        cc = (country_code or "").upper()
+
+        local_tokens = set()
+        if cc:
+            local_tokens.add(cc.lower())
+        for city in (target_cities or []):
+            if city:
+                local_tokens.add(str(city).lower().strip())
+
+        gaz = _get_gazetteer()
+        if gaz is not None:
+            name = gaz.country_name(cc)
+            if name:
+                local_tokens.add(name)
+            local_tokens |= gaz.cities_for(cc)
+            return local_tokens, None, gaz
+
+        # Inline fallback (geonamescache not installed)
+        name = self.COUNTRY_CODE_TO_NAME.get(cc)
+        if name:
+            local_tokens.add(name)
+        local_tokens |= self.COUNTRY_CITIES.get(cc, set())
+        all_places = set(self.COUNTRY_CODE_TO_NAME.values())
+        for cities in self.COUNTRY_CITIES.values():
+            all_places |= cities
+        foreign_tokens = all_places - local_tokens
+        return local_tokens, foreign_tokens, None
+
+    def _geo_flags(self, term, local_tokens, foreign_tokens, gaz):
+        """Return (is_local, is_foreign) for a keyword string.
+
+        Local-target-wins: if the keyword names the target market (its country or
+        a target city), it's an in-market search and the foreign penalty is
+        suppressed. This rescues local commercial searches where another place
+        token is really a brand/model that shares a city name, e.g. "Centurion"
+        gate motors ("centurion gate motor harare" is a Harare buyer, not a
+        South-Africa search).
+        """
+        is_local = any(g in term for g in local_tokens)
+        if gaz is not None:
+            places = gaz.find_places(term)
+            if places & local_tokens:
+                is_local = True
+            is_foreign = bool(places - local_tokens)
+        else:
+            is_foreign = any(g in term for g in (foreign_tokens or set()))
+
+        if is_local:
+            is_foreign = False
+        return is_local, is_foreign
+
+    def _score_and_rank_keywords(
+        self,
+        keywords: List[Dict[str, Any]],
+        country_code: str = "ZW",
+        target_cities: List[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Attach an intent_score to each keyword and sort best-first.
+
+        Score = buyer-intent terms (price/near me/installation...) + local geo
+        boost (target country + its cities) - foreign geo penalty (any other
+        market) + a capped bonus for real search volume when present. Each keyword
+        also gets is_local / is_foreign flags so callers can filter.
+
+        Geo sets are derived from the target market at call time (see
+        _build_geo_context), so nothing is hardcoded to a specific country.
+        """
+        local_tokens, foreign_tokens, gaz = self._build_geo_context(country_code, target_cities)
+
+        scored = []
+        for kw in keywords:
+            term = (kw.get("keyword") or "").lower().strip()
+            if not term:
+                continue
+
+            score = 0.0
+            for phrase, weight in self.INTENT_TERMS.items():
+                if phrase in term:
+                    score += weight
+
+            is_local, is_foreign = self._geo_flags(term, local_tokens, foreign_tokens, gaz)
+            if is_local:
+                score += 8
+            if is_foreign:
+                score -= 10
+
+            vol = kw.get("search_volume")
+            if isinstance(vol, (int, float)) and vol > 0:
+                score += min(vol / 1000.0, 10)  # capped so volume never dominates
+
+            kw["intent_score"] = round(score, 1)
+            kw["is_local"] = is_local
+            kw["is_foreign"] = is_foreign
+            scored.append(kw)
+
+        scored.sort(key=lambda k: -k["intent_score"])
+        return scored
 
     async def get_keyword_clusters(
         self,

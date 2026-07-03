@@ -212,7 +212,7 @@ PRODUCTS ({len(products)} items):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": context}
                 ],
-                model="anthropic/claude-3.5-sonnet",
+                model="anthropic/claude-sonnet-4.6",
                 temperature=0.7,
                 max_tokens=8000
             )
@@ -366,7 +366,7 @@ PRODUCTS ({len(products)} items):
                     {"role": "system", "content": "You are a web designer helping refine a website. Output only HTML."},
                     {"role": "user", "content": prompt}
                 ],
-                model="anthropic/claude-3.5-sonnet",
+                model="anthropic/claude-sonnet-4.6",
                 temperature=0.5,
                 max_tokens=8000
             )

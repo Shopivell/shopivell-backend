@@ -332,3 +332,124 @@ class CampaignOptimizer:
             logger.info(f"[Optimizer] Paused Meta ad {meta_ad_id}")
         except Exception as e:
             logger.error(f"[Optimizer] Failed to pause Meta ad {meta_ad_id}: {e}")
+
+    def publish_replacement_ad(self, new_content, old_meta_ad_id: str, campaign) -> Optional[str]:
+        """
+        Create a fresh Meta ad for a refreshed creative, inside the same Meta ad set
+        the fatigued ad belonged to. Returns the new Meta ad id, or None on failure.
+
+        Mirrors the link_data creative built by the /publish-to-meta-ads endpoint so a
+        refreshed ad is structurally identical to a hand-published one.
+
+        Safety gate: the new ad goes live ACTIVE only when the campaign has
+        auto_publish_refresh enabled; otherwise it is created PAUSED for a human to
+        approve before it spends.
+        """
+        import json
+        from modules.marketing.models import MetaAd
+        from modules.marketing.router import create_meta_ad
+
+        try:
+            old_meta_ad = self.db.query(MetaAd).filter(MetaAd.ad_id == old_meta_ad_id).first()
+            if not old_meta_ad or not old_meta_ad.ad_set or not old_meta_ad.ad_account:
+                logger.warning(
+                    f"[Optimizer] Cannot publish replacement for {old_meta_ad_id}: "
+                    f"missing MetaAd/ad_set/account"
+                )
+                return None
+
+            ad_account = old_meta_ad.ad_account
+            meta_adset_id = old_meta_ad.ad_set.adset_id  # Meta string ad set id
+
+            # Resolve a Facebook Page for the creative (same fallback the publish endpoint uses)
+            facebook_page_id = None
+            try:
+                from modules.business.models import FacebookPage
+                fb_page = (
+                    self.db.query(FacebookPage)
+                    .filter(FacebookPage.is_connected == True, FacebookPage.is_active == True)
+                    .first()
+                )
+                if fb_page:
+                    facebook_page_id = fb_page.page_id
+            except Exception as page_err:
+                logger.warning(f"[Optimizer] Could not resolve Facebook page: {page_err}")
+
+            if not facebook_page_id:
+                logger.warning(
+                    f"[Optimizer] No Facebook page available; cannot publish replacement for {old_meta_ad_id}"
+                )
+                return None
+
+            # Respect the campaign's safety gate: go live only if opted in.
+            new_status = "ACTIVE" if getattr(campaign, "auto_publish_refresh", False) else "PAUSED"
+
+            # Compliance gate: never let auto-refreshed copy go live if it trips
+            # Meta ad-policy prohibited content. Force PAUSED for human review even
+            # when auto_publish_refresh is on. Regex check = free, no added latency.
+            if new_status == "ACTIVE":
+                try:
+                    from modules.agents.compliance_agent import ComplianceAgent
+                    verdict = ComplianceAgent().check_ad_copy(
+                        new_content.headline, new_content.primary_text, new_content.description
+                    )
+                    if not verdict["compliant"]:
+                        new_status = "PAUSED"
+                        logger.warning(
+                            f"[Optimizer] Refreshed ad copy flagged by compliance "
+                            f"{verdict['blocked_words']}; forcing PAUSED for human review "
+                            f"instead of auto-publishing."
+                        )
+                except Exception as comp_err:
+                    logger.warning(f"[Optimizer] Compliance gate skipped: {comp_err}")
+
+            link = new_content.destination_url or getattr(campaign, "source_url", None)
+            meta_ad_data = {
+                "name": f"{new_content.variation_label or 'Refresh'} - Ad",
+                "adset_id": meta_adset_id,
+                "status": new_status,  # ACTIVE only when auto_publish_refresh is on
+                "creative": json.dumps({
+                    "object_story_spec": {
+                        "page_id": facebook_page_id,
+                        "link_data": {
+                            "link": link,
+                            "message": new_content.primary_text or campaign.name,
+                            "name": new_content.headline or campaign.name,
+                            "description": new_content.description or "",
+                            "call_to_action": {
+                                "type": "LEARN_MORE",
+                                "value": {"link": link},
+                            },
+                        },
+                    }
+                }),
+            }
+
+            result = create_meta_ad(ad_account.ad_account_id, ad_account.access_token, meta_ad_data)
+            new_meta_ad_id = result.get("id") if isinstance(result, dict) else None
+            if not new_meta_ad_id:
+                logger.error(f"[Optimizer] create_meta_ad returned no id for replacement: {result}")
+                return None
+
+            # Persist the Meta ad row so future insight syncs and pauses can find it
+            db_meta_ad = MetaAd(
+                ad_id=new_meta_ad_id,
+                ad_account_id=ad_account.id,
+                adset_id=old_meta_ad.adset_id,
+                campaign_id=old_meta_ad.campaign_id,
+                name=meta_ad_data["name"],
+                status=new_status,
+                effective_status=new_status,
+                created_time=datetime.utcnow(),
+                updated_time=datetime.utcnow(),
+                is_active=True,
+            )
+            self.db.add(db_meta_ad)
+
+            logger.info(
+                f"[Optimizer] Published replacement Meta ad {new_meta_ad_id} in ad set {meta_adset_id}"
+            )
+            return new_meta_ad_id
+        except Exception as e:
+            logger.error(f"[Optimizer] Failed to publish replacement ad for {old_meta_ad_id}: {e}")
+            return None

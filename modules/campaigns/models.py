@@ -83,6 +83,11 @@ class UrlCampaign(Base):
     platforms = Column(JSON, default=["facebook"])  # facebook, instagram, google
     platform_campaign_ids = Column(JSON, default=dict)  # Store external platform IDs
 
+    # Fatigue auto-refresh safety gate. When False (default), fatigue-refreshed
+    # replacement ads are created PAUSED so a human approves them before they spend.
+    # When True, replacements go live ACTIVE automatically.
+    auto_publish_refresh = Column(Boolean, default=False, nullable=False)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

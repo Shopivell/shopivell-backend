@@ -160,6 +160,24 @@ def run_column_migrations():
         except Exception as e:
             print(f"[WARN] Could not add rating column: {e}")
 
+        # Add revenue column to meta_ad_insights if missing (for ROAS backtesting)
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'meta_ad_insights' AND column_name = 'revenue'
+                    ) THEN
+                        ALTER TABLE meta_ad_insights ADD COLUMN revenue DOUBLE PRECISION DEFAULT 0.0;
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified revenue column exists in meta_ad_insights table")
+        except Exception as e:
+            print(f"[WARN] Could not add revenue column: {e}")
+
         # Add lead_score and lead_status columns to customers if missing
         try:
             conn.execute(text("""
@@ -220,6 +238,44 @@ def run_column_migrations():
             print("[OK] Verified agencies table exists")
         except Exception as e:
             print(f"[WARN] Could not create agencies table: {e}")
+
+        # Add WhatsApp marketing consent fields to whatsapp_leads
+        # (WhatsApp Business Messaging Policy: opt-in before marketing,
+        # permanent opt-out suppression)
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'whatsapp_leads' AND column_name = 'marketing_opt_in'
+                    ) THEN
+                        ALTER TABLE whatsapp_leads ADD COLUMN marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'whatsapp_leads' AND column_name = 'opt_in_source'
+                    ) THEN
+                        ALTER TABLE whatsapp_leads ADD COLUMN opt_in_source VARCHAR(100);
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'whatsapp_leads' AND column_name = 'opt_in_at'
+                    ) THEN
+                        ALTER TABLE whatsapp_leads ADD COLUMN opt_in_at TIMESTAMP;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'whatsapp_leads' AND column_name = 'opted_out_at'
+                    ) THEN
+                        ALTER TABLE whatsapp_leads ADD COLUMN opted_out_at TIMESTAMP;
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified WhatsApp consent columns exist in whatsapp_leads table")
+        except Exception as e:
+            print(f"[WARN] Could not add WhatsApp consent columns: {e}")
 
         # Add shopivell_user_id to facebook_business_accounts for user-level filtering
         try:

@@ -71,10 +71,10 @@ class CopywriterAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.9)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4.6", temperature=0.9)
             logger.info("[CopywriterAgent] Initialized with OpenRouter (Claude)")
         else:
-            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.9)
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-6", temperature=0.9)
             logger.info("[CopywriterAgent] Initialized with Claude direct")
 
         self.main_prompt = ChatPromptTemplate.from_template("""
@@ -229,13 +229,21 @@ Return ONLY valid JSON.
         try:
             variations = copy_data.get("variations", [])
             if variations:
-                best = variations[0]  # First variation as primary
+                best = variations[0] if isinstance(variations[0], dict) else {}
+
+                def _field_text(field: str) -> str:
+                    # The model may return either {"text": "..."} or a bare string.
+                    val = best.get(field, "")
+                    if isinstance(val, dict):
+                        return val.get("text", "")
+                    return val if isinstance(val, str) else ("" if val is None else str(val))
+
                 ad_copy = AdCopy(
                     campaign_id=campaign.id,
                     angle_id=angle.id,
-                    headline=best.get("headline", {}).get("text", ""),
-                    primary_text=best.get("primary_text", {}).get("text", ""),
-                    description=best.get("description", {}).get("text", ""),
+                    headline=_field_text("headline"),
+                    primary_text=_field_text("primary_text"),
+                    description=_field_text("description"),
                     call_to_action=best.get("cta", "Learn More"),
                     variations=[v for v in variations[1:]]  # Store other variations
                 )

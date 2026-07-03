@@ -321,6 +321,10 @@ async def create_order(
         # Convert to dict
         order_dict = order_data.model_dump()
 
+        # Extract WhatsApp marketing opt-in (not a CustomerOrder column —
+        # recorded against the store's WhatsApp account after order creation)
+        whatsapp_opt_in = order_dict.pop('whatsapp_marketing_opt_in', False)
+
         # Extract delivery fields and append to customer_profile notes
         delivery_address = order_dict.pop('delivery_address', None)
         delivery_city = order_dict.pop('delivery_city', None)
@@ -370,6 +374,24 @@ async def create_order(
         if delivery_address and db_order.delivery_status != "pickup":
             _auto_create_delivery(db, db_order, delivery_address, delivery_city)
             db.refresh(db_order)
+
+        # Record WhatsApp marketing opt-in against the store's WhatsApp account
+        # (explicit checkout consent — required before any marketing messages)
+        if whatsapp_opt_in and db_order.phone:
+            try:
+                from modules.whatsapp.models import WhatsAppAccount
+                from modules.whatsapp import consent as wa_consent
+
+                wa_account = db.query(WhatsAppAccount).filter(
+                    WhatsAppAccount.store_id == db_order.store_id
+                ).first()
+                if wa_account:
+                    wa_consent.record_opt_in(
+                        db, wa_account.id, db_order.phone, source="checkout"
+                    )
+            except Exception as opt_err:
+                # Never fail order creation over consent bookkeeping
+                logger.error(f"Failed to record WhatsApp opt-in: {opt_err}")
 
         return db_order
 

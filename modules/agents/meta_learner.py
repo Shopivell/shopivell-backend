@@ -176,7 +176,8 @@ class MetaLearner:
                     func.sum(MetaAdInsight.impressions).label('impressions'),
                     func.sum(MetaAdInsight.clicks).label('clicks'),
                     func.sum(MetaAdInsight.spend).label('spend'),
-                    func.sum(MetaAdInsight.conversions).label('conversions')
+                    func.sum(MetaAdInsight.conversions).label('conversions'),
+                    func.sum(MetaAdInsight.revenue).label('revenue')
                 ).filter(
                     MetaAdInsight.ad_id.in_(ad_ids),
                     MetaAdInsight.date >= start_date,
@@ -188,13 +189,20 @@ class MetaLearner:
                 if len(daily_data) < 7:
                     continue
 
-                # Convert to list of dicts
+                # Only trust ROAS if revenue tracking has recorded real values
+                # (rows synced before revenue tracking existed are all 0)
+                has_revenue = any((d.revenue or 0) > 0 for d in daily_data)
+
+                # Convert to list of dicts. Metrics that can't be computed on
+                # a given day are None (NOT 0 or inf) — None never satisfies
+                # a rule condition, so unknown values can't fake a trigger.
                 history = []
                 for d in daily_data:
                     imp = d.impressions or 0
                     clicks = d.clicks or 0
                     spend = d.spend or 0
                     conv = d.conversions or 0
+                    revenue = d.revenue or 0
                     history.append({
                         "date": d.day,
                         "impressions": imp,
@@ -202,9 +210,10 @@ class MetaLearner:
                         "spend": spend,
                         "conversions": conv,
                         "ctr": (clicks / imp * 100) if imp > 0 else 0,
-                        "cpc": (spend / clicks) if clicks > 0 else 0,
-                        "cpa": (spend / conv) if conv > 0 else float('inf'),
-                        "roas": 0  # Would need revenue data
+                        "cpc": (spend / clicks) if clicks > 0 else None,
+                        "cpm": (spend / imp * 1000) if imp > 0 else None,
+                        "cpa": (spend / conv) if conv > 0 else None,
+                        "roas": (revenue / spend) if (has_revenue and spend > 0) else None
                     })
 
                 # Walk through and find trigger points
@@ -228,7 +237,13 @@ class MetaLearner:
                             if day_idx < 0:
                                 triggered = False
                                 break
-                            day_val = history[day_idx].get(metric, 0)
+                            day_val = history[day_idx].get(metric)
+                            if day_val is None:
+                                # Metric unavailable that day (no conversions,
+                                # revenue not tracked, or unknown metric name)
+                                # — cannot trigger on unknown values
+                                triggered = False
+                                break
 
                             if operator in ("gt", "GREATER_THAN") and not (day_val > value):
                                 triggered = False
@@ -252,30 +267,30 @@ class MetaLearner:
                     if not triggered:
                         continue
 
-                    # Trigger found at day i — compare 3-day avg before vs after
+                    # Trigger found at day i — compare day i vs 3-day avg after
                     if i + 3 >= len(history):
                         continue  # Not enough data after trigger
 
-                    # Before: day i metrics
-                    before_cpa = history[i].get("cpa", 0)
+                    # Before: day i metrics (cpa is None when no conversions)
+                    before_cpa = history[i].get("cpa")
                     before_ctr = history[i].get("ctr", 0)
 
-                    # After: avg of days i+1, i+2, i+3
-                    after_cpas = [history[i + k].get("cpa", 0) for k in range(1, 4) if i + k < len(history)]
-                    after_ctrs = [history[i + k].get("ctr", 0) for k in range(1, 4) if i + k < len(history)]
+                    # After: avg of days i+1, i+2, i+3 (skip None CPA days)
+                    after_days = [history[i + k] for k in range(1, 4) if i + k < len(history)]
+                    after_cpa_vals = [d["cpa"] for d in after_days if d.get("cpa") is not None]
+                    after_ctr_vals = [d.get("ctr", 0) for d in after_days]
 
-                    if not after_cpas:
-                        continue
+                    after_cpa = sum(after_cpa_vals) / len(after_cpa_vals) if after_cpa_vals else None
+                    after_ctr = sum(after_ctr_vals) / len(after_ctr_vals) if after_ctr_vals else 0
 
-                    after_cpa = sum(after_cpas) / len(after_cpas)
-                    after_ctr = sum(after_ctrs) / len(after_ctrs)
+                    cpa_comparable = before_cpa is not None and after_cpa is not None
 
                     # Determine outcome
                     if action_type in ("scale_up", "scale_down"):
                         # For budget actions: good if CPA decreased or CTR improved
-                        cpa_improved = before_cpa > 0 and after_cpa < before_cpa * 0.95
+                        cpa_improved = cpa_comparable and after_cpa < before_cpa * 0.95
+                        cpa_worsened = cpa_comparable and after_cpa > before_cpa * 1.15
                         ctr_improved = after_ctr > before_ctr * 1.05
-                        cpa_worsened = before_cpa > 0 and after_cpa > before_cpa * 1.15
 
                         if cpa_improved or ctr_improved:
                             total_good += 1
@@ -284,13 +299,39 @@ class MetaLearner:
                         else:
                             total_neutral += 1
 
-                        if before_cpa > 0:
+                        if cpa_comparable:
+                            cpa_changes.append((after_cpa - before_cpa) / before_cpa * 100)
+                    elif action_type == "pause":
+                        # Pause is justified if performance did NOT recover on
+                        # its own in the days after the trigger
+                        if before_cpa is None and after_cpa is None:
+                            # No conversions before or after — continued wasted
+                            # spend; pausing would have been right
+                            total_good += 1
+                        elif before_cpa is None:
+                            # Recovered on its own — pause would have killed
+                            # a recovering ad
+                            total_bad += 1
+                        elif after_cpa is None:
+                            # Conversions stopped entirely — pause justified
+                            total_good += 1
+                        elif after_cpa >= before_cpa * 0.95:
+                            # CPA did not meaningfully improve — pause justified
+                            total_good += 1
+                        elif after_cpa < before_cpa * 0.85:
+                            # CPA recovered strongly — pause would have hurt
+                            total_bad += 1
+                        else:
+                            total_neutral += 1
+
+                        if cpa_comparable:
                             cpa_changes.append((after_cpa - before_cpa) / before_cpa * 100)
                     else:
-                        # For pause/notify: count as neutral (no budget impact to measure)
+                        # Informational actions (notify etc.): no budget impact
                         total_neutral += 1
 
             total_triggers = total_good + total_bad + total_neutral
+            measured = total_good + total_bad
 
             if total_triggers == 0:
                 result = {
@@ -302,8 +343,35 @@ class MetaLearner:
                     "neutral_outcomes": 0,
                     "reason": "Rule never triggered in historical data"
                 }
+            elif measured == 0:
+                if action_type in ("scale_up", "scale_down", "pause"):
+                    # Triggered, but no measurable CPA/CTR outcome — too risky
+                    result = {
+                        "success_rate": 0,
+                        "verdict": "rejected",
+                        "total_triggers": total_triggers,
+                        "good_outcomes": 0,
+                        "bad_outcomes": 0,
+                        "neutral_outcomes": total_neutral,
+                        "reason": "Triggered but outcomes were unmeasurable",
+                        "days_tested": days
+                    }
+                else:
+                    # Informational action (notify) that does fire — harmless
+                    result = {
+                        "success_rate": 1.0,
+                        "verdict": "accepted",
+                        "total_triggers": total_triggers,
+                        "good_outcomes": 0,
+                        "bad_outcomes": 0,
+                        "neutral_outcomes": total_neutral,
+                        "reason": "Informational action; accepted on trigger frequency",
+                        "days_tested": days
+                    }
             else:
-                success_rate = total_good / total_triggers if total_triggers > 0 else 0
+                # Success rate over MEASURED outcomes only — neutral triggers
+                # no longer dilute the score
+                success_rate = total_good / measured
                 avg_cpa_change = sum(cpa_changes) / len(cpa_changes) if cpa_changes else 0
 
                 if success_rate >= 0.7:

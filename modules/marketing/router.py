@@ -13,6 +13,7 @@ import json
 import asyncio
 
 from database import get_db
+from utils.jwt_auth import get_current_user, CurrentUser
 from .models import (
     MetaAdAccount, MetaCampaign, MetaAdSet, MetaAd,
     MetaAdCreative, MetaExperiment, MetaAutomatedRule, MetaAdInsight,
@@ -503,7 +504,8 @@ def sync_ad_accounts_from_token(access_token: str, business_account_id, db: Sess
 def sync_ad_accounts_from_business(
     business_account_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """Sync Meta ad accounts from a connected business account"""
     try:
@@ -1079,7 +1081,8 @@ def update_campaign(
 @marketing_router.post("/campaigns/{campaign_id}/sync", response_model=SuccessMessage)
 def sync_campaign_data(
     campaign_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """Sync campaign data from Meta API"""
     campaign = db.query(MetaCampaign).filter(MetaCampaign.id == campaign_id).first()
@@ -2185,7 +2188,7 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
                 "since": start_date.strftime("%Y-%m-%d"),
                 "until": end_date.strftime("%Y-%m-%d")
             }),
-            "fields": "impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,conversions"
+            "fields": "impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,conversions,action_values"
         }
         
         insights_data = get_meta_insights(
@@ -2232,7 +2235,20 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
             
             cost_per_conversion = spend / conversions if conversions > 0 else 0
             conversion_rate = (conversions / clicks * 100) if clicks > 0 else 0
-            
+
+            # Parse purchase value (revenue) from action_values for ROAS.
+            # Prefer the most specific purchase type to avoid double counting.
+            action_values = {
+                av.get("action_type"): float(av.get("value", 0))
+                for av in insight.get("action_values", [])
+            }
+            revenue = (
+                action_values.get("purchase")
+                or action_values.get("omni_purchase")
+                or action_values.get("offsite_conversion.fb_pixel_purchase")
+                or 0.0
+            )
+
             insight_info = {
                 "ad_id": ad.id,
                 "date": insight_date,
@@ -2247,6 +2263,7 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
                 "conversions": conversions,
                 "cost_per_conversion": cost_per_conversion,
                 "conversion_rate": conversion_rate,
+                "revenue": revenue,
                 "likes": 0,
                 "comments": 0,
                 "shares": 0,
@@ -3512,6 +3529,10 @@ def upload_custom_audience(
     Create a Custom Audience from phone numbers.
 
     Phone numbers are hashed with SHA256 before uploading to Meta.
+
+    COMPLIANCE (Meta Custom Audiences Terms): only numbers with a recorded
+    marketing opt-in (and no opt-out) are uploaded. Numbers without provable
+    consent are excluded and reported back, not uploaded.
     """
     ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == ad_account_id).first()
     if not ad_account:
@@ -3520,6 +3541,33 @@ def upload_custom_audience(
     if not phone_numbers:
         raise HTTPException(status_code=400, detail="No phone numbers provided")
 
+    # Filter to numbers with provable marketing consent on record
+    from modules.whatsapp.models import WhatsAppLead
+
+    normalized = {
+        p.strip().replace(" ", "").replace("-", "").replace("+", ""): p
+        for p in phone_numbers
+    }
+    consented_rows = db.query(WhatsAppLead.phone_number).filter(
+        WhatsAppLead.phone_number.in_(list(normalized.keys())),
+        WhatsAppLead.marketing_opt_in == True,
+        WhatsAppLead.opted_out_at.is_(None),
+    ).all()
+    consented_numbers = {row[0] for row in consented_rows}
+
+    eligible = [orig for norm, orig in normalized.items() if norm in consented_numbers]
+    excluded_count = len(phone_numbers) - len(eligible)
+
+    if not eligible:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "None of the provided phone numbers have marketing consent on "
+                "record. Custom Audiences may only contain customers who opted in "
+                "(Meta Custom Audiences Terms)."
+            )
+        )
+
     from .meta_targeting_service import MetaTargetingService
     service = MetaTargetingService(access_token=ad_account.access_token)
 
@@ -3527,12 +3575,13 @@ def upload_custom_audience(
         ad_account_id=ad_account.ad_account_id,
         name=name,
         description=description,
-        phone_numbers=phone_numbers
+        phone_numbers=eligible
     )
 
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create custom audience"))
 
+    result["excluded_no_consent"] = excluded_count
     return result
 
 

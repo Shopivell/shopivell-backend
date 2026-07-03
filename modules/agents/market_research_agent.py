@@ -137,9 +137,9 @@ class MarketResearchAgent:
     def __init__(self):
         # Initialize LLM based on available provider
         if LLM_PROVIDER == "anthropic":
-            self.llm = ChatAnthropic(model="claude-sonnet-4-20250514", temperature=0.3, max_tokens=4096)
+            self.llm = ChatAnthropic(model="claude-sonnet-4-6", temperature=0.3, max_tokens=4096)
         elif LLM_PROVIDER == "openrouter":
-            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4-20250514", temperature=0.3)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4.6", temperature=0.3)
         elif LLM_PROVIDER == "openai":
             self.llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
         else:

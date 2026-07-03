@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from database import get_db
 from dependencies import get_current_user, CurrentUser
 from .ai_usage_service import get_usage_dashboard, check_usage_limit
-from .models import AIUsageLog
+from .credit_service import get_balance
+from .models import AIUsageLog, AICreditTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,55 @@ async def get_ai_quota(
         "allowed": allowed,
         "message": message,
         **usage_info,
+    }
+
+
+@ai_usage_router.get("/credits")
+async def get_ai_credits(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Current AI message-credit balance for the store (monthly allowance + purchased)."""
+    if not current_user.store_id:
+        raise HTTPException(status_code=400, detail="No store associated with user")
+
+    info = get_balance(str(current_user.store_id))
+    info["needs_topup"] = info.get("available_credits", 0) <= 0
+    return info
+
+
+@ai_usage_router.get("/credits/transactions")
+async def get_ai_credit_transactions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Paginated AI credit ledger (grants, purchases, consumption) for the store."""
+    if not current_user.store_id:
+        raise HTTPException(status_code=400, detail="No store associated with user")
+
+    query = db.query(AICreditTransaction).filter(
+        AICreditTransaction.store_id == current_user.store_id
+    )
+    total = query.count()
+    txns = query.order_by(AICreditTransaction.created_at.desc()).offset(skip).limit(limit).all()
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "transactions": [
+            {
+                "id": str(t.id),
+                "kind": t.kind,
+                "credits": t.credits,
+                "balance_after": t.balance_after,
+                "reason": t.reason,
+                "reference": t.reference,
+                "created_at": t.created_at.isoformat(),
+            }
+            for t in txns
+        ],
     }
 
 

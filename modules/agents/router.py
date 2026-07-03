@@ -25,6 +25,7 @@ from .media_generator_agent import MediaGeneratorAgent
 from .visual_director_agent import VisualDirectorAgent
 from modules.stores.models import Store
 from modules.openrouter.ai_usage_service import require_ai_quota
+from utils.jwt_auth import get_current_user, CurrentUser
 from .vision_compliance_service import vision_compliance_service
 from .monitor_optimizer_agent import automated_rules_engine, AutomatedRule, RuleCondition, RuleAction, RuleType, ConditionGroup, ConditionLogic
 from .scheduler import rules_scheduler, start_rules_scheduler, stop_rules_scheduler
@@ -260,7 +261,8 @@ async def research_website(
     url: str = Query(..., description="Website URL to research"),
     business_name: Optional[str] = Query(None, description="Optional business name"),
     deep_scrape: bool = Query(True, description="Scrape multiple pages for comprehensive analysis"),
-    extract_structure: bool = Query(True, description="Use AI to extract structured data")
+    extract_structure: bool = Query(True, description="Use AI to extract structured data"),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Research a website directly without requiring a campaign.
@@ -326,7 +328,8 @@ async def research_website(
 async def generate_audience_targeting(
     url: str = Query(..., description="Website URL to analyze"),
     include_hooks: bool = Query(False, description="Also generate creative hooks"),
-    num_hooks: int = Query(5, ge=1, le=10, description="Number of hooks if include_hooks=True")
+    num_hooks: int = Query(5, ge=1, le=10, description="Number of hooks if include_hooks=True"),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate Meta/Facebook audience targeting from a website URL.
@@ -387,7 +390,8 @@ async def generate_audience_targeting(
 
 @agents_router.post("/audience/compare")
 async def compare_audience_targeting(
-    urls: List[str] = Query(..., description="List of website URLs to compare (max 5)")
+    urls: List[str] = Query(..., description="List of website URLs to compare (max 5)"),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Compare audience targeting across multiple websites.
@@ -436,6 +440,38 @@ async def compare_audience_targeting(
 
 # ============ Creative Angle Endpoints ============
 
+async def _localized_keyword_data(campaign, db):
+    """Run keyword research for a campaign, localized to its store (country + city).
+    Best-effort: returns None if seeds are missing or research fails, so callers
+    can proceed without localization."""
+    try:
+        from .keyword_intelligence_agent import KeywordIntelligenceAgent
+        seed_keywords = list(campaign.keywords) if campaign.keywords else []
+        if not seed_keywords and campaign.product_description:
+            seed_keywords = [campaign.product_description[:60]]
+        if not seed_keywords:
+            return None
+        kw_country, kw_cities = "ZW", None
+        if campaign.store_id:
+            from modules.stores.models import Store
+            store = db.query(Store).filter(Store.id == campaign.store_id).first()
+            if store:
+                if store.country_code:
+                    kw_country = store.country_code.upper()
+                if store.store_city:
+                    kw_cities = [store.store_city]
+        return await KeywordIntelligenceAgent().research_keywords(
+            seed_keyword=seed_keywords[0],
+            additional_seeds=seed_keywords[1:] or None,
+            country_code=kw_country,
+            limit=30,
+            target_cities=kw_cities,
+        )
+    except Exception as e:
+        logger.warning(f"Keyword localization skipped: {e}")
+        return None
+
+
 @agents_router.post("/campaigns/{campaign_id}/angles")
 async def generate_creative_angles(
     campaign_id: uuid.UUID,
@@ -472,7 +508,8 @@ async def generate_creative_angles(
         logger.info(f"Generating {num_angles} creative angles for campaign: {campaign.name}")
 
         agent = CreativeAnglesAgent()
-        angles = await agent.generate_angles(campaign, num_angles=num_angles)
+        keyword_data = await _localized_keyword_data(campaign, db)
+        angles = await agent.generate_angles(campaign, num_angles=num_angles, keyword_data=keyword_data)
 
         logger.info(f"Generated {len(angles)} creative angles for campaign: {campaign.id}")
 
@@ -576,6 +613,10 @@ async def generate_ad_copies(
     try:
         agent = AdCopyAgent()
 
+        # Localized keyword intelligence so headlines use local search terms
+        # (e.g. "... in Harare") and foreign-market noise is filtered out.
+        keyword_data = await _localized_keyword_data(campaign, db)
+
         if angle_id:
             # Generate for specific angle
             angle = db.query(CreativeAngle).filter(CreativeAngle.id == angle_id).first()
@@ -586,7 +627,7 @@ async def generate_ad_copies(
                 )
 
             logger.info(f"Generating ad copy for angle: {angle.angle_name}")
-            ad_copy = await agent.generate_ad_copy(campaign, angle)
+            ad_copy = await agent.generate_ad_copy(campaign, angle, keyword_data=keyword_data)
 
             return {
                 "success": True,
@@ -607,7 +648,7 @@ async def generate_ad_copies(
                 )
 
             logger.info(f"Generating ad copies for {len(angles)} angles")
-            ad_copies = await agent.generate_all_ad_copies(campaign, angles)
+            ad_copies = await agent.generate_all_ad_copies(campaign, angles, keyword_data=keyword_data)
 
             return {
                 "success": True,
@@ -740,11 +781,26 @@ async def run_campaign_pipeline(
             if seed_keywords:
                 seed = seed_keywords[0]
                 additional = seed_keywords[1:] if len(seed_keywords) > 1 else None
+
+                # Derive target market from the campaign's store so ranking is
+                # local to wherever this store actually sells.
+                kw_country = "ZW"
+                kw_cities = None
+                if campaign.store_id:
+                    from modules.stores.models import Store
+                    store = db.query(Store).filter(Store.id == campaign.store_id).first()
+                    if store:
+                        if store.country_code:
+                            kw_country = store.country_code.upper()
+                        if store.store_city:
+                            kw_cities = [store.store_city]
+
                 keyword_data = await keyword_agent.research_keywords(
                     seed_keyword=seed,
                     additional_seeds=additional,
-                    country_code="ZW",
-                    limit=30
+                    country_code=kw_country,
+                    limit=30,
+                    target_cities=kw_cities
                 )
                 results["keyword_intelligence"] = keyword_data
                 print(f"DEBUG: Step 0 complete - found {keyword_data.get('total_found', 0)} keywords (source: {keyword_data.get('source', 'unknown')})")
@@ -1085,10 +1141,10 @@ async def optimize_campaign(
         performance_data = []
         for m in metrics:
             # Get associated ad copy if exists
-            ad_copy = db.query(AdCopy).filter(AdCopy.id == m.ad_copy_id).first() if m.ad_copy_id else None
+            ad_copy = db.query(AdCopy).filter(AdCopy.id == m.ad_id).first() if m.ad_id else None
 
             performance_data.append({
-                "ad_id": str(m.ad_copy_id) if m.ad_copy_id else "N/A",
+                "ad_id": str(m.ad_id) if m.ad_id else "N/A",
                 "headline": ad_copy.headline if ad_copy else "N/A",
                 "impressions": m.impressions or 0,
                 "clicks": m.clicks or 0,
@@ -1217,7 +1273,8 @@ async def add_performance_metrics(
 
         metrics = PerformanceMetrics(
             campaign_id=campaign_id,
-            ad_copy_id=metrics_data.get('ad_copy_id'),
+            # Model column is `ad_id`; accept either key from callers for compatibility.
+            ad_id=metrics_data.get('ad_id') or metrics_data.get('ad_copy_id'),
             impressions=impressions,
             clicks=clicks,
             conversions=metrics_data.get('conversions', 0),
@@ -1253,7 +1310,8 @@ async def generate_image(
     prompt: str,
     style: str = "professional",
     aspect_ratio: str = "1:1",
-    store_id: Optional[uuid.UUID] = None
+    store_id: Optional[uuid.UUID] = None,
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate an AI image using multiple providers with automatic fallback.
@@ -1306,7 +1364,8 @@ async def generate_video(
     prompt: str,
     image_base64: Optional[str] = None,
     duration: int = 5,
-    aspect_ratio: str = "16:9"
+    aspect_ratio: str = "16:9",
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate an AI video using multiple providers with automatic fallback.
@@ -1355,7 +1414,8 @@ async def generate_ad_media(
     product_description: str,
     visual_direction: str = "Professional and engaging",
     emotion_target: str = "Trust",
-    generate_video: bool = False
+    generate_video: bool = False,
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate complete ad media (image + optional video) for a product.
@@ -1433,7 +1493,8 @@ async def generate_luxury_assets(
     product_description: str,
     num_assets: int = 5,
     brand_colors: Optional[str] = None,
-    generate_images: bool = False
+    generate_images: bool = False,
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate varied luxury ad asset specifications with unique creative directions.
@@ -1502,7 +1563,8 @@ async def generate_store_ad(
     bullet_points: Optional[List[str]] = None,
     cta_text: str = "Learn More",
     aspect_ratio: str = "1:1",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
 ):
     """
     Generate a modern ad image for a store using its profile data.
@@ -1528,6 +1590,14 @@ async def generate_store_ad(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Store with id {store_id} not found"
         )
+
+    # Verify the caller owns this store (admin roles exempt)
+    if "admin" not in (current_user.role or "").lower():
+        if str(store.owner_id) != current_user.id and current_user.store_id != str(store_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this store"
+            )
 
     # Check AI quota before proceeding
     require_ai_quota(store_id, db)
@@ -1749,7 +1819,8 @@ async def get_rule_templates():
 async def create_rule_from_template(
     template_name: str,
     target_roas: Optional[float] = None,
-    target_cpa: Optional[float] = None
+    target_cpa: Optional[float] = None,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Create an automated rule from a predefined template.
@@ -1813,7 +1884,8 @@ async def create_custom_rule(
     target_cpa: Optional[float] = None,
     cooldown_minutes: int = 60,
     max_triggers_per_day: int = 3,
-    condition_groups: Optional[dict] = None
+    condition_groups: Optional[dict] = None,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Create a custom automated rule with specific conditions and actions.
@@ -1946,7 +2018,7 @@ async def get_active_rules():
 
 
 @agents_router.delete("/rules/{rule_id}")
-async def delete_rule(rule_id: str):
+async def delete_rule(rule_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Delete an automated rule by ID"""
     success = automated_rules_engine.remove_rule(rule_id)
 
@@ -1960,7 +2032,7 @@ async def delete_rule(rule_id: str):
 
 
 @agents_router.post("/rules/{rule_id}/toggle")
-async def toggle_rule(rule_id: str, enabled: bool = True):
+async def toggle_rule(rule_id: str, enabled: bool = True, current_user: CurrentUser = Depends(get_current_user)):
     """Enable or disable an automated rule"""
     for rule in automated_rules_engine.rules:
         if rule.id == rule_id:
@@ -1979,7 +2051,7 @@ async def toggle_rule(rule_id: str, enabled: bool = True):
 
 
 @agents_router.post("/rules/run/{ad_account_id}")
-async def run_rules_for_account(ad_account_id: str):
+async def run_rules_for_account(ad_account_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """
     Manually trigger rule execution for an ad account.
 
@@ -2036,7 +2108,8 @@ async def get_rule_execution_history(
 @agents_router.post("/rules/setup-defaults")
 async def setup_default_rules(
     target_roas: float = 3.0,
-    target_cpa: float = 50.0
+    target_cpa: float = 50.0,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Quick setup: Create the two main automated rules with your targets.
@@ -2103,7 +2176,8 @@ async def setup_default_rules(
 @agents_router.post("/scheduler/start")
 async def start_scheduler(
     interval_minutes: int = 15,
-    ad_account_ids: Optional[List[str]] = None
+    ad_account_ids: Optional[List[str]] = None,
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Start the 24/7 automated rules scheduler.
@@ -2150,7 +2224,7 @@ async def start_scheduler(
 
 
 @agents_router.post("/scheduler/stop")
-async def stop_scheduler():
+async def stop_scheduler(current_user: CurrentUser = Depends(get_current_user)):
     """
     Stop the 24/7 automated rules scheduler.
 
@@ -2198,7 +2272,7 @@ async def get_scheduler_status():
 
 
 @agents_router.post("/scheduler/add-account")
-async def add_account_to_scheduler(ad_account_id: str):
+async def add_account_to_scheduler(ad_account_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """
     Add an ad account to the scheduler for 24/7 monitoring.
 
@@ -2214,8 +2288,41 @@ async def add_account_to_scheduler(ad_account_id: str):
     }
 
 
+@agents_router.post("/scheduler/autopilot")
+async def set_autopilot(
+    ad_account_id: str,
+    enabled: bool = Query(..., description="True = live autonomous execution; False = advise-only (dry-run)"),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Master switch for autonomous rule execution on an ad account.
+
+    When disabled (default), the scheduler evaluates rules in advise-only/dry-run
+    mode: it logs what it WOULD do but makes no spend-affecting Meta changes.
+    When enabled, rules execute live (pausing ads, changing budgets) every cycle.
+    """
+    from modules.marketing.models import MetaAdAccount
+    account = db.query(MetaAdAccount).filter(
+        MetaAdAccount.ad_account_id == ad_account_id
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Ad account {ad_account_id} not found")
+
+    account.autopilot_enabled = enabled
+    db.commit()
+    logger.info(f"[Autopilot] {ad_account_id} autopilot set to {'LIVE' if enabled else 'advise-only'}")
+
+    return {
+        "success": True,
+        "ad_account_id": ad_account_id,
+        "autopilot_enabled": enabled,
+        "mode": "live autonomous execution" if enabled else "advise-only (dry-run)",
+    }
+
+
 @agents_router.delete("/scheduler/remove-account/{ad_account_id}")
-async def remove_account_from_scheduler(ad_account_id: str):
+async def remove_account_from_scheduler(ad_account_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Remove an ad account from the scheduler"""
     success = rules_scheduler.remove_ad_account(ad_account_id)
 
@@ -2233,7 +2340,7 @@ async def remove_account_from_scheduler(ad_account_id: str):
 
 
 @agents_router.post("/scheduler/run-now")
-async def trigger_immediate_run():
+async def trigger_immediate_run(current_user: CurrentUser = Depends(get_current_user)):
     """
     Manually trigger an immediate rule execution cycle.
 
@@ -2553,13 +2660,15 @@ async def keyword_research(
     seed_keyword: str,
     country_code: str = "ZW",
     additional_seeds: Optional[List[str]] = None,
-    limit: int = 50
+    limit: int = 50,
+    target_cities: Optional[List[str]] = None
 ):
     """
     Research keywords with search volume, CPC, competition data, and intent clustering.
 
     Uses DataForSEO API if configured, falls back to Google Autocomplete.
     Keywords are automatically clustered by search intent (informational, commercial, transactional).
+    target_cities boosts local relevance ranking (e.g. ["Harare"]).
     """
     try:
         from .keyword_intelligence_agent import KeywordIntelligenceAgent
@@ -2569,7 +2678,8 @@ async def keyword_research(
             seed_keyword=seed_keyword,
             country_code=country_code,
             additional_seeds=additional_seeds,
-            limit=limit
+            limit=limit,
+            target_cities=target_cities
         )
 
         return {
@@ -2652,7 +2762,7 @@ async def get_circuit_breaker_status(ad_account_id: str, db: Session = Depends(g
 
 
 @agents_router.post("/circuit-breaker/{ad_account_id}/reset")
-async def reset_circuit_breaker(ad_account_id: str, db: Session = Depends(get_db)):
+async def reset_circuit_breaker(ad_account_id: str, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     """Manually reset a tripped circuit breaker."""
     try:
         from .models import CircuitBreakerState
@@ -2678,7 +2788,8 @@ async def update_circuit_breaker_config(
     daily_spend_cap: Optional[float] = Query(None, description="Max daily spend before tripping"),
     volatility_threshold_pct: Optional[float] = Query(None, description="Max % metric change before blocking"),
     data_freshness_hours: Optional[int] = Query(None, description="Max hours since last data sync"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Update circuit breaker thresholds for an ad account."""
     try:
@@ -2729,7 +2840,7 @@ async def simulate_rules(ad_account_id: str):
 # ============ Rollback Endpoints ============
 
 @agents_router.post("/rules/check-rollbacks")
-async def check_rollbacks_now():
+async def check_rollbacks_now(current_user: CurrentUser = Depends(get_current_user)):
     """Manually trigger rollback checks for all pending budget actions."""
     try:
         rollbacks = await automated_rules_engine.check_rollbacks()
@@ -2784,7 +2895,7 @@ async def list_proposed_rules(
 
 
 @agents_router.post("/rules/proposals/{proposal_id}/accept")
-async def accept_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db)):
+async def accept_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     """Accept a proposed rule, converting it to an active AutomatedRule in the engine."""
     try:
         from .models import ProposedRule
@@ -2836,7 +2947,7 @@ async def accept_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get
 
 
 @agents_router.post("/rules/proposals/{proposal_id}/reject")
-async def reject_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db)):
+async def reject_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     """Reject a proposed rule."""
     try:
         from .models import ProposedRule
@@ -2857,7 +2968,7 @@ async def reject_proposed_rule(proposal_id: uuid.UUID, db: Session = Depends(get
 
 
 @agents_router.post("/rules/propose/{campaign_id}")
-async def trigger_rule_proposal(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+async def trigger_rule_proposal(campaign_id: uuid.UUID, db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
     """Manually trigger the LLM to propose optimization rules for a campaign."""
     try:
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
@@ -3750,3 +3861,190 @@ async def recommend_dayparting_schedule(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Dayparting recommendation failed: {str(e)}"
         )
+
+
+# ============ Video Generation Proxy ============
+# The frontend previously called OpenRouter directly with API keys embedded
+# in the browser bundle. These endpoints keep the key server-side, enforce
+# auth + per-store quota, and record token usage.
+
+from pydantic import BaseModel
+
+
+class VideoGenerateProxyRequest(BaseModel):
+    prompt: str
+    length: str = "5"
+    video_base64: Optional[str] = None  # data URL for video-to-video
+
+
+class PromptEnhanceProxyRequest(BaseModel):
+    prompt: str
+    video_length: str = "5"
+
+
+def _openrouter_chat(payload: dict, timeout: int = 300) -> dict:
+    """Call OpenRouter chat completions with the server-side API key."""
+    import os
+    import requests
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI video service is not configured"
+        )
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://shopivell.com",
+            "X-Title": "Shopivell Video Studio",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    if not response.ok:
+        logger.error(f"[VideoProxy] OpenRouter error {response.status_code}: {response.text[:500]}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Video AI provider returned an error"
+        )
+    return response.json()
+
+
+def _track_video_usage(result: dict, model: str, agent_name: str, current_user: CurrentUser) -> None:
+    """Record OpenRouter token usage for cost tracking (fire-and-forget)."""
+    try:
+        from modules.openrouter.ai_usage_service import track_usage
+        usage = result.get("usage", {}) or {}
+        track_usage(
+            model=model,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            agent_name=agent_name,
+            store_id=current_user.store_id,
+            user_id=current_user.id,
+        )
+    except Exception as e:
+        logger.error(f"[VideoProxy] Usage tracking failed: {e}")
+
+
+@agents_router.post("/video/generate")
+def generate_video_proxy(
+    request: VideoGenerateProxyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a video via OpenRouter (replaces direct frontend OpenRouter calls).
+    Sync endpoint on purpose: FastAPI runs it in a threadpool, so the blocking
+    `requests` call doesn't stall the event loop.
+    """
+    if current_user.store_id:
+        require_ai_quota(current_user.store_id, db)
+
+    content = [{
+        "type": "text",
+        "text": (
+            f"{request.prompt} \n\nPlease create a {request.length}-second video with "
+            "this description. Focus on smooth transitions and coherent visual storytelling."
+        )
+    }]
+    if request.video_base64:
+        content.append({"type": "video_url", "video_url": {"url": request.video_base64}})
+
+    model = "google/gemini-3-pro-vision-preview"
+    result = _openrouter_chat({
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 1000,
+    })
+    _track_video_usage(result, model, "video_generator", current_user)
+    return result
+
+
+@agents_router.post("/video/enhance-prompt")
+def enhance_video_prompt_proxy(
+    request: PromptEnhanceProxyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Enhance a video prompt via OpenRouter (key stays server-side)."""
+    if current_user.store_id:
+        require_ai_quota(current_user.store_id, db)
+
+    instruction = f"""Enhance this video prompt to be more cinematic and descriptive for a {request.video_length}-second video. Use these examples as reference:
+
+Example 1: "Create a 5-second time-lapse of a bustling city transforming from day to night, with neon lights flickering on and cars flowing like rivers of light. Cinematic, smooth transitions, 4K quality."
+
+Example 2: "Generate a 10-second animated explainer video showing how photosynthesis works in plants. Use vibrant colors, smooth animations, and clear visual storytelling with text labels appearing at key moments."
+
+Example 3: "Transform this video into a vintage 8mm film style with film grain, light leaks, and nostalgic color grading. Add subtle camera shake and focus on creating a warm, nostalgic atmosphere."
+
+Now enhance this prompt for a {request.video_length}-second video in a similar detailed, cinematic style, focusing on visual flow, transitions, mood, and timing. Return ONLY the enhanced prompt text without any additional explanations: "{request.prompt}\""""
+
+    model = "google/gemma-3-27b-it:free"
+    result = _openrouter_chat({
+        "model": model,
+        "messages": [{"role": "user", "content": instruction}],
+    }, timeout=120)
+    _track_video_usage(result, model, "prompt_enhancer", current_user)
+
+    enhanced = (
+        (result.get("choices") or [{}])[0]
+        .get("message", {})
+        .get("content", "")
+        or ""
+    ).strip()
+    if not enhanced:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No enhanced prompt returned"
+        )
+    return {"enhanced_prompt": enhanced}
+
+
+# Models the frontend may call through the generic proxy
+_PROXY_ALLOWED_MODELS = {
+    "google/gemma-3-27b-it:free",
+    "google/gemini-3-pro-image-preview",
+    "google/gemini-3-pro-vision-preview",
+}
+
+
+class OpenRouterChatProxyRequest(BaseModel):
+    model: str
+    messages: List[Dict[str, Any]]
+    max_tokens: Optional[int] = None
+
+
+@agents_router.post("/ai/openrouter-chat")
+def openrouter_chat_proxy(
+    request: OpenRouterChatProxyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    General-purpose OpenRouter chat proxy for frontend AI features
+    (post templates, hashtags, image studio). Replaces direct frontend
+    OpenRouter calls that embedded API keys in the browser bundle.
+    """
+    if request.model not in _PROXY_ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{request.model}' is not allowed through this proxy"
+        )
+
+    if current_user.store_id:
+        require_ai_quota(current_user.store_id, db)
+
+    payload: Dict[str, Any] = {"model": request.model, "messages": request.messages}
+    if request.max_tokens:
+        payload["max_tokens"] = min(request.max_tokens, 4000)
+
+    result = _openrouter_chat(payload)
+    _track_video_usage(result, request.model, "frontend_ai_proxy", current_user)
+    return result

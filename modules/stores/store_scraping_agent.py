@@ -102,7 +102,7 @@ class StoreScrapingAgent:
 
         # Initialize LLM via OpenRouter or Anthropic direct
         self.llm = ChatOpenRouter(
-            model="anthropic/claude-sonnet-4" if OPENROUTER_AVAILABLE else "claude-sonnet-4-20250514",
+            model="anthropic/claude-sonnet-4.6" if OPENROUTER_AVAILABLE else "claude-sonnet-4-6",
             temperature=0.2
         )
         logger.info(f"[StoreScrapingAgent] LLM initialized with {'OpenRouter' if OPENROUTER_AVAILABLE else 'Anthropic direct'}")

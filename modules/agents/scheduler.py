@@ -14,7 +14,7 @@ Usage:
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 from threading import Thread
 
@@ -69,6 +69,54 @@ class AutomatedRulesScheduler:
             "active_rules": len(automated_rules_engine.rules)
         }
 
+    # ---- Tier gating (DB-persisted, survives restarts/deploys) ----
+
+    def _tier_due(self, tier_name: str, interval_hours: float) -> bool:
+        """True if the tier hasn't run within interval_hours.
+
+        Last-run times are persisted in the DB so frequent deploys don't
+        reset the schedule (the old run-count gating meant daily/weekly
+        tiers never fired if the process restarted more often than daily).
+        """
+        try:
+            from database import SessionLocal
+            from .models import SchedulerTierState
+            db = SessionLocal()
+            try:
+                state = db.query(SchedulerTierState).filter(
+                    SchedulerTierState.tier_name == tier_name
+                ).first()
+                if state is None or state.last_run_at is None:
+                    return True
+                return datetime.utcnow() - state.last_run_at >= timedelta(hours=interval_hours)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[Scheduler] Tier-due check failed for {tier_name}: {e}")
+            # Fallback: old count-based gating (resets on restart)
+            cycles = max(1, int(interval_hours * 60 / self._interval_minutes))
+            return self._run_count > 0 and self._run_count % cycles == 0
+
+    def _mark_tier_run(self, tier_name: str) -> None:
+        """Persist the tier's last-run time."""
+        try:
+            from database import SessionLocal
+            from .models import SchedulerTierState
+            db = SessionLocal()
+            try:
+                state = db.query(SchedulerTierState).filter(
+                    SchedulerTierState.tier_name == tier_name
+                ).first()
+                if state:
+                    state.last_run_at = datetime.utcnow()
+                else:
+                    db.add(SchedulerTierState(tier_name=tier_name, last_run_at=datetime.utcnow()))
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[Scheduler] Failed to persist tier state for {tier_name}: {e}")
+
     async def _run_cycle(self) -> dict:
         """Run one cycle of rule execution for all accounts.
 
@@ -86,8 +134,9 @@ class AutomatedRulesScheduler:
             "errors": []
         }
 
-        # Tier 2: Sync insights every 6 hours (24 cycles × 15 min)
-        if self._run_count % 24 == 0:
+        # Tier 2: Sync insights every 6 hours (DB-gated, survives restarts)
+        if self._tier_due("insights_sync", 6):
+            self._mark_tier_run("insights_sync")
             try:
                 from modules.marketing.insights_service import sync_insights_for_all_accounts
                 logger.info("[Scheduler] Tier 2: Syncing insights (6-hour cycle)")
@@ -100,7 +149,8 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Insights sync: {str(e)}")
 
         # Tier 2.5: Optimize URL campaigns after insights sync (every 6 hours)
-        if self._run_count % 24 == 0:
+        if self._tier_due("url_campaign_optimization", 6):
+            self._mark_tier_run("url_campaign_optimization")
             try:
                 from database import SessionLocal
                 from modules.campaigns.models import UrlCampaign, CampaignStatus
@@ -129,8 +179,27 @@ class AutomatedRulesScheduler:
         # Tier 1: Run rules every cycle (15 min)
         for ad_account_id in self._ad_account_ids:
             try:
-                logger.info(f"[Scheduler] Running rules for account: {ad_account_id}")
-                result = await automated_rules_engine.run_all_rules(ad_account_id)
+                # Autopilot master switch: only execute live when the account has
+                # explicitly opted in. Otherwise run advise-only (dry_run) so the
+                # engine logs what it WOULD do without touching spend.
+                autopilot = False
+                try:
+                    from database import SessionLocal
+                    from modules.marketing.models import MetaAdAccount
+                    _db = SessionLocal()
+                    try:
+                        _acct = _db.query(MetaAdAccount).filter(
+                            MetaAdAccount.ad_account_id == ad_account_id
+                        ).first()
+                        autopilot = bool(_acct and _acct.autopilot_enabled)
+                    finally:
+                        _db.close()
+                except Exception as ap_err:
+                    logger.warning(f"[Scheduler] Autopilot lookup failed for {ad_account_id}, defaulting to advise-only: {ap_err}")
+
+                mode = "LIVE" if autopilot else "advise-only (dry-run)"
+                logger.info(f"[Scheduler] Running rules for account {ad_account_id} [{mode}]")
+                result = await automated_rules_engine.run_all_rules(ad_account_id, dry_run=not autopilot)
 
                 cycle_results["accounts_processed"] += 1
                 cycle_results["total_rules_triggered"] += result.get("rules_triggered", 0)
@@ -166,8 +235,9 @@ class AutomatedRulesScheduler:
             logger.error(f"[Scheduler] Micro-strategy cycle error: {e}")
             cycle_results["errors"].append(f"Micro-strategy: {str(e)}")
 
-        # Tier 3: Performance summary + lead quality + fatigue check every 24 hours (96 cycles × 15 min)
-        if self._run_count > 0 and self._run_count % 96 == 0:
+        # Tier 3: Performance summary + lead quality + fatigue check every 24 hours
+        if self._tier_due("daily_summary", 24):
+            self._mark_tier_run("daily_summary")
             # Check ad fatigue for URL campaigns daily
             try:
                 from database import SessionLocal
@@ -248,7 +318,8 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Daily summary: {str(e)}")
 
         # Tier 3.4: Evaluate running creative tests (daily)
-        if self._run_count > 0 and self._run_count % 96 == 0:
+        if self._tier_due("creative_tests", 24):
+            self._mark_tier_run("creative_tests")
             try:
                 tests_completed = await automated_rules_engine.evaluate_creative_tests()
                 cycle_results["creative_tests_completed"] = len(tests_completed)
@@ -259,7 +330,8 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Creative tests: {str(e)}")
 
         # Tier 3.5: LLM rule proposals (daily, after performance summary)
-        if self._run_count > 0 and self._run_count % 96 == 0:
+        if self._tier_due("rule_proposals", 24):
+            self._mark_tier_run("rule_proposals")
             try:
                 from modules.agents.monitor_optimizer_agent import MonitorOptimizerAgent
                 from modules.agents.models import Campaign as AgentCampaign
@@ -308,7 +380,8 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Rule proposals: {str(e)}")
 
         # Tier 3.6: Meta-learner cycle (daily, after rule proposals)
-        if self._run_count > 0 and self._run_count % 96 == 0:
+        if self._tier_due("meta_learner", 24):
+            self._mark_tier_run("meta_learner")
             try:
                 from modules.agents.meta_learner import MetaLearner
                 meta_learner = MetaLearner()
@@ -324,8 +397,9 @@ class AutomatedRulesScheduler:
                 logger.error(f"[Scheduler] Meta-learner error: {e}")
                 cycle_results["errors"].append(f"Meta-learner: {str(e)}")
 
-        # Tier 4: Audience refinement + weekly report every 7 days (672 cycles × 15 min)
-        if self._run_count > 0 and self._run_count % 672 == 0:
+        # Tier 4: Audience refinement + weekly report every 7 days
+        if self._tier_due("weekly_tasks", 168):
+            self._mark_tier_run("weekly_tasks")
             try:
                 logger.info("[Scheduler] Tier 4: Weekly tasks (7-day cycle)")
                 from modules.agents.creative_strategist_agent import CreativeStrategistAgent

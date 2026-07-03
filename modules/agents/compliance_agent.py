@@ -153,7 +153,7 @@ class ComplianceAgent:
     def __init__(self):
         """Initialize the compliance agent with Claude Haiku."""
         # Use Claude Haiku for compliance - great at context, cheap
-        self.model = "anthropic/claude-3-haiku" if OPENROUTER_AVAILABLE else "claude-3-haiku-20240307"
+        self.model = "anthropic/claude-haiku-4.5" if OPENROUTER_AVAILABLE else "claude-haiku-4-5"
 
         self.llm = ChatOpenRouter(
             model=self.model,
@@ -468,6 +468,40 @@ Respond with JSON only:
             "safe_prompt": safe_prompt,
             "original_prompt": prompt,
             "deep_check_skipped": False
+        }
+
+    def check_ad_copy(
+        self,
+        headline: Optional[str] = None,
+        primary_text: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fast, synchronous Meta-policy check for generated ad COPY (text).
+
+        Unlike check_compliance (built for image prompts), this focuses on
+        prohibited/restricted ad text and ignores the AI-image rules (faces/people),
+        which don't apply to copy. Regex-only: free and instant, so it is safe to
+        call inline in background jobs (e.g. gating fatigue auto-publish) without
+        adding LLM latency or cost.
+
+        Returns: {compliant, blocked_words, issues, warnings, suggestions, risk_score}
+        """
+        text = " ".join(p for p in [headline, primary_text, description] if p).strip()
+        if not text:
+            return {"compliant": True, "blocked_words": [], "issues": [],
+                    "warnings": [], "suggestions": [], "risk_score": 0}
+
+        q = self.quick_keyword_check(text)
+        # For text, prohibited-content matches are the blocking signal; the
+        # has_people_reference flag is image-specific and intentionally ignored.
+        return {
+            "compliant": len(q["blocked_words"]) == 0,
+            "blocked_words": q["blocked_words"],
+            "issues": q["issues"],
+            "warnings": q["warnings"],
+            "suggestions": q["suggestions"],
+            "risk_score": q["risk_score"],
         }
 
     def _log_compliance_check(self, prompt: str, context: Optional[Dict], result: Dict) -> None:

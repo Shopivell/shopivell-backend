@@ -30,6 +30,9 @@ class CustomerOrderBase(BaseModel):
 class CustomerOrderCreate(CustomerOrderBase):
     delivery_address: Optional[str] = None
     delivery_city: Optional[str] = None
+    # Explicit customer consent to receive WhatsApp marketing messages
+    # (collected via unchecked-by-default checkbox at checkout)
+    whatsapp_marketing_opt_in: Optional[bool] = False
 
 # Update schema
 class CustomerOrderUpdate(BaseModel):

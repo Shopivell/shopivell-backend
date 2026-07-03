@@ -71,11 +71,11 @@ class AdCopyAgent:
 
     def __init__(self):
         if OPENROUTER_AVAILABLE:
-            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4", temperature=0.8)
+            self.llm = ChatOpenRouter(model="anthropic/claude-sonnet-4.6", temperature=0.8)
             self._supports_json_mode = True
             logger.info("[AdCopyAgent] Initialized with OpenRouter (Claude)")
         else:
-            self.llm = ChatOpenRouter(model="claude-sonnet-4-20250514", temperature=0.8)
+            self.llm = ChatOpenRouter(model="claude-sonnet-4-6", temperature=0.8)
             self._supports_json_mode = False  # ChatAnthropic doesn't support response_format
             logger.info("[AdCopyAgent] Initialized with Claude direct")
 
@@ -90,6 +90,10 @@ WHAT THEY SELL (USE THESE SPECIFIC TERMS - NOT GENERIC INDUSTRY TERMS): {primary
 Tagline: {tagline}
 Years in Business: {years_in_business}
 Geographic Coverage: {geographic_coverage}
+Target Location (mention in copy when present): {location}
+
+LOCAL SEARCH TERMS customers in this market actually type (weave the most relevant ones verbatim into headlines and primary text where natural):
+{local_keywords}
 
 PRODUCTS/SERVICES DETAILS:
 {services_products}
@@ -132,6 +136,8 @@ Generate ad copy optimized for {platform} with the following:
    - Benefit-focused (specific benefit of {primary_products})
    - Curiosity-driven (about {company_name}'s {primary_products})
    - Social proof based (use actual numbers)
+   - LOCAL: if a Target Location is given, at least one headline MUST include it,
+     phrased like the local search terms above (e.g. "Electric Fence Installation in Harare")
 
 3. PRIMARY TEXT (3 variations)
    For {platform}:
@@ -358,10 +364,11 @@ Angle: {angle_name}
 Value Proposition: {value_proposition}
 Emotion Target: {emotion_target}
 Visual Direction: {visual_direction}
+{compliance_note}
 
 Generate ad copy with:
 
-HEADLINE: [Catchy headline, max 40 characters]
+HEADLINE: [Catchy headline, max 40 characters. If the Keywords list includes "LOCAL phrases", at least one headline MUST use a local phrase verbatim, including its city/country, e.g. "Electric Fence Installation in Harare"]
 PRIMARY TEXT: [Main ad text, 1-2 paragraphs, compelling and action-oriented]
 DESCRIPTION: [Optional description text, 1 sentence]
 CALL TO ACTION: [Choose from: Learn More, Shop Now, Sign Up, Download, Book Now, Get Quote, Contact Us]
@@ -398,6 +405,46 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
             response = response[:-3]
 
         return response.strip()
+
+    def _collect_copy_text(self, ad_data: Dict[str, Any]) -> str:
+        """Flatten all generated copy fields (str/list/dict shapes differ between
+        the research and angle methods) into one text blob for compliance checking."""
+        parts: List[str] = []
+
+        def walk(v):
+            if isinstance(v, str):
+                parts.append(v)
+            elif isinstance(v, list):
+                for x in v:
+                    walk(x)
+            elif isinstance(v, dict):
+                for x in v.values():
+                    walk(x)
+
+        for key in ("headline", "headlines", "primary_text", "description",
+                    "descriptions", "hooks", "variations"):
+            if key in ad_data:
+                walk(ad_data[key])
+        return " ".join(p for p in parts if isinstance(p, str) and p.strip())
+
+    def _check_copy_compliance(self, ad_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a Meta-policy check on generated copy at generation time and return
+        the verdict. Non-blocking: callers attach it so the UI/publish paths can act,
+        and violations are caught before they ever reach publish. Regex-only (free)."""
+        try:
+            from modules.agents.compliance_agent import ComplianceAgent
+            text = self._collect_copy_text(ad_data)
+            verdict = ComplianceAgent().check_ad_copy(primary_text=text)
+            if not verdict.get("compliant", True):
+                logger.warning(
+                    f"[AdCopyAgent] Generated copy flagged by compliance: "
+                    f"{verdict.get('blocked_words')}"
+                )
+            return verdict
+        except Exception as e:
+            logger.warning(f"[AdCopyAgent] Compliance check skipped: {e}")
+            return {"compliant": True, "blocked_words": [], "issues": [],
+                    "warnings": [], "suggestions": [], "risk_score": 0}
 
     def _parse_and_validate_ad_copy(self, response: str) -> Dict[str, Any]:
         """Parse LLM response and validate with Pydantic. Returns validated dict or raises."""
@@ -446,8 +493,8 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
         service_parts = []
         for svc in services[:6]:
             if isinstance(svc, dict):
-                name = svc.get('name', '')
-                desc = svc.get('description', '')[:100]
+                name = svc.get('name') or ''
+                desc = (svc.get('description') or '')[:100]
                 if name:
                     service_parts.append(f"- {name}: {desc}")
             elif isinstance(svc, str):
@@ -637,7 +684,9 @@ Return ONLY valid JSON, no markdown.
         research_data: Dict[str, Any],
         audience_segment: Dict[str, Any] = None,
         platform: str = "facebook",
-        brand_voice: str = "professional yet approachable"
+        brand_voice: str = "professional yet approachable",
+        local_keywords: List[str] = None,
+        location: str = None
     ) -> Dict[str, Any]:
         """
         Generate ad copy directly from market research data.
@@ -690,6 +739,10 @@ Return ONLY valid JSON, no markdown.
         # Get audience context
         audience_context = await self._extract_audience_context(audience_segment.get('name', ''), research_data)
 
+        # Localized SEO keywords (top ranked local/intent terms from the keyword agent)
+        local_kw_str = "\n".join(f"- {k}" for k in (local_keywords or [])[:10]) if local_keywords else "None provided"
+        location_str = location or ""
+
         prompt_data = {
             'company_name': company_name,
             'primary_products': product_info['primary_products'],
@@ -705,6 +758,8 @@ Return ONLY valid JSON, no markdown.
             'audience_type': audience_segment.get('type', 'B2C'),
             'platform': platform,
             'brand_voice': brand_voice,
+            'local_keywords': local_kw_str,
+            'location': location_str,
             'creative_insights': self._get_creative_performance_insights()
         }
 
@@ -722,6 +777,9 @@ Return ONLY valid JSON, no markdown.
             ad_data['company_name'] = company_name
             ad_data['primary_products'] = product_info['primary_products']
             ad_data['generated_from'] = 'market_research'
+
+            # Ad-copy-time compliance check (attach verdict for downstream gating)
+            ad_data['compliance'] = self._check_copy_compliance(ad_data)
 
             logger.info(f"[AdCopyAgent] Generated ad copy for {company_name}")
             return ad_data
@@ -1390,7 +1448,10 @@ Return ONLY valid JSON:
         # Enrich keywords with search volume data if available
         keywords_str = ", ".join(campaign.keywords) if campaign.keywords else "Not specified"
         if keyword_data and keyword_data.get("success"):
-            top_kws = keyword_data.get("keywords", [])[:8]
+            all_kws = keyword_data.get("keywords", [])
+            # Drop foreign-market noise; keep local + high-intent first (already ranked).
+            filtered = [k for k in all_kws if not k.get("is_foreign")]
+            top_kws = (filtered or all_kws)[:8]
             if top_kws:
                 kw_parts = []
                 for kw in top_kws:
@@ -1400,6 +1461,12 @@ Return ONLY valid JSON:
                     else:
                         kw_parts.append(kw["keyword"])
                 keywords_str = ", ".join(kw_parts)
+
+                # Highlight local phrases so at least one headline uses them verbatim
+                # (they already carry the city/country, e.g. "...in harare").
+                local_terms = [k["keyword"] for k in top_kws if k.get("is_local")][:4]
+                if local_terms:
+                    keywords_str += f"\nLOCAL phrases to use verbatim in at least one headline: {', '.join(local_terms)}"
 
                 # Add intent hint
                 clusters = keyword_data.get("clusters", {})
@@ -1416,26 +1483,52 @@ Return ONLY valid JSON:
             "angle_name": angle.angle_name,
             "value_proposition": angle.value_proposition or "",
             "emotion_target": angle.emotion_target or "",
-            "visual_direction": angle.visual_direction or ""
+            "visual_direction": angle.visual_direction or "",
+            "compliance_note": ""
         }
 
         from modules.openrouter.context import set_ai_context
         chain = self.prompt | self.llm | StrOutputParser()
-        with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None, campaign_id=str(campaign.id), agent_name="ad_copy"):
-            ad_json = await chain.ainvoke(prompt_data)
-        cleaned_json = self._clean_json_response(ad_json)
 
-        try:
-            ad_data = json.loads(cleaned_json)
-        except json.JSONDecodeError as e:
-            logger.error(f"[AdCopyAgent] JSON decode error: {e}")
-            ad_data = {
-                "headline": "Discover Our Solutions",
-                "primary_text": cleaned_json[:500] if cleaned_json else "Contact us for more information.",
-                "description": "Professional solutions for your needs",
-                "call_to_action": "Learn More",
-                "variations": []
-            }
+        async def _generate_once() -> Dict[str, Any]:
+            with set_ai_context(store_id=str(campaign.store_id) if campaign.store_id else None,
+                                campaign_id=str(campaign.id), agent_name="ad_copy"):
+                ad_json = await chain.ainvoke(prompt_data)
+            cleaned = self._clean_json_response(ad_json)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError as e:
+                logger.error(f"[AdCopyAgent] JSON decode error: {e}")
+                return {
+                    "headline": "Discover Our Solutions",
+                    "primary_text": cleaned[:500] if cleaned else "Contact us for more information.",
+                    "description": "Professional solutions for your needs",
+                    "call_to_action": "Learn More",
+                    "variations": []
+                }
+
+        ad_data = await _generate_once()
+
+        # Ad-copy-time compliance check: catch Meta-policy issues at generation,
+        # before this copy can reach publish.
+        compliance = self._check_copy_compliance(ad_data)
+
+        # Auto-regenerate once if the copy trips Meta policy: re-prompt to avoid the
+        # exact flagged terms, then re-check. Keeps the copy self-healing instead of
+        # just flagged.
+        if not compliance.get("compliant", True):
+            blocked = ", ".join(compliance.get("blocked_words", [])) or "the flagged terms"
+            prompt_data["compliance_note"] = (
+                f"IMPORTANT: A previous draft was REJECTED for Meta ad policy. Do NOT use "
+                f"these prohibited terms or claims: {blocked}. Rewrite fully compliant copy "
+                f"with no banned words, exaggerated guarantees, or prohibited claims."
+            )
+            logger.info(f"[AdCopyAgent] Regenerating ad copy to avoid: {blocked}")
+            regenerated = await _generate_once()
+            regen_compliance = self._check_copy_compliance(regenerated)
+            # Use the fresh attempt; if it's now compliant we've self-healed, and if
+            # not it's still the newest draft (and stays flagged for human review).
+            ad_data, compliance = regenerated, regen_compliance
 
         # Store in database
         db = SessionLocal()
@@ -1463,6 +1556,7 @@ Return ONLY valid JSON:
                 "description": ad_copy.description,
                 "call_to_action": ad_copy.call_to_action,
                 "variations": ad_copy.variations,
+                "compliance": compliance,
                 "created_at": ad_copy.created_at.isoformat() if ad_copy.created_at else None
             }
         finally:

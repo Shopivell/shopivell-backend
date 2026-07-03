@@ -364,6 +364,15 @@ class BacktestResult(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+class SchedulerTierState(Base):
+    """Persists last-run time of scheduler tiers so daily/weekly tasks
+    survive restarts and frequent deploys (run-count gating reset on boot)."""
+    __tablename__ = "scheduler_tier_state"
+
+    tier_name = Column(String(50), primary_key=True)
+    last_run_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class RulePerformanceTracker(Base):
     """Tracks lifetime performance of each rule for auto-tuning and retirement"""
     __tablename__ = "rule_performance_trackers"

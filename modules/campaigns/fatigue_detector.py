@@ -238,11 +238,14 @@ class FatigueDetector:
                 # Pause old content
                 old_content.is_active = False
 
-                # Pause on Meta if published
-                if old_content.meta_ad_id:
+                # Pause on Meta if published, and remember its ad id so we can
+                # publish the fresh creative into the same ad set.
+                old_meta_ad_id = old_content.meta_ad_id
+                optimizer = None
+                if old_meta_ad_id:
                     from .optimizer import CampaignOptimizer
                     optimizer = CampaignOptimizer(self.db)
-                    optimizer._pause_meta_ad(old_content.meta_ad_id)
+                    optimizer._pause_meta_ad(old_meta_ad_id)
 
                 # Create new content
                 new_content = UrlAdContent(
@@ -264,11 +267,23 @@ class FatigueDetector:
                 self.db.add(new_content)
                 self.db.flush()
 
+                # Publish the replacement to Meta so the ad set keeps a live ad.
+                # Without this, refresh would only pause the fatigued ad and leave
+                # the fresh creative sitting unpublished in the database.
+                new_meta_ad_id = None
+                if old_meta_ad_id and optimizer is not None:
+                    new_meta_ad_id = optimizer.publish_replacement_ad(
+                        new_content, old_meta_ad_id, campaign
+                    )
+                    if new_meta_ad_id:
+                        new_content.meta_ad_id = new_meta_ad_id
+
                 refreshed.append({
                     "old_content_id": str(content_id),
                     "new_content_id": str(new_content.id),
                     "refresh_type": "copy_and_image" if refresh_image else "copy_only",
                     "new_headline": new_copy.get("headline"),
+                    "published_to_meta": bool(new_meta_ad_id),
                 })
 
             except Exception as e:

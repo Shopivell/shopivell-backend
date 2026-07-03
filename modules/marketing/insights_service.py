@@ -54,7 +54,7 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
                 "since": start_date.strftime("%Y-%m-%d"),
                 "until": end_date.strftime("%Y-%m-%d")
             }),
-            "fields": "impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,conversions"
+            "fields": "impressions,clicks,spend,cpm,cpc,ctr,frequency,reach,actions,conversions,action_values"
         }
 
         insights_data = _get_meta_insights(
@@ -101,6 +101,19 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
             cost_per_conversion = spend / conversions if conversions > 0 else 0
             conversion_rate = (conversions / clicks * 100) if clicks > 0 else 0
 
+            # Parse purchase value (revenue) from action_values for ROAS.
+            # Prefer the most specific purchase type to avoid double counting.
+            action_values = {
+                av.get("action_type"): float(av.get("value", 0))
+                for av in insight.get("action_values", [])
+            }
+            revenue = (
+                action_values.get("purchase")
+                or action_values.get("omni_purchase")
+                or action_values.get("offsite_conversion.fb_pixel_purchase")
+                or 0.0
+            )
+
             insight_info = {
                 "ad_id": ad.id,
                 "date": insight_date,
@@ -115,6 +128,7 @@ def sync_ad_insights(ad: MetaAd, start_date: date, end_date: date, db: Session):
                 "conversions": conversions,
                 "cost_per_conversion": cost_per_conversion,
                 "conversion_rate": conversion_rate,
+                "revenue": revenue,
                 "likes": 0,
                 "comments": 0,
                 "shares": 0,

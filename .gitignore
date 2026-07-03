@@ -18,6 +18,8 @@ env/
 
 # Local databases / sqlite files
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # IDE / Editor files
@@ -58,3 +60,9 @@ test_*.py
 uploads/
 !uploads/.gitkeep
 nul
+
+# Local scratch / generated artifacts (not source)
+reliabletech_*.json
+test_strategist.json
+shopivell_invoice.pdf
+shopivell_invoice_preview.png

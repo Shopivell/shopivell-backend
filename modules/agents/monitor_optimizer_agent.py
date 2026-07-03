@@ -842,7 +842,10 @@ class RuleExecutionResult(BaseModel):
     new_value: Optional[float] = None
     success: bool
     message: str
-    executed_at: datetime = datetime.utcnow()
+    # NOTE: must be default_factory, not `datetime.utcnow()`. A plain default is
+    # evaluated once at import and frozen for the process lifetime, which makes the
+    # per-day throttle and daily-spend circuit breaker always see "today_count = 0".
+    executed_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class AutomatedRulesEngine:
@@ -1070,7 +1073,8 @@ class AutomatedRulesEngine:
                     func.sum(MetaAdInsight.impressions).label('impressions'),
                     func.sum(MetaAdInsight.clicks).label('clicks'),
                     func.sum(MetaAdInsight.spend).label('spend'),
-                    func.sum(MetaAdInsight.conversions).label('conversions')
+                    func.sum(MetaAdInsight.conversions).label('conversions'),
+                    func.sum(MetaAdInsight.revenue).label('revenue')
                 ).filter(
                     MetaAdInsight.ad_id.in_(ad_ids),
                     MetaAdInsight.date >= start_date,
@@ -1082,10 +1086,12 @@ class AutomatedRulesEngine:
                     clicks = insight.clicks or 0
                     spend = insight.spend or 0
                     conversions = insight.conversions or 0
+                    revenue = insight.revenue or 0
 
                     ctr = (clicks / impressions * 100) if impressions > 0 else 0
                     cpc = (spend / clicks) if clicks > 0 else 0
                     cpa = (spend / conversions) if conversions > 0 else float('inf')
+                    roas = (revenue / spend) if spend > 0 else 0
 
                     history.append({
                         "date": insight.date,
@@ -1093,10 +1099,11 @@ class AutomatedRulesEngine:
                         "clicks": clicks,
                         "spend": spend,
                         "conversions": conversions,
+                        "revenue": revenue,
                         "ctr": ctr,
                         "cpc": cpc,
                         "cpa": cpa,
-                        "roas": 0  # Would need revenue data
+                        "roas": roas
                     })
 
             elif entity_type == "ad":
@@ -1115,6 +1122,7 @@ class AutomatedRulesEngine:
                     clicks = insight.clicks or 0
                     spend = insight.spend or 0
                     conversions = insight.conversions or 0
+                    revenue = insight.revenue or 0
 
                     history.append({
                         "date": insight.date,
@@ -1122,10 +1130,11 @@ class AutomatedRulesEngine:
                         "clicks": clicks,
                         "spend": spend,
                         "conversions": conversions,
+                        "revenue": revenue,
                         "ctr": insight.ctr or 0,
                         "cpc": insight.cpc or 0,
                         "cpa": insight.cost_per_conversion or 0,
-                        "roas": 0
+                        "roas": (revenue / spend) if spend > 0 else 0
                     })
 
             return history
@@ -1141,7 +1150,8 @@ class AutomatedRulesEngine:
         condition: RuleCondition,
         performance_history: List[Dict[str, Any]],
         target_roas: Optional[float] = None,
-        target_cpa: Optional[float] = None
+        target_cpa: Optional[float] = None,
+        entity_id: Optional[str] = None
     ) -> bool:
         """
         Evaluate a single condition against performance history.
@@ -1238,15 +1248,16 @@ class AutomatedRulesEngine:
         group: ConditionGroup,
         performance_history: List[Dict[str, Any]],
         target_roas: Optional[float] = None,
-        target_cpa: Optional[float] = None
+        target_cpa: Optional[float] = None,
+        entity_id: Optional[str] = None
     ) -> bool:
         """Recursively evaluate a condition group with AND/OR/NOT logic."""
         results = []
         for item in group.conditions:
             if isinstance(item, ConditionGroup):
-                result = self.evaluate_condition_group(item, performance_history, target_roas, target_cpa)
+                result = self.evaluate_condition_group(item, performance_history, target_roas, target_cpa, entity_id)
             else:
-                result = self.evaluate_condition(item, performance_history, target_roas, target_cpa)
+                result = self.evaluate_condition(item, performance_history, target_roas, target_cpa, entity_id)
             results.append(result)
 
         if not results:
@@ -1281,7 +1292,7 @@ class AutomatedRulesEngine:
         if rule.condition_groups:
             return self.evaluate_condition_group(
                 rule.condition_groups, performance_history,
-                rule.target_roas, rule.target_cpa
+                rule.target_roas, rule.target_cpa, entity_id
             )
 
         # Legacy: flat conditions list = AND
@@ -1290,7 +1301,8 @@ class AutomatedRulesEngine:
                 condition,
                 performance_history,
                 rule.target_roas,
-                rule.target_cpa
+                rule.target_cpa,
+                entity_id
             ):
                 return False
 
@@ -1723,8 +1735,11 @@ class AutomatedRulesEngine:
     ) -> bool:
         """Update entity budget via Meta Marketing API"""
         if not self.access_token:
-            logger.warning("[AutomatedRulesEngine] No access token, simulating budget update")
-            return True  # Simulate success for testing
+            # This is a real (non-dry-run) execution path. With no token we cannot
+            # change anything on Meta, so report failure rather than a fake success
+            # that would corrupt the audit trail and spend accounting.
+            logger.error("[AutomatedRulesEngine] No Meta access token; budget update NOT applied")
+            return False
 
         try:
             endpoint = f"{self.base_url}/{entity_id}"
@@ -1760,8 +1775,10 @@ class AutomatedRulesEngine:
     ) -> bool:
         """Update entity status (ACTIVE/PAUSED) via Meta Marketing API"""
         if not self.access_token:
-            logger.warning("[AutomatedRulesEngine] No access token, simulating status update")
-            return True  # Simulate success for testing
+            # Real execution path; with no token nothing changes on Meta. Report
+            # failure instead of a fake success (see _update_entity_budget).
+            logger.error("[AutomatedRulesEngine] No Meta access token; status update NOT applied")
+            return False
 
         try:
             endpoint = f"{self.base_url}/{entity_id}"

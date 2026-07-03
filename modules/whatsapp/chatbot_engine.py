@@ -249,6 +249,25 @@ Remember: It's better to say you don't have the information than to make somethi
             )
             return self.config.handoff_message if self.config else "A team member will be with you shortly."
 
+        # Enforce per-store AI credits (monthly tier allowance + purchased top-ups)
+        # before spending on embeddings or LLM calls. Also resolves the tier, which
+        # selects the model below (free -> GPT-4o-mini, paid -> Claude Sonnet).
+        package = "free"
+        try:
+            from modules.openrouter.credit_service import has_credits
+            ok, balance = has_credits(str(self.store_id))
+            package = balance.get("package", "free")
+            if not ok:
+                logger.warning(
+                    f"[ChatbotEngine] AI credits exhausted for store {self.store_id} "
+                    f"(available={balance.get('available_credits', 0)}); silent until top-up"
+                )
+                # Bot stays silent (same as the no-knowledge path). The owner sees the
+                # zero balance + top-up CTA in their AI-usage dashboard.
+                return None
+        except Exception as e:
+            logger.error(f"[ChatbotEngine] Credit check failed (allowing request): {e}")
+
         # Get conversation history
         history = self._get_conversation_history(conversation)
 
@@ -306,23 +325,48 @@ Remember: It's better to say you don't have the information than to make somethi
         # Add current message
         messages.append({"role": "user", "content": user_message})
 
+        # Tier-based model routing: paid tiers -> Claude Sonnet, free -> GPT-4o-mini
+        from modules.openrouter.credits import pick_model
+        primary_model = pick_model(package)
+        use_claude = primary_model.startswith("claude") and ANTHROPIC_AVAILABLE
+
         try:
-            # Generate response using Claude (primary) or GPT (fallback)
-            if ANTHROPIC_AVAILABLE:
+            # Generate response using the tier's model (Claude primary / GPT fallback)
+            if use_claude:
                 anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                # Extract system message and convert format for Claude
-                system_content = "\n\n".join([m["content"] for m in messages if m["role"] == "system"])
+                # Convert format for Claude (system goes in its own param)
                 user_messages = [m for m in messages if m["role"] != "system"]
                 claude_messages = [{"role": m["role"], "content": m["content"]} for m in user_messages]
 
                 response = anthropic_client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    system=system_content,
+                    model=primary_model,
+                    system=[
+                        # Stable per store -> prompt-cached prefix (~90% cheaper on
+                        # cache hits; engages once prefix exceeds the model's
+                        # ~2048-token minimum, otherwise a harmless no-op)
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                        # Volatile per message -> must stay after the cache breakpoint
+                        {"type": "text", "text": f"CONTEXT:\n{context}"},
+                    ],
                     messages=claude_messages,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens
                 )
                 bot_response = response.content[0].text.strip()
+                usage = response.usage
+                cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+                cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                prompt_tokens = usage.input_tokens + cache_read + cache_write
+                completion_tokens = usage.output_tokens
+                model_used = primary_model
+                usage_metadata = {
+                    "cache_read_tokens": cache_read,
+                    "cache_write_tokens": cache_write,
+                }
             else:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -331,6 +375,38 @@ Remember: It's better to say you don't have the information than to make somethi
                     max_tokens=self.max_tokens
                 )
                 bot_response = response.choices[0].message.content.strip()
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                model_used = "gpt-4o-mini"
+                usage_metadata = {}
+
+            # Record token usage for per-store cost tracking & budgeting
+            try:
+                from modules.openrouter.ai_usage_service import track_usage
+                track_usage(
+                    model=model_used,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                    agent_name="whatsapp_chatbot",
+                    store_id=str(self.store_id),
+                    request_metadata=usage_metadata,
+                )
+            except Exception as e:
+                logger.error(f"[ChatbotEngine] Usage tracking failed: {e}")
+
+            # Deduct AI credits for this message (cost-plus, based on the model used).
+            try:
+                from modules.openrouter.pricing import calculate_cost
+                from modules.openrouter.credit_service import consume_for_cost
+                msg_cost = calculate_cost(model_used, prompt_tokens, completion_tokens)
+                consume_for_cost(
+                    str(self.store_id),
+                    msg_cost,
+                    reference=str(getattr(conversation, "id", "")) or None,
+                )
+            except Exception as e:
+                logger.error(f"[ChatbotEngine] Credit consumption failed: {e}")
 
             # Check if LLM indicated no knowledge match
             if "NO_KNOWLEDGE_MATCH" in bot_response.upper():

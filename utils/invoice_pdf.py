@@ -129,7 +129,30 @@ def generate_invoice_pdf(receipt: dict) -> bytes:
 
     # ── Table ──
     col_desc = M
+    col_qty = RX - 68 * mm
+    col_unit = RX - 34 * mm
     col_amount = RX
+
+    # Build line items. Supports either a multi-item `line_items` list or the
+    # legacy single-package receipt (rendered as one row).
+    line_items = receipt.get("line_items")
+    if not line_items:
+        plan_name = receipt.get("package_name", "").capitalize()
+        line_items = [{
+            "description": f"{plan_name} Plan — {billing}",
+            "subtext": receipt.get("package_description"),
+            "quantity": 1,
+            "unit_price": receipt["amount"],
+        }]
+
+    multi = len(line_items) > 1 or receipt.get("line_items")
+
+    # Normalise amounts
+    for it in line_items:
+        qty = it.get("quantity", 1)
+        it["quantity"] = qty
+        it.setdefault("unit_price", it.get("amount", 0) / qty if qty else 0)
+        it.setdefault("amount", it["unit_price"] * qty)
 
     # Table header
     hdr_h = 10 * mm
@@ -141,26 +164,41 @@ def generate_invoice_pdf(receipt: dict) -> bytes:
     c.setFont("Helvetica-Bold", 8)
     c.setFillColor(MUTED)
     c.drawString(col_desc + 4 * mm, y + 2 * mm, "DESCRIPTION")
+    if multi:
+        c.drawCentredString(col_qty, y + 2 * mm, "QTY")
+        c.drawRightString(col_unit, y + 2 * mm, "UNIT PRICE")
     c.drawRightString(col_amount - 4 * mm, y + 2 * mm, "AMOUNT")
 
     y -= hdr_h + 4 * mm
 
-    # Table row
-    plan_name = receipt.get("package_name", "").capitalize()
-    c.setFont("Helvetica-Bold", 10.5)
-    c.setFillColor(DARK)
-    c.drawString(col_desc + 4 * mm, y + 2 * mm, f"{plan_name} Plan — {billing}")
+    # Table rows
+    subtotal = 0.0
+    for it in line_items:
+        c.setFont("Helvetica-Bold", 10.5)
+        c.setFillColor(DARK)
+        c.drawString(col_desc + 4 * mm, y + 2 * mm, str(it["description"]))
 
-    if receipt.get("package_description"):
-        c.setFont("Helvetica", 8)
-        c.setFillColor(MUTED)
-        c.drawString(col_desc + 4 * mm, y - 4 * mm, receipt["package_description"])
+        if it.get("subtext"):
+            c.setFont("Helvetica", 8)
+            c.setFillColor(MUTED)
+            c.drawString(col_desc + 4 * mm, y - 4 * mm, str(it["subtext"]))
 
-    c.setFont("Helvetica-Bold", 10.5)
-    c.setFillColor(DARK)
-    c.drawRightString(col_amount - 4 * mm, y + 2 * mm, _fmt(receipt["amount"], currency))
+        if multi:
+            c.setFont("Helvetica", 9.5)
+            c.setFillColor(BODY)
+            c.drawCentredString(col_qty, y + 2 * mm, str(it["quantity"]))
+            c.drawRightString(col_unit, y + 2 * mm, _fmt(it["unit_price"], currency))
 
-    y -= 16 * mm
+        c.setFont("Helvetica-Bold", 10.5)
+        c.setFillColor(DARK)
+        c.drawRightString(col_amount - 4 * mm, y + 2 * mm, _fmt(it["amount"], currency))
+
+        subtotal += it["amount"]
+        y -= 13 * mm if it.get("subtext") else 9 * mm
+        if it is not line_items[-1]:
+            _draw_line(c, M, y + 6 * mm, RX, BORDER, 0.4)
+
+    y -= 6 * mm
     _draw_line(c, M, y, RX)
     y -= 8 * mm
 
@@ -170,7 +208,7 @@ def generate_invoice_pdf(receipt: dict) -> bytes:
     c.drawRightString(RX - 40 * mm, y, "Subtotal")
     c.setFont("Helvetica", 9.5)
     c.setFillColor(DARK)
-    c.drawRightString(RX - 4 * mm, y, _fmt(receipt["amount"], currency))
+    c.drawRightString(RX - 4 * mm, y, _fmt(subtotal, currency))
     y -= 6 * mm
 
     c.setFont("Helvetica", 9.5)
@@ -186,7 +224,7 @@ def generate_invoice_pdf(receipt: dict) -> bytes:
     c.setFont("Helvetica-Bold", 13)
     c.setFillColor(DARK)
     c.drawRightString(RX - 40 * mm, y, "Total")
-    c.drawRightString(RX - 4 * mm, y, _fmt(receipt["amount"], currency))
+    c.drawRightString(RX - 4 * mm, y, _fmt(subtotal, currency))
 
     y -= 16 * mm
 
