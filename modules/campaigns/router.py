@@ -524,6 +524,9 @@ async def scrape_url_stream(
                         logger.info(f"[Research] Using Meta token from account: {meta_account.account_name}")
                 except Exception as token_err:
                     logger.debug(f"[Research] No Meta token available: {token_err}")
+                    # Clear any aborted-transaction state so the later campaign
+                    # INSERT doesn't fail with InFailedSqlTransaction.
+                    db.rollback()
 
                 # Build Ad Library search function
                 def _fetch_ad_library():
@@ -621,6 +624,10 @@ async def scrape_url_stream(
 
             except Exception as research_err:
                 logger.warning(f"Market research failed (non-fatal): {research_err}")
+                # Roll back so a failed query in this non-fatal block doesn't
+                # leave the shared session in an aborted state, which would
+                # break the campaign INSERT in Stage 7 below.
+                db.rollback()
                 yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Market research skipped', 'percentage': 88})}\n\n"
 
             # Stage 7: Save campaign

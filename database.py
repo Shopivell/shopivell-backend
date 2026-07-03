@@ -60,6 +60,12 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        # Ensure an aborted transaction doesn't get returned to the pool
+        # in a failed state (which would surface as InFailedSqlTransaction
+        # on the next request that reuses this connection).
+        db.rollback()
+        raise
     finally:
         db.close()
 
