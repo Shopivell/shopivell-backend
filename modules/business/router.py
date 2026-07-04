@@ -506,14 +506,19 @@ def get_facebook_pages_list(
     current_user: Optional[CurrentUser] = Depends(get_current_user_optional)
 ):
     """Get connected Facebook pages, filtered by authenticated user"""
+    # Without an authenticated user we must NOT return anything, otherwise the
+    # query leaks every connected page across all users/agencies (which makes
+    # Meta read as "connected" for everyone).
+    if not current_user:
+        return FacebookPageListResponse(pages=[], total_count=0)
+
     query = db.query(FacebookPage).filter(FacebookPage.is_connected == True)
 
     # Filter by the authenticated user's business accounts
-    if current_user:
-        user_business_ids = db.query(FacebookBusinessAccount.id).filter(
-            FacebookBusinessAccount.shopivell_user_id == current_user.id
-        ).subquery()
-        query = query.filter(FacebookPage.business_account_id.in_(user_business_ids))
+    user_business_ids = db.query(FacebookBusinessAccount.id).filter(
+        FacebookBusinessAccount.shopivell_user_id == current_user.id
+    ).subquery()
+    query = query.filter(FacebookPage.business_account_id.in_(user_business_ids))
 
     if business_account_id:
         query = query.filter(FacebookPage.business_account_id == business_account_id)
