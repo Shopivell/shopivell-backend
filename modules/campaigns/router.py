@@ -221,6 +221,7 @@ async def scrape_url_stream(
     url: str,
     store_id: uuid.UUID,
     campaign_name: Optional[str] = None,
+    target: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Stream scraping progress via Server-Sent Events (SSE).
@@ -479,6 +480,22 @@ async def scrape_url_stream(
                 # Run competitors, keywords, and trends in parallel
                 from datetime import datetime as dt
                 current_year = str(dt.now().year)
+
+                # Fold the user's targeting description into the research so it
+                # actually shapes competitor/keyword/ad-library results. Split on
+                # common separators, keep concise phrases, and prepend to products
+                # so every downstream search (competitors, keyword seeds, ad
+                # library) reflects what the user wants to target.
+                if target and target.strip():
+                    target_seeds = []
+                    for phrase in _re.split(r'[,\n;/|]+', target.strip()):
+                        phrase = phrase.strip()
+                        if 2 < len(phrase) < 60 and phrase.lower() not in [p.lower() for p in target_seeds]:
+                            target_seeds.append(phrase)
+                    if target_seeds:
+                        existing_lower = {t.lower() for t in target_seeds}
+                        products = target_seeds[:4] + [p for p in products if p and p.lower() not in existing_lower]
+                        logger.info(f"[Research] Targeting description folded in: {target_seeds[:4]}")
 
                 # Build keyword seeds from products/services
                 loc_suffix = f" {location.split(',')[0].strip()}" if location else ""
