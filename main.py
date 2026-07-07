@@ -33,6 +33,7 @@ from modules.analytics.router import analytics_router
 # from modules.markets.router import markets_router
 from modules.users.user_router import user_router
 from modules.users.auth_router import auth_router
+from modules.users.unsubscribe_router import unsubscribe_router
 from modules.stores.router import store_router
 #from modules.automation.router import automation_router
 from modules.content.template.router import image_generation_router
@@ -126,6 +127,7 @@ app.include_router(analytics_router, prefix="/v1")
 # app.include_router(markets_router, prefix="/v1")
 app.include_router(user_router, prefix="/v1")
 app.include_router(auth_router, prefix="/v1")
+app.include_router(unsubscribe_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
 app.include_router(image_generation_router, prefix="/v1")
 # app.include_router(automation_router, prefix="/v1")
@@ -163,6 +165,11 @@ app.include_router(micro_strategy_router, prefix="/v1")
 uploads_dir = Path("uploads/assets")
 uploads_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads/assets", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+# Serve the backend static assets (Shopivell logo, etc.)
+static_dir = Path("static")
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 @app.on_event("startup")

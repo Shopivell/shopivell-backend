@@ -338,14 +338,14 @@ async def complete_store_setup(
                     # Continue with other assets if one fails
             print(f"[Assets] Successfully queued {len(extracted_images)} assets for creation")
 
-        # Create default FREE trial subscription (1 month trial)
+        # Create default FREE trial subscription (14-day free trial)
         try:
             from modules.payment.models import StoreSubscription, SubscriptionPlan
             existing_sub = db.query(StoreSubscription).filter(
                 StoreSubscription.store_id == db_store.id
             ).first()
             if not existing_sub:
-                trial_end = datetime.utcnow() + timedelta(days=30)
+                trial_end = datetime.utcnow() + timedelta(days=14)
                 trial_sub = StoreSubscription(
                     store_id=db_store.id,
                     package_name=SubscriptionPlan.FREE,
@@ -369,7 +369,7 @@ async def complete_store_setup(
                     }
                 )
                 db.add(trial_sub)
-                print(f"[Trial] Created 30-day trial subscription for store {db_store.id}, expires {trial_end}")
+                print(f"[Trial] Created 14-day free trial subscription for store {db_store.id}, expires {trial_end}")
         except Exception as trial_err:
             print(f"[Trial] Error creating trial subscription: {trial_err}")
 

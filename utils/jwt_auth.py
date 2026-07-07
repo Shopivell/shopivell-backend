@@ -268,6 +268,35 @@ class JWTAuth:
         )
 
 
+    def create_unsubscribe_token(self, user_id: str, email: str) -> str:
+        """
+        Create a long-lived signed token used in email unsubscribe links.
+
+        The token is not tied to a login session, so recipients can unsubscribe
+        without authenticating. It carries type="unsubscribe" so it can never be
+        used as an access token.
+        """
+        now = datetime.utcnow()
+        payload = {
+            "sub": str(user_id),
+            "email": email,
+            "iat": now,
+            "exp": now + timedelta(days=3650),  # effectively non-expiring
+            "type": "unsubscribe",
+        }
+        return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+
+    def verify_unsubscribe_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Verify an unsubscribe token. Returns the payload, or None if invalid."""
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+        except jwt.InvalidTokenError:
+            return None
+        if payload.get("type") != "unsubscribe":
+            return None
+        return payload
+
+
 # Global JWT auth instance
 jwt_auth = JWTAuth()
 

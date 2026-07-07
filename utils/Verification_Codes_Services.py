@@ -2,6 +2,7 @@
 import smtplib
 import os
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from twilio.rest import Client
 from datetime import datetime, timedelta
@@ -54,9 +55,33 @@ class VerificationCodeService:
             
             cls._config_loaded = True
 
+    # Content-ID referenced by the inline logo <img src="cid:shopivell_logo"> in email templates.
+    LOGO_CID = "shopivell_logo"
+    _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "shopivell_logo.png")
+
     @classmethod
-    def send_email(cls, to_email: str, subject: str, body: str, content_type: str = 'plain') -> bool:
-        """Send email using SSL on port 465. content_type can be 'plain' or 'html'."""
+    def _logo_img_tag(cls, height: int = 30) -> str:
+        """HTML for the inline Shopivell logo used in email headers."""
+        return (
+            f'<img src="cid:{cls.LOGO_CID}" alt="Shopivell" height="{height}" '
+            f'style="height:{height}px;width:auto;display:block;border:0;outline:none;text-decoration:none;">'
+        )
+
+    @classmethod
+    def send_email(
+        cls,
+        to_email: str,
+        subject: str,
+        body: str,
+        content_type: str = 'plain',
+        extra_headers: dict = None,
+    ) -> bool:
+        """Send email using SSL on port 465. content_type can be 'plain' or 'html'.
+
+        For HTML emails that reference the logo (cid:shopivell_logo), the logo image
+        is attached inline so it renders across mail clients without external hosting.
+        extra_headers lets callers add headers such as List-Unsubscribe.
+        """
         cls._load_config()
 
         if not cls._email_enabled:
@@ -69,12 +94,25 @@ class VerificationCodeService:
             print(f"[Email] Attempting to send to: {to_email}")
             print(f"   Using server: {cls.smtp_server}:{cls.smtp_port}")
 
-            # Build proper MIME email
-            msg = MIMEMultipart()
+            # Use a 'related' multipart so the inline logo can be embedded by Content-ID.
+            msg = MIMEMultipart('related')
             msg['From'] = f'Shopivell <{cls.email_username}>'
             msg['To'] = to_email
             msg['Subject'] = subject
+            for header, value in (extra_headers or {}).items():
+                msg[header] = value
             msg.attach(MIMEText(body, content_type, 'utf-8'))
+
+            # Attach the logo inline if the HTML body references it.
+            if content_type == 'html' and f"cid:{cls.LOGO_CID}" in body:
+                try:
+                    with open(cls._LOGO_PATH, 'rb') as f:
+                        logo = MIMEImage(f.read())
+                    logo.add_header('Content-ID', f'<{cls.LOGO_CID}>')
+                    logo.add_header('Content-Disposition', 'inline', filename='shopivell_logo.png')
+                    msg.attach(logo)
+                except FileNotFoundError:
+                    print(f"[WARN] Logo not found at {cls._LOGO_PATH}; sending without inline logo")
 
             # Use SMTP_SSL for port 465 (SSL connection)
             with smtplib.SMTP_SSL(cls.smtp_server, cls.smtp_port, timeout=15) as s:
@@ -249,7 +287,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><span style="font-size:20px;font-weight:700;color:#1a1a1a;">Shopivell</span></td>
+              <td><img src="cid:shopivell_logo" alt="Shopivell" height="30" style="height:30px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
@@ -320,7 +358,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><span style="font-size:20px;font-weight:700;color:#1a1a1a;">Shopivell</span></td>
+              <td><img src="cid:shopivell_logo" alt="Shopivell" height="30" style="height:30px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
