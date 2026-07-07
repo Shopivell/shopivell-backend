@@ -29,7 +29,7 @@ def build_unsubscribe_url(user_id: str, email: str) -> str:
 
 def render_marketing_email(title: str, body_html: str, unsubscribe_url: str) -> str:
     """Wrap body_html in the branded Shopivell layout with an unsubscribe footer."""
-    logo = VerificationCodeService._logo_img_tag(height=30)
+    logo = VerificationCodeService._logo_img_tag(height=56)
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>

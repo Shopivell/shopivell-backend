@@ -60,7 +60,7 @@ class VerificationCodeService:
     _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "shopivell_logo.png")
 
     @classmethod
-    def _logo_img_tag(cls, height: int = 30) -> str:
+    def _logo_img_tag(cls, height: int = 56) -> str:
         """HTML for the inline Shopivell logo used in email headers."""
         return (
             f'<img src="cid:{cls.LOGO_CID}" alt="Shopivell" height="{height}" '
@@ -287,7 +287,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="cid:shopivell_logo" alt="Shopivell" height="30" style="height:30px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
+              <td><img src="cid:shopivell_logo" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
@@ -358,7 +358,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="cid:shopivell_logo" alt="Shopivell" height="30" style="height:30px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
+              <td><img src="cid:shopivell_logo" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
