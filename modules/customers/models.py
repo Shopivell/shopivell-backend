@@ -12,11 +12,18 @@ class Customer(Base):
     __tablename__ = "customers"
 
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
+    # Tenant scoping — every customer belongs to a store. Nullable so legacy/orphaned
+    # rows don't break; those (store_id IS NULL) are treated as belonging to no store
+    # and are never returned by the store-scoped list endpoint.
+    store_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True, index=True)
+
     # Personal Information
     first_name: Mapped[str] = mapped_column(String(100), nullable=False)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    # Email is unique PER STORE (see uq_customer_store_email), not globally — two
+    # different stores may have the same customer email.
+    email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)

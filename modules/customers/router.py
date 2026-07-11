@@ -251,6 +251,7 @@ async def startup_event():
 # Customer CRUD Operations
 @customer_router.get("/", response_model=CustomerListResponse)
 def get_customers(
+    store_id: Optional[uuid.UUID] = Query(None, description="Tenant to scope customers to (required to return data)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     customer_type: Optional[str] = None,
@@ -258,16 +259,26 @@ def get_customers(
     search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Get paginated list of customers with optional filtering"""
+    """Get paginated list of customers for a store.
+
+    SECURITY: customers are tenant-scoped by store_id. Without a store_id we return
+    an EMPTY list rather than every store's customers (prevents cross-tenant leakage).
+    """
+    if not store_id:
+        return CustomerListResponse(
+            customers=[], total_count=0, page=1, page_size=limit, total_pages=0
+        )
+
+    # store_id is part of the cache key so tenants never share cached results.
     cache_key = generate_cache_key(
-        "customers", skip, limit, customer_type, status, search,
+        "customers", str(store_id), skip, limit, customer_type, status, search,
         prefix="cust:"
     )
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
-    query = db.query(Customer)
+    query = db.query(Customer).filter(Customer.store_id == store_id)
 
     # Apply filters
     if customer_type:
@@ -298,10 +309,14 @@ def get_customers(
 
 @customer_router.get("/drafts/latest")
 def get_latest_draft_customer(
+    store_id: Optional[uuid.UUID] = Query(None),
     db: Session = Depends(get_db)
 ):
-    """Get the most recently updated draft customer"""
+    """Get the most recently updated draft customer for a store."""
+    if not store_id:
+        return None
     draft = db.query(Customer).filter(
+        Customer.store_id == store_id,
         Customer.status == "draft"
     ).order_by(Customer.updated_at.desc()).first()
 
@@ -323,22 +338,28 @@ def get_customer(customer_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @customer_router.post("/", response_model=CustomerResponse)
 def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)):
-    """Create a new customer"""
-    # Check if email already exists
-    existing_customer = db.query(Customer).filter(Customer.email == customer_data.email).first()
+    """Create a new customer (scoped to the caller's store)."""
+    # Email uniqueness is per-store, not global.
+    existing_customer = db.query(Customer).filter(
+        Customer.store_id == customer_data.store_id,
+        Customer.email == customer_data.email
+    ).first()
     if existing_customer:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
-    
+
     # Create customer
     customer = Customer(**customer_data.model_dump())
-    
+
     db.add(customer)
     db.commit()
     db.refresh(customer)
-    
+
+    # Bust cached lists for this store so the new customer shows immediately.
+    cache.delete_pattern(f"cust:*{customer_data.store_id}*") if hasattr(cache, "delete_pattern") else None
+
     return customer
 
 @customer_router.put("/{customer_id}", response_model=CustomerResponse)
@@ -388,24 +409,35 @@ def delete_customer(customer_id: uuid.UUID, db: Session = Depends(get_db)):
 
 # Bulk Customer Operations
 @customer_router.post("/bulk", response_model=BulkCustomerResponse)
-def bulk_create_customers(customer_data: BulkCustomerCreate, db: Session = Depends(get_db)):
-    """Create multiple customers at once"""
+def bulk_create_customers(
+    customer_data: BulkCustomerCreate,
+    store_id: Optional[uuid.UUID] = Query(None, description="Store to assign all created customers to"),
+    db: Session = Depends(get_db),
+):
+    """Create multiple customers at once (all scoped to store_id)."""
     created_customers = []
     failed_customers = []
-    
+
     for customer_create in customer_data.customers:
         try:
-            # Check if email already exists
-            existing_customer = db.query(Customer).filter(Customer.email == customer_create.email).first()
+            # Store scope: explicit query param wins, else the per-row value.
+            row_store_id = store_id or customer_create.store_id
+            # Email uniqueness is per-store.
+            existing_customer = db.query(Customer).filter(
+                Customer.store_id == row_store_id,
+                Customer.email == customer_create.email
+            ).first()
             if existing_customer:
                 failed_customers.append({
                     "email": customer_create.email,
                     "error": "Email already registered"
                 })
                 continue
-            
+
             # Create customer
-            customer = Customer(**customer_create.model_dump())
+            data = customer_create.model_dump()
+            data["store_id"] = row_store_id
+            customer = Customer(**data)
             
             db.add(customer)
             created_customers.append(customer)
@@ -538,9 +570,10 @@ async def download_customer_template():
 @customer_router.post("/bulk-upload", response_model=BulkCustomerResponse)
 async def bulk_upload_customers(
     file: UploadFile = File(...),
+    store_id: Optional[uuid.UUID] = Query(None, description="Store to assign all imported customers to"),
     db: Session = Depends(get_db)
 ):
-    """Bulk upload customers from CSV or Excel file"""
+    """Bulk upload customers from CSV or Excel file (all scoped to store_id)."""
     filename = file.filename.lower()
 
     if not (filename.endswith('.csv') or filename.endswith('.xlsx') or filename.endswith('.xls')):
@@ -610,8 +643,11 @@ async def bulk_upload_customers(
                 })
                 continue
 
-            # Check if email already exists
-            existing_customer = db.query(Customer).filter(Customer.email == row['email']).first()
+            # Check if email already exists (per store)
+            existing_customer = db.query(Customer).filter(
+                Customer.store_id == store_id,
+                Customer.email == row['email']
+            ).first()
             if existing_customer:
                 failed_customers.append({
                     "row": row_num,
@@ -622,6 +658,7 @@ async def bulk_upload_customers(
 
             # Create customer data
             customer_data = {
+                'store_id': store_id,
                 'first_name': row['first_name'],
                 'last_name': row['last_name'],
                 'email': row['email'],

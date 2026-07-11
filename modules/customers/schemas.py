@@ -45,6 +45,7 @@ class CustomerRequestBase(BaseModel):
 # Response schemas
 class CustomerResponse(CustomerBase):
     id: UUID
+    store_id: Optional[UUID] = None
     loyalty_points: int
     lead_score: int = 0
     lead_status: Optional[str] = None
@@ -81,7 +82,7 @@ class CustomerRequestResponse(CustomerRequestBase):
 
 # Create schemas
 class CustomerCreate(CustomerBase):
-    pass
+    store_id: Optional[UUID] = None  # tenant the customer belongs to
 
 class CustomerSegmentCreate(CustomerSegmentBase):
     pass
