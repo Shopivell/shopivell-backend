@@ -28,6 +28,9 @@ class StoreBase(BaseModel):
     store_address: Optional[str] = None
     store_city: Optional[str] = None
     store_country: Optional[str] = None
+    currency: Optional[str] = None
+    timezone: Optional[str] = None
+    unit_system: Optional[str] = None
     domain: Optional[str] = None
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None
@@ -63,6 +66,9 @@ class StoreUpdate(BaseModel):
     store_address: Optional[str] = None
     store_city: Optional[str] = None
     store_country: Optional[str] = None
+    currency: Optional[str] = None
+    timezone: Optional[str] = None
+    unit_system: Optional[str] = None
     domain: Optional[str] = None
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None

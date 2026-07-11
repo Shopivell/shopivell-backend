@@ -51,6 +51,9 @@ class Store(Base):
     store_category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # e.g., "Electronics", "Fashion"
     operating_hours: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # {"mon": "9am-5pm", ...}
     currency: Mapped[str] = mapped_column(String(10), default="USD")
+    # Display/locale preferences (General settings)
+    timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    unit_system: Mapped[str] = mapped_column(String(20), default="metric")
 
     # Business Type
     business_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
