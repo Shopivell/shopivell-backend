@@ -81,28 +81,20 @@ def seed_packages():
                 "is_active": True
             },
             {
+                # Custom plan: priced PER PAGE/STORE. monthly_price is the per-unit price;
+                # the charged amount is monthly_price × quantity (pages/stores).
                 "package_name": SubscriptionPlan.BUSINESS,
-                "description": "For established businesses. Full access to all features with priority support and unlimited growth.",
-                "monthly_price": 29.99,
-                "annual_price": 299.90,  # 2 months free
+                "description": "Custom plan — run multiple pages or stores. Billed per page/store; a page is a store.",
+                "monthly_price": 14.99,   # price per page/store
+                "annual_price": None,     # Custom is billed monthly per page
                 "currency": "USD",
                 "features": [
-                    "Up to 1000 products",
-                    "Up to 5000 orders/month",
-                    "Full store customization",
-                    "Social media posting",
-                    "Priority phone & email support",
-                    "Custom domain",
-                    "Advanced analytics & reports",
-                    "Inventory management",
-                    "Discount codes",
-                    "Abandoned cart recovery",
-                    "SEO tools",
-                    "Multi-user access",
-                    "API access",
-                    "Custom branding",
-                    "Bulk product import",
-                    "Advanced integrations"
+                    "Everything in the Monthly plan",
+                    "One Facebook page/account per store",
+                    "Add as many pages/stores as you need",
+                    "Manage every page from one dashboard",
+                    "Team collaboration",
+                    "Priority support"
                 ],
                 "is_active": True
             }

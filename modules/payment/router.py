@@ -228,11 +228,13 @@ async def initiate_payment(
                 detail="Package not found or inactive"
             )
         
-        # Determine amount based on billing period
+        # Determine amount based on billing period. `quantity` bills multiple units
+        # (e.g. pages/stores on the per-page Custom plan) at the package's unit price.
+        quantity = max(1, payment_request.quantity)
         if payment_request.billing_period == "annual" and package.annual_price:
-            amount = package.annual_price
+            amount = package.annual_price * quantity
         else:
-            amount = package.monthly_price
+            amount = package.monthly_price * quantity
 
         # In TEST_MODE, override amount to $0.01 for testing
         import os
@@ -256,7 +258,8 @@ async def initiate_payment(
             package_name=payment_request.package_name,
             billing_period=payment_request.billing_period,
             mobile_number=payment_request.mobile_number,
-            tokens_to_redeem=payment_request.tokens_to_redeem
+            tokens_to_redeem=payment_request.tokens_to_redeem,
+            quantity=quantity
         )
         
         if error:
@@ -874,11 +877,12 @@ async def create_stripe_payment_intent(
                 detail="Package not found or inactive"
             )
 
-        # Determine amount
+        # Determine amount (quantity bills multiple units at the unit price)
+        quantity = max(1, payment_request.quantity)
         if payment_request.billing_period == "annual" and package.annual_price:
-            amount = package.annual_price
+            amount = package.annual_price * quantity
         else:
-            amount = package.monthly_price
+            amount = package.monthly_price * quantity
 
         # Apply store discount if one exists
         amount = _apply_store_discount(db, payment_request.store_id, amount, "Stripe")
@@ -892,7 +896,8 @@ async def create_stripe_payment_intent(
             amount=amount,
             payment_method=PaymentMethod.STRIPE,
             package_name=payment_request.package_name,
-            billing_period=payment_request.billing_period
+            billing_period=payment_request.billing_period,
+            quantity=quantity
         )
 
         if error:
@@ -1014,11 +1019,12 @@ async def create_paypal_order(
                 detail="Package not found or inactive"
             )
 
-        # Determine amount
+        # Determine amount (quantity bills multiple units at the unit price)
+        quantity = max(1, payment_request.quantity)
         if payment_request.billing_period == "annual" and package.annual_price:
-            amount = package.annual_price
+            amount = package.annual_price * quantity
         else:
-            amount = package.monthly_price
+            amount = package.monthly_price * quantity
 
         # Apply store discount if one exists
         amount = _apply_store_discount(db, payment_request.store_id, amount, "PayPal")
@@ -1032,7 +1038,8 @@ async def create_paypal_order(
             amount=amount,
             payment_method=PaymentMethod.PAYPAL,
             package_name=payment_request.package_name,
-            billing_period=payment_request.billing_period
+            billing_period=payment_request.billing_period,
+            quantity=quantity
         )
 
         if error:

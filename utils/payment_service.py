@@ -59,9 +59,9 @@ class PaymentService:
             self.paynow = None
     
     @staticmethod
-    def _build_payment_metadata(token_discount: float, amount: float, subscription) -> dict:
+    def _build_payment_metadata(token_discount: float, amount: float, subscription, quantity: int = 1) -> dict:
         """Build payment metadata dict, including store discount info if applicable."""
-        meta = {"token_discount": float(token_discount), "original_amount": float(amount)}
+        meta = {"token_discount": float(token_discount), "original_amount": float(amount), "quantity": int(quantity)}
         if subscription and subscription.usage_limits:
             disc = subscription.usage_limits.get("discount")
             if disc and disc.get("is_active"):
@@ -78,27 +78,31 @@ class PaymentService:
         package_name: SubscriptionPlan,
         billing_period: str = "monthly",
         mobile_number: Optional[str] = None,
-        tokens_to_redeem: int = 0
+        tokens_to_redeem: int = 0,
+        quantity: int = 1
     ) -> Tuple[Optional[PaymentTransaction], Optional[str]]:
         """Create a new payment transaction"""
         try:
             # Generate unique reference
             reference = f"PAY-{uuid.uuid4().hex[:8].upper()}-{int(datetime.now().timestamp())}"
-            
+
+            # Normalize quantity (units billed, e.g. pages/stores on the per-page Custom plan)
+            quantity = max(1, int(quantity or 1))
+
             # Get package pricing
             package = self.db.query(PackagePricing).filter(
                 PackagePricing.package_name == package_name,
                 PackagePricing.is_active == True
             ).first()
-            
+
             if not package:
                 return None, "Package not found or inactive"
-            
-            # Validate amount matches package price
+
+            # Validate amount matches package price × quantity
             if billing_period == "annual" and package.annual_price:
-                expected_amount = package.annual_price
+                expected_amount = float(package.annual_price) * quantity
             else:
-                expected_amount = package.monthly_price
+                expected_amount = float(package.monthly_price) * quantity
             
             # Check for store discount and adjust expected amount accordingly
             subscription = self.db.query(StoreSubscription).filter(
@@ -167,7 +171,7 @@ class PaymentService:
                 billing_period=billing_period,
                 mobile_number=mobile_number,
                 status=PaymentStatus.PENDING,
-                payment_metadata=self._build_payment_metadata(token_discount, amount, subscription),
+                payment_metadata=self._build_payment_metadata(token_discount, amount, subscription, quantity),
                 initiated_at=datetime.utcnow(),
                 expires_at=datetime.utcnow() + timedelta(hours=24)
             )
@@ -575,7 +579,16 @@ class PaymentService:
                     usage_limits=self._get_package_limits(transaction.package_name)
                 )
                 self.db.add(subscription)
-            
+
+            # Record how many pages/stores were purchased (per-page Custom plan).
+            # Stored on usage_limits so downstream feature gating can read it.
+            quantity = 1
+            if transaction.payment_metadata:
+                quantity = int(transaction.payment_metadata.get("quantity", 1) or 1)
+            limits = dict(subscription.usage_limits or {})
+            limits["pages"] = max(1, quantity)
+            subscription.usage_limits = limits
+
             # Update store's enabled_features
             from modules.stores.models import Store
             store = self.db.query(Store).filter(Store.id == transaction.store_id).first()

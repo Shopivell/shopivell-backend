@@ -95,6 +95,7 @@ class PaymentInitiateRequest(BaseModel):
     billing_period: str = "monthly"
     mobile_number: Optional[str] = None
     tokens_to_redeem: int = 0  # Number of tokens to use for discount
+    quantity: int = Field(default=1, ge=1)  # Units to bill (e.g. pages/stores on the per-page Custom plan)
 
 class PaymentWebhookData(BaseModel):
     reference: str
