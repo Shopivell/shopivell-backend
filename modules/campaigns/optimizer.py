@@ -361,13 +361,25 @@ class CampaignOptimizer:
             ad_account = old_meta_ad.ad_account
             meta_adset_id = old_meta_ad.ad_set.adset_id  # Meta string ad set id
 
-            # Resolve a Facebook Page for the creative (same fallback the publish endpoint uses)
+            # Resolve a Facebook Page that belongs to the SAME business account as this
+            # ad account. Never fall back to "first connected Page" — that could publish
+            # one client's ad under another client's Page (cross-client identity leak).
             facebook_page_id = None
+            if not ad_account.business_account_id:
+                logger.warning(
+                    f"[Optimizer] Ad account {ad_account.ad_account_id} has no linked business "
+                    f"account; cannot safely resolve a Page. Skipping replacement for {old_meta_ad_id}."
+                )
+                return None
             try:
                 from modules.business.models import FacebookPage
                 fb_page = (
                     self.db.query(FacebookPage)
-                    .filter(FacebookPage.is_connected == True, FacebookPage.is_active == True)
+                    .filter(
+                        FacebookPage.business_account_id == ad_account.business_account_id,
+                        FacebookPage.is_connected == True,
+                        FacebookPage.is_active == True,
+                    )
                     .first()
                 )
                 if fb_page:
@@ -377,7 +389,8 @@ class CampaignOptimizer:
 
             if not facebook_page_id:
                 logger.warning(
-                    f"[Optimizer] No Facebook page available; cannot publish replacement for {old_meta_ad_id}"
+                    f"[Optimizer] No Facebook page for this account's business; cannot publish "
+                    f"replacement for {old_meta_ad_id}"
                 )
                 return None
 
