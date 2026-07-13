@@ -4,6 +4,7 @@ from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
 from database import Base
+from utils.crypto import EncryptedString
 
 class FacebookBusinessAccount(Base):
     __tablename__ = "facebook_business_accounts"
@@ -11,7 +12,7 @@ class FacebookBusinessAccount(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     business_account_id = Column(String(255), unique=True, index=True, nullable=False)
     business_name = Column(String(255), nullable=False)
-    access_token = Column(Text, nullable=False)
+    access_token = Column(EncryptedString, nullable=False)  # encrypted at rest
     user_id = Column(String(255), nullable=False)  # Facebook user ID
     shopivell_user_id = Column(String(255), nullable=True, index=True)  # Shopivell user ID for filtering
     expires_at = Column(DateTime, nullable=True)
@@ -36,7 +37,7 @@ class FacebookPage(Base):
     business_account_id = Column(UUID(as_uuid=True), ForeignKey("facebook_business_accounts.id"), nullable=False)
     page_id = Column(String(255), nullable=False, index=True)
     page_name = Column(String(255), nullable=False)
-    page_access_token = Column(Text, nullable=False)
+    page_access_token = Column(EncryptedString, nullable=False)  # encrypted at rest
     category = Column(String(255), nullable=True)
     category_list = Column(Text, nullable=True)  # Comma-separated categories
     about = Column(Text, nullable=True)
@@ -73,7 +74,7 @@ class InstagramAccount(Base):
     website = Column(String(500), nullable=True)
     category = Column(String(255), nullable=True)
     # The page access token is used to make IG API calls
-    page_access_token = Column(Text, nullable=False)
+    page_access_token = Column(EncryptedString, nullable=False)  # encrypted at rest
     facebook_page_id = Column(String(255), nullable=True)  # Linked Facebook Page ID
     is_connected = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)

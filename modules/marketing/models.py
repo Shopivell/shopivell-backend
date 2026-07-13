@@ -5,6 +5,7 @@ from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
 from database import Base
+from utils.crypto import EncryptedString
 
 class MetaAdAccount(Base):
     __tablename__ = "meta_ad_accounts"
@@ -19,7 +20,7 @@ class MetaAdAccount(Base):
     business_name = Column(String(255), nullable=True)
     
     # Access and permissions
-    access_token = Column(Text, nullable=False)
+    access_token = Column(EncryptedString, nullable=False)  # encrypted at rest
     user_id = Column(String(255), nullable=False)  # Meta user ID
     expires_at = Column(DateTime, nullable=True)
 

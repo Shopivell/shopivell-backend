@@ -7,6 +7,7 @@ from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
 from database import Base
+from utils.crypto import EncryptedString
 
 class WhatsAppAccount(Base):
     __tablename__ = "whatsapp_accounts"
@@ -23,7 +24,7 @@ class WhatsAppAccount(Base):
     is_default = Column(Boolean, default=False)
     webhook_url = Column(Text, nullable=True)
     webhook_verify_token = Column(String(255), nullable=True)
-    permanent_access_token = Column(Text, nullable=True)
+    permanent_access_token = Column(EncryptedString, nullable=True)  # encrypted at rest
 
     # Store association for multi-store support
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True)
@@ -31,7 +32,7 @@ class WhatsAppAccount(Base):
 
     # --- NEW FIELDS FOR CONVERSIONS API ---
     capi_dataset_id = Column(String(50), nullable=True, comment="Meta Conversions API Dataset ID (Pixel ID)")
-    capi_access_token = Column(Text, nullable=True, comment="Meta CAPI Access Token - STORE ENCRYPTED IN PRODUCTION")
+    capi_access_token = Column(EncryptedString, nullable=True, comment="Meta CAPI Access Token - encrypted at rest")
     # --- END NEW FIELDS ---
     
     created_at = Column(DateTime, default=datetime.utcnow)

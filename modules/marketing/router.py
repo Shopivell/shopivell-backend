@@ -394,52 +394,22 @@ def get_business_account_access_token(business_account_id: uuid.UUID, db: Sessio
     
     return business_account.access_token
 def fetch_ads_library(
-    access_token: str,
+    access_token: str = None,
     search_term: str = None,
-    ad_type: str = "ALL",  # must be one of Meta's allowed values
+    ad_type: str = "ALL",
     limit: int = 50,
     ad_reached_countries: list[str] = ["ZW"]
 ):
-    try:
-        url = f"{FB_GRAPH_API_BASE}/ads_archive"
+    """DISABLED for compliance.
 
-        params = {
-            "access_token": access_token,
-            "search_terms": search_term,
-            "ad_type": ad_type,
-            "ad_reached_countries": json.dumps(ad_reached_countries) if isinstance(ad_reached_countries, list) else ad_reached_countries,
-            "limit": limit,
-            "fields": "id,ad_creation_time,ad_creative_bodies,ad_creative_link_captions,ad_creative_link_titles,ad_delivery_start_time,ad_delivery_stop_time,page_id,page_name,publisher_platforms",
-        }
-
-        # Remove null params
-        params = {k: v for k, v in params.items() if v is not None}
-
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-
-        data = response.json()
-
-        # Filter out political/issue ads
-        if "data" in data:
-            data["data"] = [
-                ad for ad in data["data"]
-                if ad.get("ad_type") != "POLITICAL_AND_ISSUE_ADS"
-            ]
-
-        return data
-
-    except Exception as e:
-        try:
-            err_data = e.response.json()
-            message = err_data.get("error", {}).get("message")
-        except:
-            message = str(e)
-
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to fetch ads from library: {message}"
-        )
+    The Meta Ad Library API (/ads_archive) is a limited-purpose endpoint for
+    political/social-issue ad transparency, not for programmatically harvesting
+    general commercial competitor ads. Calling it that way is outside the API's
+    permitted purpose, so this now returns an empty result and makes no Meta call.
+    Competitor research is served by the DataForSEO/Tavily pipeline instead.
+    """
+    print("[AdsLibrary] Ad Library harvesting disabled (compliance); returning empty result.")
+    return {"data": []}
 
 
 
