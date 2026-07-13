@@ -713,13 +713,20 @@ def get_ad_accounts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     business_account_id: Optional[uuid.UUID] = None,
+    store_id: Optional[uuid.UUID] = None,
+    shopivell_user_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Get all Meta ad accounts"""
+    """Get Meta ad accounts. Scope to a store or user (client-owned model) so each
+    client only ever sees its own accounts; unscoped only for admin/legacy use."""
     query = db.query(MetaAdAccount).filter(MetaAdAccount.is_connected == True)
-    
+
     if business_account_id:
         query = query.filter(MetaAdAccount.business_account_id == business_account_id)
+    if store_id:
+        query = query.filter(MetaAdAccount.store_id == store_id)
+    if shopivell_user_id:
+        query = query.filter(MetaAdAccount.shopivell_user_id == shopivell_user_id)
     
     # Get count first
     total_count = query.count()
@@ -751,6 +758,32 @@ def get_ad_accounts(
         ad_accounts=ad_accounts_with_stats,
         total_count=total_count
     )
+
+
+@marketing_router.post("/ad-accounts/{account_id}/assign-store", response_model=SuccessMessage)
+def assign_ad_account_to_store(
+    account_id: uuid.UUID,
+    store_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user)
+):
+    """Assign an ad account to a specific store (client-owned model).
+
+    Tags the account with the store and its owner so all reads/writes for that
+    account are scoped to that one client.
+    """
+    account = db.query(MetaAdAccount).filter(MetaAdAccount.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Ad account not found")
+    from modules.stores.models import Store
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    account.store_id = store.id
+    account.shopivell_user_id = str(store.owner_id)
+    db.commit()
+    return SuccessMessage(success=True, message="Ad account assigned to this store")
+
 
 @marketing_router.get("/ad-accounts/{account_id}", response_model=MetaAdAccountResponse)
 def get_ad_account(account_id: uuid.UUID, db: Session = Depends(get_db)):

@@ -210,11 +210,13 @@ class MetaAdAccountResponse(MetaAdAccountBase):
     id: uuid.UUID
     user_id: str
     business_account_id: Optional[uuid.UUID] = None
+    shopivell_user_id: Optional[str] = None
+    store_id: Optional[uuid.UUID] = None
     expires_at: Optional[datetime] = None
     last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    
+
     # Statistics
     campaign_count: Optional[int] = 0
     active_campaign_count: Optional[int] = 0
