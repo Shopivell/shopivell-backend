@@ -1048,6 +1048,28 @@ class MediaGeneratorAgent:
                 "model": "gpt-image-2"
             }
 
+    async def edit_image_gpt(self, image_bytes: bytes, prompt: str, aspect_ratio: str = "1:1") -> Dict[str, Any]:
+        """Edit an existing image with OpenAI gpt-image-2 via the images/edits API.
+
+        Takes the current ad image + an edit instruction and returns the edited image
+        (base64). Used by the campaign review step so owners can tweak an adset image.
+        """
+        if not self.openai_api_key:
+            raise ValueError("OpenAI API key not configured")
+        size_map = {"1:1": "1024x1024", "16:9": "1536x1024", "9:16": "1024x1536", "4:5": "1024x1536"}
+        size = size_map.get(aspect_ratio, "1024x1024")
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/images/edits",
+                headers={"Authorization": f"Bearer {self.openai_api_key}"},
+                data={"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": "high", "n": "1"},
+                files={"image": ("image.png", image_bytes, "image/png")},
+            )
+            response.raise_for_status()
+            data = response.json()
+            return {"image_base64": data["data"][0]["b64_json"], "model": "gpt-image-2"}
+
     async def _generate_dalle(self, prompt: str, aspect_ratio: str) -> Dict[str, Any]:
         """Generate image using OpenAI DALL-E 3"""
         if not self.openai_api_key:

@@ -2,6 +2,7 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional, AsyncGenerator
 import uuid
@@ -55,6 +56,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+class EditAdImageRequest(BaseModel):
+    image_url: str
+    prompt: str
+    store_id: Optional[uuid.UUID] = None
+    aspect_ratio: str = "1:1"
+
+
 # Meta-accepted Special Ad Category values. Declaring the wrong one (e.g. NONE for a
 # housing/employment/credit ad) is a policy violation, so we validate against this set.
 META_SPECIAL_AD_CATEGORIES = {
@@ -77,6 +86,52 @@ def resolve_special_ad_categories(campaign) -> list:
     return [val]
 
 campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
+
+
+@campaign_router.post("/edit-image")
+async def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
+    """Edit an existing adset image with an AI prompt (campaign review step).
+
+    Feeds the current image + the owner's instruction to OpenAI gpt-image-2's image
+    edit API, saves the result with a proper branded filename, and returns the new
+    image URL. The owner sees the result and chooses whether to use it (the review
+    step), so it publishes nothing on its own.
+    """
+    import httpx as _httpx
+    from modules.agents.media_generator_agent import MediaGeneratorAgent
+
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as c:
+            r = await c.get(req.image_url)
+            r.raise_for_status()
+            image_bytes = r.content
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not load the current image.")
+
+    base_name = None
+    if req.store_id:
+        from modules.stores.models import Store
+        store = db.query(Store).filter(Store.id == req.store_id).first()
+        base_name = store.store_name if store else None
+
+    edit_prompt = (
+        f"Edit this advertising image: {req.prompt}. Keep the main product/subject and "
+        f"the overall layout; apply only the requested change. Keep it appropriate for ads."
+    )
+    agent = MediaGeneratorAgent()
+    try:
+        result = await agent.edit_image_gpt(image_bytes, edit_prompt, req.aspect_ratio)
+    except Exception as e:
+        logger.error(f"[edit-image] gpt-image edit failed: {e}")
+        raise HTTPException(status_code=400, detail="Could not edit the image. Try a simpler instruction.")
+
+    if not result.get("image_base64"):
+        raise HTTPException(status_code=400, detail="No edited image was produced.")
+
+    upload = agent.upload_to_cloudinary(result["image_base64"], base_name=base_name)
+    if not upload.get("uploaded"):
+        raise HTTPException(status_code=400, detail="Edited image could not be saved.")
+    return {"success": True, "image_url": upload.get("secure_url")}
 
 
 @campaign_router.post("/scrape", response_model=ScrapeUrlResponse)
