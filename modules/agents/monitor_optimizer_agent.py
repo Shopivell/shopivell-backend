@@ -1822,6 +1822,24 @@ class AutomatedRulesEngine:
             logger.error(f"[AutomatedRulesEngine] API error updating status: {e}")
             return False
 
+    def _creative_go_live_status(self, ad_account) -> str:
+        """Status for a newly generated AI ad: ACTIVE only if the owning store chose
+        auto-publish in settings; otherwise PAUSED so the owner reviews it first."""
+        try:
+            if getattr(ad_account, "store_id", None):
+                from database import SessionLocal
+                from modules.stores.models import Store
+                db = SessionLocal()
+                try:
+                    store = db.query(Store).filter(Store.id == ad_account.store_id).first()
+                    if store and store.ai_creative_auto_publish:
+                        return "ACTIVE"
+                finally:
+                    db.close()
+        except Exception as e:
+            logger.warning(f"[AutomatedRulesEngine] Creative auto-publish check failed: {e}")
+        return "PAUSED"
+
     async def _refresh_creative_multi_variant(self, entity_id: str, entity_type: str) -> Dict[str, Any]:
         """
         Multi-variant creative refresh: generate 3-5 variants in the same ad set.
@@ -1935,10 +1953,11 @@ class AutomatedRulesEngine:
                     if new_image_url:
                         link_data["picture"] = new_image_url
 
+                    go_live = self._creative_go_live_status(ad_account)
                     meta_ad_data = {
                         "name": f"{adset.name} - Test V{i + 1}",
                         "adset_id": adset.adset_id,
-                        "status": "ACTIVE",
+                        "status": go_live,  # PAUSED unless the store opted into auto-publish
                         "creative": json.dumps({
                             "object_story_spec": {
                                 "page_id": facebook_page_id,
@@ -1961,8 +1980,8 @@ class AutomatedRulesEngine:
                         adset_id=adset.id,
                         campaign_id=ad.campaign_id,
                         name=f"{adset.name} - Test V{i + 1}",
-                        status="ACTIVE",
-                        effective_status="ACTIVE",
+                        status=go_live,
+                        effective_status=go_live,
                         created_time=datetime.utcnow(),
                         updated_time=datetime.utcnow(),
                         is_active=True
@@ -2142,10 +2161,11 @@ class AutomatedRulesEngine:
                 if new_image_url:
                     link_data["picture"] = new_image_url
 
+                go_live = self._creative_go_live_status(ad_account)
                 meta_ad_data = {
                     "name": f"{adset.name} - Refreshed Ad",
                     "adset_id": adset.adset_id,
-                    "status": "ACTIVE",
+                    "status": go_live,  # PAUSED unless the store opted into auto-publish
                     "creative": json.dumps({
                         "object_story_spec": {
                             "page_id": facebook_page_id,
@@ -2169,8 +2189,8 @@ class AutomatedRulesEngine:
                     adset_id=adset.id,
                     campaign_id=ad.campaign_id,
                     name=f"{adset.name} - Refreshed Ad",
-                    status="ACTIVE",
-                    effective_status="ACTIVE",
+                    status=go_live,
+                    effective_status=go_live,
                     created_time=datetime.utcnow(),
                     updated_time=datetime.utcnow(),
                     is_active=True
