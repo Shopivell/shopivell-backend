@@ -58,7 +58,8 @@ logger = logging.getLogger(__name__)
 
 
 class EditAdImageRequest(BaseModel):
-    image_url: str
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None  # for generated images (data-URI base64)
     prompt: str
     store_id: Optional[uuid.UUID] = None
     aspect_ratio: str = "1:1"
@@ -98,15 +99,27 @@ async def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
     step), so it publishes nothing on its own.
     """
     import httpx as _httpx
+    import base64 as _b64
     from modules.agents.media_generator_agent import MediaGeneratorAgent
 
-    try:
-        async with _httpx.AsyncClient(timeout=30.0) as c:
-            r = await c.get(req.image_url)
-            r.raise_for_status()
-            image_bytes = r.content
-    except Exception:
-        raise HTTPException(status_code=400, detail="Could not load the current image.")
+    # Prefer inline base64 (generated images are data-URIs); else fetch the URL.
+    image_bytes = None
+    if req.image_base64:
+        try:
+            raw = req.image_base64.split(",", 1)[-1]  # strip any data-URI prefix
+            image_bytes = _b64.b64decode(raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid image data.")
+    elif req.image_url:
+        try:
+            async with _httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.get(req.image_url)
+                r.raise_for_status()
+                image_bytes = r.content
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not load the current image.")
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="No image provided to edit.")
 
     base_name = None
     if req.store_id:
