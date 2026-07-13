@@ -286,9 +286,8 @@ class AutomatedRulesScheduler:
             try:
                 logger.info("[Scheduler] Tier 3: Daily performance summary (24-hour cycle)")
 
-                # Get lead quality signal
-                lead_signal = automated_rules_engine.get_lead_quality_signal("")
-                cycle_results["lead_quality"] = lead_signal
+                # Lead quality is computed PER ACCOUNT below (scoped to each store).
+                cycle_results["lead_quality"] = {}
 
                 # Create daily summary notification
                 try:
@@ -301,6 +300,9 @@ class AutomatedRulesScheduler:
                                 MetaAdAccount.ad_account_id == acc_id
                             ).first()
                             if account and account.business_account_id:
+                                # This account's own leads only (no cross-tenant mixing).
+                                lead_signal = automated_rules_engine.get_lead_quality_signal(acc_id)
+                                cycle_results["lead_quality"][acc_id] = lead_signal
                                 try:
                                     from modules.notifications.models import Notification
                                     notification = Notification(
@@ -323,8 +325,10 @@ class AutomatedRulesScheduler:
                 except Exception as e:
                     logger.error(f"[Scheduler] Daily notification error: {e}")
 
-                logger.info(f"[Scheduler] Lead quality: avg={lead_signal.get('average_score', 0)}, "
-                           f"hot={lead_signal.get('hot_leads', 0)}")
+                logger.info(
+                    f"[Scheduler] Daily lead-quality summaries generated for "
+                    f"{len(cycle_results.get('lead_quality', {}))} account(s)"
+                )
             except Exception as e:
                 logger.error(f"[Scheduler] Tier 3 error: {e}")
                 cycle_results["errors"].append(f"Daily summary: {str(e)}")

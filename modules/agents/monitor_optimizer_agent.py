@@ -1228,7 +1228,9 @@ class AutomatedRulesEngine:
 
             # Handle computed metric: Lead quality score from WhatsApp leads
             if condition.metric == "lead_quality_score":
-                lead_signal = self.get_lead_quality_signal("")
+                lead_signal = self.get_lead_quality_signal(
+                    getattr(self, "_current_ad_account_id", "") or ""
+                )
                 metric_value = lead_signal.get("average_score", 0)
 
             # Handle special metrics
@@ -2232,14 +2234,35 @@ class AutomatedRulesEngine:
             Dict with average_score, hot_leads, warm_leads, total_leads
         """
         db = SessionLocal()
+        empty = {"average_score": 0, "hot_leads": 0, "warm_leads": 0, "cool_leads": 0, "total_leads": 0}
         try:
-            from modules.whatsapp.models import WhatsAppLead
-            from sqlalchemy import func
+            from modules.whatsapp.models import WhatsAppLead, WhatsAppAccount
+            from modules.marketing.models import MetaAdAccount
 
             seven_days_ago = datetime.utcnow() - timedelta(days=7)
 
-            # Get recent leads
+            # Tenant scoping: only count leads belonging to THIS ad account's owning
+            # store. Never aggregate across tenants (that leaked one store's lead
+            # quality into another's signal, which could scale the wrong budget).
+            store_id = None
+            if ad_account_id:
+                acct = db.query(MetaAdAccount).filter(
+                    MetaAdAccount.ad_account_id == ad_account_id
+                ).first()
+                store_id = acct.store_id if acct else None
+            if not store_id:
+                return empty
+
+            wa_account_ids = [
+                r[0] for r in db.query(WhatsAppAccount.id).filter(
+                    WhatsAppAccount.store_id == store_id
+                ).all()
+            ]
+            if not wa_account_ids:
+                return empty
+
             leads = db.query(WhatsAppLead).filter(
+                WhatsAppLead.whatsapp_account_id.in_(wa_account_ids),
                 WhatsAppLead.created_at >= seven_days_ago
             ).all()
 

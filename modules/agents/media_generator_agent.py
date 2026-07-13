@@ -3354,8 +3354,11 @@ STYLE REQUIREMENTS:
             except Exception as e:
                 logger.warning(f"[MediaGenerator] OpenRouter image fallback failed: {e}")
 
-        # Step 4d: Free Pollinations.ai fallback (FLUX model, no API key needed)
-        if not scene_b64:
+        # Step 4d: Free Pollinations.ai fallback (FLUX model, no API key needed).
+        # OFF by default: it is a keyless third party, so customer brand/product data
+        # must not be sent there unless an operator explicitly opts in.
+        _pollinations_ok = os.getenv("ENABLE_POLLINATIONS_FALLBACK", "false").strip().lower() in ("1", "true", "yes")
+        if not scene_b64 and _pollinations_ok:
             try:
                 logger.info("[MediaGenerator] Trying Pollinations.ai free fallback...")
                 poll_result = await self._generate_with_pollinations(
@@ -3380,6 +3383,27 @@ STYLE REQUIREMENTS:
                 "thumbnail_url": None,
                 "error": "Failed to generate scene image (all providers exhausted)"
             }
+
+        # Content safety gate (production path): moderate the AI-generated scene so
+        # non-compliant creative never reaches Meta. Block on a critical violation;
+        # skip on check error (user-initiated creation is reviewed on screen anyway).
+        try:
+            verdict = await vision_compliance_service.analyze_image(scene_b64)
+            if not verdict.is_compliant and verdict.risk_level == "critical":
+                logger.warning(
+                    f"[MediaGenerator] Campaign ad blocked by vision compliance: "
+                    f"{[i.description for i in verdict.issues]}"
+                )
+                return {
+                    "success": False,
+                    "image_base64": None,
+                    "cloudinary_url": None,
+                    "thumbnail_url": None,
+                    "blocked": True,
+                    "error": "Image blocked by content safety check",
+                }
+        except Exception as e:
+            logger.warning(f"[MediaGenerator] Vision compliance check skipped on campaign ad: {e}")
 
         # Step 5: Resolve logo for PIL overlay
         logo_for_compose = logo_url if (logo_url and any(logo_url.lower().endswith(ext) for ext in pil_formats)) else None
