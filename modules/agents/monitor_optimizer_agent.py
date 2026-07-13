@@ -1765,26 +1765,23 @@ class AutomatedRulesEngine:
             return False
 
         try:
+            from utils.meta_graph import graph_request
             endpoint = f"{self.base_url}/{entity_id}"
 
             # Budget is in cents for Meta API
             budget_cents = int(new_budget * 100)
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    endpoint,
-                    params={
-                        "access_token": token,
-                        "daily_budget": budget_cents
-                    }
-                )
+            response = await graph_request(
+                "POST", endpoint,
+                params={"access_token": token, "daily_budget": budget_cents},
+            )
 
-                if response.status_code == 200:
-                    logger.info(f"[AutomatedRulesEngine] Updated {entity_type} {entity_id} budget to ${new_budget:.2f}")
-                    return True
-                else:
-                    logger.error(f"[AutomatedRulesEngine] Failed to update budget: {response.text}")
-                    return False
+            if response.status_code == 200:
+                logger.info(f"[AutomatedRulesEngine] Updated {entity_type} {entity_id} budget to ${new_budget:.2f}")
+                return True
+            else:
+                logger.error(f"[AutomatedRulesEngine] Failed to update budget: {response.text}")
+                return False
 
         except Exception as e:
             logger.error(f"[AutomatedRulesEngine] API error updating budget: {e}")
@@ -1806,23 +1803,20 @@ class AutomatedRulesEngine:
             return False
 
         try:
+            from utils.meta_graph import graph_request
             endpoint = f"{self.base_url}/{entity_id}"
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    endpoint,
-                    params={
-                        "access_token": token,
-                        "status": status
-                    }
-                )
+            response = await graph_request(
+                "POST", endpoint,
+                params={"access_token": token, "status": status},
+            )
 
-                if response.status_code == 200:
-                    logger.info(f"[AutomatedRulesEngine] Updated {entity_type} {entity_id} status to {status}")
-                    return True
-                else:
-                    logger.error(f"[AutomatedRulesEngine] Failed to update status: {response.text}")
-                    return False
+            if response.status_code == 200:
+                logger.info(f"[AutomatedRulesEngine] Updated {entity_type} {entity_id} status to {status}")
+                return True
+            else:
+                logger.error(f"[AutomatedRulesEngine] Failed to update status: {response.text}")
+                return False
 
         except Exception as e:
             logger.error(f"[AutomatedRulesEngine] API error updating status: {e}")
