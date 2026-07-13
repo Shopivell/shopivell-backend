@@ -88,6 +88,53 @@ def send_capi_lead_event(
         logger.error(f"CAPI error: {e}")
         return {"success": False, "error": str(e)}
 
+
+HOT_LEAD_CAPI_THRESHOLD = 80.0
+
+
+def maybe_send_capi_for_lead(db, whatsapp_account, phone_number: str) -> None:
+    """Links lead scoring -> Conversions API.
+
+    When a WhatsApp lead's score crosses the hot threshold, send Meta a Lead
+    conversion event (once) so ad campaigns can optimize toward real leads.
+    Fires only if the account has CAPI configured, the lead has marketing consent,
+    and it hasn't already been sent. COMPLIANCE: customer data is shared with Meta
+    only with marketing opt-in (Meta Business Tools Terms).
+    """
+    if not (whatsapp_account.capi_dataset_id and whatsapp_account.capi_access_token):
+        return
+    try:
+        from .consent import clean_phone
+        phone = clean_phone(phone_number)
+    except Exception:
+        phone = phone_number.replace(" ", "").replace("+", "").strip()
+
+    lead = db.query(WhatsAppLead).filter(
+        WhatsAppLead.whatsapp_account_id == whatsapp_account.id,
+        WhatsAppLead.phone_number == phone,
+    ).first()
+    if not lead or lead.conversion_sent:
+        return
+    if (lead.lead_score or 0) < HOT_LEAD_CAPI_THRESHOLD:
+        return
+    if not (lead.marketing_opt_in and lead.opted_out_at is None):
+        logger.info(f"Hot lead {phone} NOT sent to CAPI: no marketing consent on record")
+        return
+
+    result = send_capi_lead_event(
+        pixel_id=whatsapp_account.capi_dataset_id,
+        access_token=whatsapp_account.capi_access_token,
+        phone_number=phone,
+        lead_score=lead.lead_score or HOT_LEAD_CAPI_THRESHOLD,
+    )
+    if result.get("success"):
+        lead.conversion_sent = True
+        lead.conversion_event_id = result.get("event_id")
+        lead.conversion_sent_at = datetime.utcnow()
+        db.commit()
+        logger.info(f"CAPI Lead event sent for {phone} (score {lead.lead_score})")
+
+
 whatsapp_router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
 
 # WhatsApp Graph API base URL
@@ -1436,6 +1483,13 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                         ai_response = "I'd love to help you order! Let me check our products for you."
 
                 logger.info(f"AI Response for {from_number_clean}: {ai_response[:100]}...")
+
+                # Link lead scoring -> CAPI: fire a Meta Lead event if this inbound
+                # message pushed the lead over the hot threshold (consent-gated, once).
+                try:
+                    maybe_send_capi_for_lead(db, whatsapp_account, from_number_clean)
+                except Exception as capi_err:
+                    logger.error(f"CAPI lead link error for {from_number_clean}: {capi_err}")
 
                 # Save the outgoing AI response to database FIRST
                 msg_id = f"ai_reply_{datetime.utcnow().timestamp()}"

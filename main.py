@@ -191,9 +191,14 @@ async def startup_event():
     # Auto-register all connected ad accounts with the scheduler
     db = SessionLocal()
     try:
+        # Per-store scoping: only automate accounts that belong to a client
+        # (shopivell_user_id set). Unowned/legacy accounts (e.g. the old shared
+        # account) are never registered, so automation only ever touches an
+        # account owned by the client it belongs to.
         connected_accounts = db.query(MetaAdAccount).filter(
             MetaAdAccount.is_connected == True,
-            MetaAdAccount.is_active == True
+            MetaAdAccount.is_active == True,
+            MetaAdAccount.shopivell_user_id.isnot(None)
         ).all()
 
         for account in connected_accounts:

@@ -2563,6 +2563,17 @@ class AutomatedRulesEngine:
             # shared master token (Meta Platform Terms; avoids cross-account fraud signals).
             self._current_account_token = ad_account.access_token
 
+            # Per-store scoping: an account with no owning client (legacy/shared) is
+            # never acted on live — force advise-only so automation stays isolated to
+            # properly-owned client accounts.
+            if not getattr(ad_account, "shopivell_user_id", None):
+                if not dry_run:
+                    logger.info(
+                        f"[AutomatedRulesEngine] Account {ad_account_id} has no owner; "
+                        f"running advise-only (no live actions)."
+                    )
+                dry_run = True
+
             # Get all active ad sets
             adsets = db.query(MetaAdSet).filter(
                 MetaAdSet.ad_account_id == ad_account.id,
