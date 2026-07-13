@@ -937,6 +937,18 @@ Only return the JSON array, no markdown."""
     # Meta Helpers
     # ─────────────────────────────────────────────────────────
 
+    def _store_auto_publish(self, ad_account) -> bool:
+        """True only if the owning store opted into auto-publishing AI creative.
+        Default False so micro-strategy never puts AI-built ads live without review."""
+        try:
+            if getattr(ad_account, "store_id", None):
+                from modules.stores.models import Store
+                store = self.db.query(Store).filter(Store.id == ad_account.store_id).first()
+                return bool(store and store.ai_creative_auto_publish)
+        except Exception as e:
+            logger.warning(f"[MicroStrategy] auto-publish check failed: {e}")
+        return False
+
     async def _set_phase_ads_status(self, strategy, phase, status: str):
         """Set status (ACTIVE/PAUSED) for all ad sets in a phase."""
         ad_account = self.db.query(MetaAdAccount).filter(
@@ -944,6 +956,11 @@ Only return the JSON array, no markdown."""
         ).first()
         if not ad_account:
             return
+
+        # Review gate: never activate AI-built phase ads unless the store opted into
+        # auto-publish — keep them PAUSED for the owner to review otherwise.
+        if status == "ACTIVE" and not self._store_auto_publish(ad_account):
+            status = "PAUSED"
 
         for var in phase.variations:
             if var.meta_adset_id:
@@ -1141,6 +1158,11 @@ Only return the JSON array, no markdown."""
         if not ad_account:
             raise ValueError("Ad account not found")
 
+        # Review gate: this autonomously creates a NEW lead-gen campaign. Only let it
+        # go live if the store opted into auto-publish; otherwise build it PAUSED so the
+        # owner reviews before any spend.
+        go_live = "ACTIVE" if self._store_auto_publish(ad_account) else "PAUSED"
+
         # 1. Pause traffic campaign
         if tracker.traffic_campaign_id:
             try:
@@ -1164,7 +1186,7 @@ Only return the JSON array, no markdown."""
         leadgen_data = {
             "name": f"[AUTO-SWITCH] Lead Gen - {tracker.pixel_id[:8]}",
             "objective": "OUTCOME_LEADS",
-            "status": "ACTIVE",
+            "status": go_live,
             "special_ad_categories": "[]",
             "daily_budget": "1000",
         }
@@ -1248,6 +1270,9 @@ Only return the JSON array, no markdown."""
         if audience_data and audience_data.get("id"):
             targeting["custom_audiences"] = [{"id": audience_data["id"]}]
 
+        # Review gate: PAUSED unless the store opted into auto-publish.
+        go_live = "ACTIVE" if self._store_auto_publish(ad_account) else "PAUSED"
+
         adset_data = {
             "name": f"[LEAD-GEN] {strategy.name}",
             "campaign_id": tracker.leadgen_campaign_id,
@@ -1255,7 +1280,7 @@ Only return the JSON array, no markdown."""
             "billing_event": "IMPRESSIONS",
             "daily_budget": "1000",
             "targeting": json.dumps(targeting),
-            "status": "ACTIVE",
+            "status": go_live,
         }
 
         try:
@@ -1284,7 +1309,7 @@ Only return the JSON array, no markdown."""
                 "name": f"[LEAD-GEN] Ad - {strategy.name}",
                 "adset_id": adset_result.get("id", ""),
                 "creative": json.dumps({"creative_id": creative_result.get("id", "")}),
-                "status": "ACTIVE",
+                "status": go_live,
             }
             create_meta_ad(
                 ad_account.ad_account_id, ad_account.access_token, ad_data

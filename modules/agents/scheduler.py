@@ -575,8 +575,17 @@ rules_scheduler = AutomatedRulesScheduler()
 
 
 # Convenience functions
+def ads_scheduler_enabled() -> bool:
+    """The 24/7 ads scheduler is opt-in. This is the single source of truth so no
+    caller (startup, quick-launch, or the API) can start it while it's disabled."""
+    return os.getenv("ENABLE_ADS_SCHEDULER", "false").strip().lower() in ("1", "true", "yes")
+
+
 def start_rules_scheduler(interval_minutes: int = 15) -> bool:
-    """Start the automated rules scheduler"""
+    """Start the automated rules scheduler (no-op unless ENABLE_ADS_SCHEDULER is on)."""
+    if not ads_scheduler_enabled():
+        logger.info("[Scheduler] start blocked: ENABLE_ADS_SCHEDULER is off")
+        return False
     return rules_scheduler.start(interval_minutes)
 
 
