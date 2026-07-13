@@ -89,6 +89,9 @@ class CampaignBase(BaseModel):
     sales_type: Optional[str] = None
     destination_url: Optional[str] = None
     lead_form_fields: Optional[List[Dict[str, Any]]] = None
+    # Meta Special Ad Category — must be declared for housing/employment/credit/
+    # financial/social-issue/gambling ads. NONE for regular product ads.
+    special_ad_category: str = "NONE"
 
 
 class CampaignCreate(CampaignBase):

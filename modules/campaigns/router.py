@@ -55,6 +55,27 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Meta-accepted Special Ad Category values. Declaring the wrong one (e.g. NONE for a
+# housing/employment/credit ad) is a policy violation, so we validate against this set.
+META_SPECIAL_AD_CATEGORIES = {
+    "NONE", "HOUSING", "EMPLOYMENT", "CREDIT",
+    "ISSUES_ELECTIONS_POLITICS", "FINANCIAL_PRODUCTS_SERVICES",
+    "ONLINE_GAMBLING_AND_GAMING",
+}
+
+
+def resolve_special_ad_categories(campaign) -> list:
+    """Return the campaign's declared Special Ad Category as a validated list.
+
+    Reads campaign.special_ad_category (set by the store); falls back to NONE and
+    coerces any unknown value to NONE so we never send Meta an invalid category.
+    """
+    raw = getattr(campaign, "special_ad_category", None) or "NONE"
+    val = str(raw).strip().upper()
+    if val not in META_SPECIAL_AD_CATEGORIES:
+        val = "NONE"
+    return [val]
+
 campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
 
 
@@ -178,6 +199,7 @@ def create_manual_campaign(
         generated_headlines=[],
         generated_descriptions=[],
         platform_campaign_ids={},
+        special_ad_category=request.get("special_ad_category", "NONE"),
     )
     db.add(campaign)
     db.flush()
@@ -1016,12 +1038,13 @@ def publish_campaign_to_meta_ads(
         objective = goal_to_objective.get(campaign.goal.value if hasattr(campaign.goal, 'value') else campaign.goal, "OUTCOME_TRAFFIC")
 
         # 1. Create Meta Campaign
+        special_categories = resolve_special_ad_categories(campaign)
         meta_campaign_data = {
             "name": campaign.name,
             "objective": objective,
             "status": "PAUSED",  # Start as paused, user can activate later
             "buying_type": "AUCTION",
-            "special_ad_categories": '["NONE"]'
+            "special_ad_categories": json.dumps(special_categories)
         }
 
         # Add budget if set
@@ -1051,7 +1074,7 @@ def publish_campaign_to_meta_ads(
             name=campaign.name,
             objective=objective,
             status="PAUSED",
-            special_ad_categories=["NONE"],
+            special_ad_categories=special_categories,
             buying_type="AUCTION",
             daily_budget=int(campaign.daily_budget * 100) if campaign.daily_budget else None,
             start_time=campaign.start_date,
@@ -1662,12 +1685,13 @@ async def quick_launch(request: QuickLaunchRequest, db: Session = Depends(get_db
                 dayparting_schedule = []
 
         # Create Meta Campaign
+        special_categories = resolve_special_ad_categories(campaign)
         meta_campaign_data = {
             "name": campaign.name,
             "objective": objective,
             "status": "PAUSED",
             "buying_type": "AUCTION",
-            "special_ad_categories": '["NONE"]'
+            "special_ad_categories": json.dumps(special_categories)
         }
 
         if use_lifetime and campaign.daily_budget:
@@ -1702,7 +1726,7 @@ async def quick_launch(request: QuickLaunchRequest, db: Session = Depends(get_db
             name=campaign.name,
             objective=objective,
             status="PAUSED",
-            special_ad_categories=["NONE"],
+            special_ad_categories=special_categories,
             buying_type="AUCTION",
             daily_budget=db_budget,
             created_time=datetime.utcnow(),

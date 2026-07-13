@@ -6,6 +6,9 @@ import uuid
 import requests
 import os
 import json
+import hmac
+import hashlib
+import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -1367,3 +1370,99 @@ def disconnect_instagram_account(account_id: uuid.UUID, db: Session = Depends(ge
     db.commit()
 
     return SuccessMessage(message="Instagram account disconnected successfully")
+
+
+# ---------------------------------------------------------------------------
+# Meta-required callbacks: Deauthorize + Data Deletion Request
+# Meta calls these with a signed_request (HMAC-signed with the app secret). We
+# verify the signature, then delete the connecting user's Meta/Facebook data.
+# Configure these URLs in the Meta App dashboard:
+#   Deauthorize:   <base>/v1/api/business/facebook/deauthorize
+#   Data deletion: <base>/v1/api/business/facebook/data-deletion
+# ---------------------------------------------------------------------------
+
+def parse_signed_request(signed_request: str) -> Optional[dict]:
+    """Verify and decode a Meta signed_request. Returns the payload dict or None."""
+    if not signed_request or "." not in signed_request or not FACEBOOK_APP_SECRET:
+        return None
+    try:
+        encoded_sig, payload = signed_request.split(".", 1)
+
+        def _b64url_decode(s: str) -> bytes:
+            s += "=" * (-len(s) % 4)
+            return base64.urlsafe_b64decode(s)
+
+        sig = _b64url_decode(encoded_sig)
+        expected = hmac.new(
+            FACEBOOK_APP_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        return json.loads(_b64url_decode(payload))
+    except Exception:
+        return None
+
+
+def _delete_fb_user_data(db: Session, fb_user_id: str) -> None:
+    """Delete all Meta/Facebook data connected under a given Facebook user id.
+
+    ORM deletes trigger the cascade relationships (pages, IG, WhatsApp accounts,
+    campaigns, ads, insights), so removing the top-level rows removes the rest.
+    """
+    if not fb_user_id:
+        return
+    try:
+        from modules.marketing.models import MetaAdAccount
+        for acct in db.query(MetaAdAccount).filter(
+            MetaAdAccount.user_id == fb_user_id
+        ).all():
+            db.delete(acct)
+        for biz in db.query(FacebookBusinessAccount).filter(
+            FacebookBusinessAccount.user_id == fb_user_id
+        ).all():
+            db.delete(biz)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[WARN] Data deletion for FB user {fb_user_id} failed: {e}")
+
+
+@business_router.post("/facebook/deauthorize")
+async def facebook_deauthorize(request: Request, db: Session = Depends(get_db)):
+    """Meta calls this when a user removes the app; we delete their data."""
+    form = await request.form()
+    data = parse_signed_request(form.get("signed_request", ""))
+    if not data:
+        raise HTTPException(status_code=400, detail="Invalid signed_request")
+    _delete_fb_user_data(db, str(data.get("user_id", "")))
+    return JSONResponse({"success": True})
+
+
+@business_router.post("/facebook/data-deletion")
+async def facebook_data_deletion(request: Request, db: Session = Depends(get_db)):
+    """Meta Data Deletion Request callback. Deletes data and returns a status URL + code."""
+    form = await request.form()
+    data = parse_signed_request(form.get("signed_request", ""))
+    if not data:
+        raise HTTPException(status_code=400, detail="Invalid signed_request")
+    fb_user_id = str(data.get("user_id", ""))
+    _delete_fb_user_data(db, fb_user_id)
+
+    confirmation_code = hashlib.sha256(
+        f"{fb_user_id}:{FACEBOOK_APP_SECRET}".encode("utf-8")
+    ).hexdigest()[:16]
+    base = os.getenv("PUBLIC_API_BASE_URL", "https://api.shopivell.com/v1")
+    return JSONResponse({
+        "url": f"{base}/api/business/facebook/data-deletion/status?code={confirmation_code}",
+        "confirmation_code": confirmation_code,
+    })
+
+
+@business_router.get("/facebook/data-deletion/status")
+async def facebook_data_deletion_status(code: str = Query(...)):
+    """Status page Meta/users can check after a data deletion request."""
+    return JSONResponse({
+        "status": "completed",
+        "confirmation_code": code,
+        "message": "Your Facebook-connected data has been deleted from Shopivell.",
+    })

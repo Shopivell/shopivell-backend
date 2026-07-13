@@ -622,6 +622,24 @@ def send_bulk_whatsapp_messages(
                 skipped += 1
                 continue
 
+            # COMPLIANCE: free-form text may only be sent inside an OPEN 24-hour window
+            # (recipient messaged us within the last 24h). Outside it, WhatsApp allows only
+            # approved templates, which we don't use — so skip rather than let Meta reject.
+            window_open = db.query(WhatsAppMessage).filter(
+                WhatsAppMessage.whatsapp_account_id == account_id,
+                WhatsAppMessage.from_number == to_clean,
+                WhatsAppMessage.direction == "inbound",
+                WhatsAppMessage.timestamp >= datetime.utcnow() - timedelta(hours=24),
+            ).first()
+            if not window_open:
+                results.append(BulkMessageResult(
+                    phone_number=to_clean,
+                    success=False,
+                    error="skipped: no open 24-hour window (customer must message first)"
+                ))
+                skipped += 1
+                continue
+
             # Throttle between sends (skip delay before the first send)
             if successful + failed > 0 and send_delay > 0:
                 _time.sleep(send_delay)

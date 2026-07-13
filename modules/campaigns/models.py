@@ -83,6 +83,11 @@ class UrlCampaign(Base):
     platforms = Column(JSON, default=["facebook"])  # facebook, instagram, google
     platform_campaign_ids = Column(JSON, default=dict)  # Store external platform IDs
 
+    # Meta Special Ad Category. Must be declared correctly for ads about housing,
+    # employment, credit/financial services, social issues, or gambling — declaring
+    # NONE for those is a policy violation. Defaults to NONE (regular products).
+    special_ad_category = Column(String(50), default="NONE", nullable=False)
+
     # Fatigue auto-refresh safety gate. When False (default), fatigue-refreshed
     # replacement ads are created PAUSED so a human approves them before they spend.
     # When True, replacements go live ACTIVE automatically.
