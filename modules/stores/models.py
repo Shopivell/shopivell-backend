@@ -76,6 +76,12 @@ class Store(Base):
     enabled_features: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, default=dict)
     business_goals: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list)
     payment_methods: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, default=dict)
+
+    # AI ad-image settings. Optional prompt to steer generated ad images, and whether
+    # generated creative publishes automatically or waits for the owner to review/edit.
+    # Default is review (False) — the safe default so nothing goes live unseen.
+    ai_creative_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ai_creative_auto_publish: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     # Setup Progress - UPDATED DEFAULT
     current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), default=StoreSetupStep.CREATE_STORE)

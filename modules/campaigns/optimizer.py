@@ -394,12 +394,23 @@ class CampaignOptimizer:
                 )
                 return None
 
-            # Respect the campaign's safety gate: go live only if opted in.
-            new_status = "ACTIVE" if getattr(campaign, "auto_publish_refresh", False) else "PAUSED"
+            # Safety gate: auto-refreshed creative goes live ONLY if the store owner
+            # chose auto-publish in settings AND the campaign opted in. Default is
+            # review (PAUSED) so nothing an AI produced is published unseen.
+            store_auto_publish = False
+            try:
+                from modules.stores.models import Store
+                store = self.db.query(Store).filter(Store.id == campaign.store_id).first()
+                store_auto_publish = bool(store and store.ai_creative_auto_publish)
+            except Exception as store_err:
+                logger.warning(f"[Optimizer] Could not read store auto-publish setting: {store_err}")
 
-            # Compliance gate: never let auto-refreshed copy go live if it trips
-            # Meta ad-policy prohibited content. Force PAUSED for human review even
-            # when auto_publish_refresh is on. Regex check = free, no added latency.
+            opted_in = store_auto_publish and getattr(campaign, "auto_publish_refresh", False)
+            new_status = "ACTIVE" if opted_in else "PAUSED"
+
+            # Compliance gate: FAIL CLOSED. If the copy trips prohibited content, or the
+            # check errors out at all, force PAUSED for human review rather than risk
+            # auto-publishing something non-compliant.
             if new_status == "ACTIVE":
                 try:
                     from modules.agents.compliance_agent import ComplianceAgent
@@ -410,11 +421,11 @@ class CampaignOptimizer:
                         new_status = "PAUSED"
                         logger.warning(
                             f"[Optimizer] Refreshed ad copy flagged by compliance "
-                            f"{verdict['blocked_words']}; forcing PAUSED for human review "
-                            f"instead of auto-publishing."
+                            f"{verdict['blocked_words']}; forcing PAUSED for human review."
                         )
                 except Exception as comp_err:
-                    logger.warning(f"[Optimizer] Compliance gate skipped: {comp_err}")
+                    new_status = "PAUSED"  # fail closed
+                    logger.warning(f"[Optimizer] Compliance check errored; forcing PAUSED: {comp_err}")
 
             link = new_content.destination_url or getattr(campaign, "source_url", None)
             meta_ad_data = {

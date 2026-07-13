@@ -35,6 +35,8 @@ class StoreBase(BaseModel):
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None
     payment_methods: Optional[Dict[str, Any]] = None
+    ai_creative_prompt: Optional[str] = None
+    ai_creative_auto_publish: Optional[bool] = None
 
 class StoreCreate(StoreBase):
     owner_id: uuid.UUID
@@ -73,6 +75,8 @@ class StoreUpdate(BaseModel):
     enabled_features: Optional[Dict[str, Any]] = None
     business_goals: Optional[List[str]] = None
     payment_methods: Optional[Dict[str, Any]] = None
+    ai_creative_prompt: Optional[str] = None
+    ai_creative_auto_publish: Optional[bool] = None
     current_step: Optional[StoreSetupStep] = None
     is_setup_completed: Optional[bool] = None
 

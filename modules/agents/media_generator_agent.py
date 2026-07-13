@@ -623,11 +623,26 @@ class MediaGeneratorAgent:
 
     # ==================== IMAGE UPLOAD (MinIO primary, Cloudinary fallback) ====================
 
+    @staticmethod
+    def _build_image_filename(base_name: str = None) -> str:
+        """Build a readable, branded filename for a generated ad image.
+
+        e.g. base_name "Madoda Fresh Produce" -> "madoda-fresh-produce-ad-1a2b3c4d.png".
+        Falls back to a branded name so images are never saved with an opaque handle.
+        """
+        import re
+        slug = ""
+        if base_name:
+            slug = re.sub(r"[^a-z0-9]+", "-", base_name.lower()).strip("-")[:60]
+        prefix = f"{slug}-ad" if slug else "shopivell-ad"
+        return f"{prefix}-{uuid.uuid4().hex[:8]}.png"
+
     def upload_to_cloudinary(
         self,
         image_base64: str,
         folder: str = "shopivell/generated",
-        resource_type: str = "image"
+        resource_type: str = "image",
+        base_name: str = None
     ) -> Dict[str, Any]:
         """
         Upload a base64 image to MinIO (primary) or Cloudinary (fallback).
@@ -654,7 +669,7 @@ class MediaGeneratorAgent:
         from modules.assets.service import minio_client, MINIO_BUCKET, _get_minio_url
         if minio_client:
             try:
-                filename = f"generated_{uuid.uuid4().hex[:12]}.png"
+                filename = self._build_image_filename(base_name)
                 object_name = f"{folder}/{filename}"
 
                 minio_client.put_object(
@@ -695,7 +710,7 @@ class MediaGeneratorAgent:
                 data_uri,
                 folder=folder,
                 resource_type=resource_type,
-                public_id=f"generated_{uuid.uuid4().hex[:12]}",
+                public_id=self._build_image_filename(base_name).rsplit(".", 1)[0],
                 overwrite=True,
                 eager=[
                     {"width": 300, "height": 300, "crop": "fill", "format": "jpg"}
@@ -785,6 +800,23 @@ class MediaGeneratorAgent:
             logger.error(f"[MediaGeneratorAgent] Cloudinary video upload error: {str(e)}")
             return {"uploaded": False, "error": str(e)}
 
+    def _get_store_ai_prompt(self, store_id: str) -> Optional[str]:
+        """The owner's custom ad-image guidance from store settings (or None)."""
+        try:
+            from database import SessionLocal
+            from modules.stores.models import Store
+            db = SessionLocal()
+            try:
+                store = db.query(Store).filter(Store.id == store_id).first()
+                if store and store.ai_creative_prompt:
+                    return store.ai_creative_prompt.strip() or None
+                return None
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[MediaGeneratorAgent] Could not load store AI prompt: {e}")
+            return None
+
     # ==================== IMAGE GENERATION ====================
 
     async def generate_image(
@@ -812,7 +844,8 @@ class MediaGeneratorAgent:
         Returns:
             Dict with image_base64, cloudinary_url, provider_used, and metadata
         """
-        # Prepend brand context if store_id is provided
+        # Prepend brand context + the owner's custom image guidance if store_id is given
+        store_base_name = None
         if store_id:
             try:
                 brand_assets = self._get_brand_assets(store_id)
@@ -820,6 +853,10 @@ class MediaGeneratorAgent:
                     brand_context = self._build_brand_context_prompt(brand_assets)
                     prompt = brand_context + prompt
                     logger.info(f"[MediaGeneratorAgent] Brand context added for store {store_id}")
+                store_base_name = (brand_assets or {}).get("store_name")
+                custom_prompt = self._get_store_ai_prompt(store_id)
+                if custom_prompt:
+                    prompt = f"{prompt}\n\nOwner's image guidance: {custom_prompt}"
             except Exception as e:
                 logger.warning(f"[MediaGeneratorAgent] Could not load brand assets: {e}")
 
@@ -922,7 +959,8 @@ class MediaGeneratorAgent:
                         logger.info("[MediaGeneratorAgent] Uploading image to Cloudinary...")
                         cloudinary_result = self.upload_to_cloudinary(
                             image_base64=result["image_base64"],
-                            folder=cloudinary_folder
+                            folder=cloudinary_folder,
+                            base_name=store_base_name
                         )
                         if cloudinary_result.get("uploaded"):
                             result["cloudinary"] = cloudinary_result
