@@ -22,7 +22,13 @@ class MetaAdAccount(Base):
     access_token = Column(Text, nullable=False)
     user_id = Column(String(255), nullable=False)  # Meta user ID
     expires_at = Column(DateTime, nullable=True)
-    
+
+    # Ownership (client-owned model): which Shopivell account/store this ad account
+    # belongs to. Set at connect time so every ad write acts on the right client's
+    # own account, never a shared one (Meta requires one advertiser per ad account).
+    shopivell_user_id = Column(String(255), nullable=True, index=True)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Relationships
     business_account_id = Column(UUID(as_uuid=True), ForeignKey("facebook_business_accounts.id"), nullable=True)
     business_account = relationship("FacebookBusinessAccount", backref="ad_accounts")

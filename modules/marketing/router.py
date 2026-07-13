@@ -443,11 +443,42 @@ def fetch_ads_library(
 
 
 
+def _resolve_account_owner(db: Session, business_account_id, fallback_user_id=None):
+    """Resolve (shopivell_user_id, store_id) for a synced ad account.
+
+    Owner comes from the connecting Shopivell user (via the linked business account,
+    or an explicit fallback). store_id is auto-set only when that user owns exactly one
+    store; otherwise it stays NULL for explicit assignment later. This is what ties each
+    ad account to its client so writes never act on a shared account.
+    """
+    from modules.business.models import FacebookBusinessAccount
+    from modules.stores.models import Store
+
+    uid = fallback_user_id
+    if not uid and business_account_id:
+        ba = db.query(FacebookBusinessAccount).filter(
+            FacebookBusinessAccount.id == business_account_id
+        ).first()
+        uid = ba.shopivell_user_id if ba else None
+
+    store_id = None
+    if uid:
+        try:
+            owner_uuid = uuid.UUID(str(uid))
+            stores = db.query(Store).filter(Store.owner_id == owner_uuid).all()
+            if len(stores) == 1:
+                store_id = stores[0].id
+        except Exception:
+            pass
+    return (str(uid) if uid else None), store_id
+
+
 def sync_ad_accounts_from_token(access_token: str, business_account_id, db: Session):
     """Sync Meta ad accounts using an access token (callable from other modules)"""
     try:
         ad_accounts_data = get_meta_ad_accounts(access_token)
         total_synced = 0
+        owner_uid, owner_store_id = _resolve_account_owner(db, business_account_id)
 
         for account_data in ad_accounts_data:
             account_id = account_data.get("id")
@@ -462,6 +493,11 @@ def sync_ad_accounts_from_token(access_token: str, business_account_id, db: Sess
                 existing_account.is_connected = True
                 existing_account.last_synced_at = datetime.utcnow()
                 existing_account.updated_at = datetime.utcnow()
+                # Backfill ownership on re-sync if not already set.
+                if owner_uid and not existing_account.shopivell_user_id:
+                    existing_account.shopivell_user_id = owner_uid
+                if owner_store_id and not existing_account.store_id:
+                    existing_account.store_id = owner_store_id
             else:
                 business_info = account_data.get("business", {})
                 try:
@@ -484,6 +520,8 @@ def sync_ad_accounts_from_token(access_token: str, business_account_id, db: Sess
                     access_token=access_token,
                     user_id=user_id,
                     business_account_id=business_account_id,
+                    shopivell_user_id=owner_uid,
+                    store_id=owner_store_id,
                     is_connected=True,
                     last_synced_at=datetime.utcnow()
                 )
@@ -514,9 +552,13 @@ def sync_ad_accounts_from_business(
         
         # Get ad accounts from Meta API
         ad_accounts_data = get_meta_ad_accounts(access_token)
-        
+
         total_synced = 0
-        
+        # The connecting user owns these accounts — tie each to them (and their store).
+        owner_uid, owner_store_id = _resolve_account_owner(
+            db, business_account_id, fallback_user_id=current_user.id
+        )
+
         for account_data in ad_accounts_data:
             account_id = account_data.get("id")
             account_name = account_data.get("name")
@@ -543,6 +585,10 @@ def sync_ad_accounts_from_business(
                 existing_account.is_connected = True
                 existing_account.last_synced_at = datetime.utcnow()
                 existing_account.updated_at = datetime.utcnow()
+                if owner_uid and not existing_account.shopivell_user_id:
+                    existing_account.shopivell_user_id = owner_uid
+                if owner_store_id and not existing_account.store_id:
+                    existing_account.store_id = owner_store_id
             else:
                 # Get user info to get user_id
                 try:
@@ -567,15 +613,17 @@ def sync_ad_accounts_from_business(
                     access_token=access_token,
                     user_id=user_id,
                     business_account_id=business_account_id,
+                    shopivell_user_id=owner_uid,
+                    store_id=owner_store_id,
                     is_connected=True,
                     last_synced_at=datetime.utcnow()
                 )
                 db.add(ad_account)
-            
+
             total_synced += 1
-        
+
         db.commit()
-        
+
         # Start background task to sync campaigns for new accounts
         background_tasks.add_task(sync_campaigns_background, db, business_account_id)
         
