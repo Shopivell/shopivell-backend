@@ -14,6 +14,7 @@ Usage:
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional, List
 from threading import Thread
@@ -21,6 +22,17 @@ from threading import Thread
 from .monitor_optimizer_agent import automated_rules_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _meta_learner_enabled() -> bool:
+    """The autonomous meta-learner and LLM rule-proposal tiers are opt-in.
+
+    Off by default (MVP): without ENABLE_META_LEARNER the scheduler never
+    auto-tunes/auto-retires rules or spends LLM/API credits on its own. The
+    endpoints and tables stay in place for manual use; only the unattended
+    daily cycle is gated.
+    """
+    return os.getenv("ENABLE_META_LEARNER", "false").strip().lower() in ("1", "true", "yes")
 
 
 class AutomatedRulesScheduler:
@@ -330,7 +342,8 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Creative tests: {str(e)}")
 
         # Tier 3.5: LLM rule proposals (daily, after performance summary)
-        if self._tier_due("rule_proposals", 24):
+        # Gated: opt-in only, so the MVP doesn't auto-generate rules or burn LLM credits.
+        if _meta_learner_enabled() and self._tier_due("rule_proposals", 24):
             self._mark_tier_run("rule_proposals")
             try:
                 from modules.agents.monitor_optimizer_agent import MonitorOptimizerAgent
@@ -380,7 +393,9 @@ class AutomatedRulesScheduler:
                 cycle_results["errors"].append(f"Rule proposals: {str(e)}")
 
         # Tier 3.6: Meta-learner cycle (daily, after rule proposals)
-        if self._tier_due("meta_learner", 24):
+        # Gated: opt-in only. The meta-learner auto-tunes/auto-retires rules; keep it
+        # off for the MVP so nothing self-modifies without an operator enabling it.
+        if _meta_learner_enabled() and self._tier_due("meta_learner", 24):
             self._mark_tier_run("meta_learner")
             try:
                 from modules.agents.meta_learner import MetaLearner
