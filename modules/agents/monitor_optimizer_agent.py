@@ -973,12 +973,33 @@ class AutomatedRulesEngine:
     }
 
     def __init__(self, meta_access_token: Optional[str] = None):
+        # Shared/master token. Kept only as an explicit, opt-in fallback — write
+        # calls now sign with the OWNING client's own token (see _resolve_write_token).
         self.access_token = meta_access_token or os.getenv("META_ACCESS_TOKEN")
         self.api_version = "v21.0"
         self.base_url = f"https://graph.facebook.com/{self.api_version}"
         self.rules: List[AutomatedRule] = []
         self.execution_history: List[RuleExecutionResult] = []
+        # Per-account token for the account currently being processed. Set by
+        # run_all_rules()/evaluate_creative_tests() so writes use the client's own key.
+        self._current_account_token: Optional[str] = None
         logger.info("[AutomatedRulesEngine] Initialized")
+
+    def _resolve_write_token(self, explicit_token: Optional[str] = None) -> Optional[str]:
+        """Token to sign WRITE calls to Meta with.
+
+        Meta Platform Terms require a tech provider to act under each client's own
+        credentials; a single shared/master token fanned across many businesses reads
+        as account-takeover/ad-fraud to Meta's automated systems. So prefer the owning
+        account's token. The shared master token is used ONLY if there is no per-account
+        token AND ALLOW_MASTER_TOKEN_WRITES is explicitly enabled (default: off).
+        """
+        token = explicit_token or self._current_account_token
+        if token:
+            return token
+        if os.getenv("ALLOW_MASTER_TOKEN_WRITES", "false").strip().lower() in ("1", "true", "yes"):
+            return self.access_token
+        return None
 
     def create_rule_from_template(
         self,
@@ -1731,14 +1752,16 @@ class AutomatedRulesEngine:
         self,
         entity_id: str,
         entity_type: str,
-        new_budget: float
+        new_budget: float,
+        access_token: Optional[str] = None
     ) -> bool:
-        """Update entity budget via Meta Marketing API"""
-        if not self.access_token:
-            # This is a real (non-dry-run) execution path. With no token we cannot
+        """Update entity budget via Meta Marketing API (signed with the owning account's token)."""
+        token = self._resolve_write_token(access_token)
+        if not token:
+            # Real (non-dry-run) execution path. With no per-account token we cannot
             # change anything on Meta, so report failure rather than a fake success
             # that would corrupt the audit trail and spend accounting.
-            logger.error("[AutomatedRulesEngine] No Meta access token; budget update NOT applied")
+            logger.error("[AutomatedRulesEngine] No per-account Meta token; budget update NOT applied")
             return False
 
         try:
@@ -1751,7 +1774,7 @@ class AutomatedRulesEngine:
                 response = await client.post(
                     endpoint,
                     params={
-                        "access_token": self.access_token,
+                        "access_token": token,
                         "daily_budget": budget_cents
                     }
                 )
@@ -1771,13 +1794,15 @@ class AutomatedRulesEngine:
         self,
         entity_id: str,
         entity_type: str,
-        status: str
+        status: str,
+        access_token: Optional[str] = None
     ) -> bool:
-        """Update entity status (ACTIVE/PAUSED) via Meta Marketing API"""
-        if not self.access_token:
-            # Real execution path; with no token nothing changes on Meta. Report
-            # failure instead of a fake success (see _update_entity_budget).
-            logger.error("[AutomatedRulesEngine] No Meta access token; status update NOT applied")
+        """Update entity status (ACTIVE/PAUSED) via Meta Marketing API (owning account's token)."""
+        token = self._resolve_write_token(access_token)
+        if not token:
+            # Real execution path; with no per-account token nothing changes on Meta.
+            # Report failure instead of a fake success (see _update_entity_budget).
+            logger.error("[AutomatedRulesEngine] No per-account Meta token; status update NOT applied")
             return False
 
         try:
@@ -1787,7 +1812,7 @@ class AutomatedRulesEngine:
                 response = await client.post(
                     endpoint,
                     params={
-                        "access_token": self.access_token,
+                        "access_token": token,
                         "status": status
                     }
                 )
@@ -2322,6 +2347,13 @@ class AutomatedRulesEngine:
             ).all()
 
             for test in running_tests:
+                # Sign this test's Meta writes with the owning account's own token.
+                from modules.marketing.models import MetaAdAccount as _MAA
+                _acct = db.query(_MAA).filter(
+                    _MAA.ad_account_id == test.ad_account_id
+                ).first()
+                self._current_account_token = _acct.access_token if _acct else None
+
                 variants = db.query(CreativeTestVariant).filter(
                     CreativeTestVariant.test_id == test.id,
                     CreativeTestVariant.status == "active"
@@ -2426,6 +2458,7 @@ class AutomatedRulesEngine:
             logger.error(f"[AutomatedRulesEngine] Creative test evaluation error: {e}")
             db.rollback()
         finally:
+            self._current_account_token = None
             db.close()
 
         return completed_tests
@@ -2532,6 +2565,10 @@ class AutomatedRulesEngine:
                 execution_summary["errors"].append(f"Ad account {ad_account_id} not found")
                 return execution_summary
 
+            # Sign every write in this cycle with THIS client's own token, never a
+            # shared master token (Meta Platform Terms; avoids cross-account fraud signals).
+            self._current_account_token = ad_account.access_token
+
             # Get all active ad sets
             adsets = db.query(MetaAdSet).filter(
                 MetaAdSet.ad_account_id == ad_account.id,
@@ -2615,6 +2652,8 @@ class AutomatedRulesEngine:
             execution_summary["errors"].append(f"Fatal error: {str(e)}")
             logger.error(f"[AutomatedRulesEngine] Fatal error running rules: {e}")
         finally:
+            # Clear the per-account token so it can never leak into another account's cycle.
+            self._current_account_token = None
             db.close()
 
         return execution_summary

@@ -175,6 +175,15 @@ if static_dir.exists():
 @app.on_event("startup")
 async def startup_event():
     """Start background services on app boot."""
+    import os
+
+    # The 24/7 ads automation scheduler is OPT-IN. Off by default so the app does
+    # not autonomously change/pause ads or spend on Meta without an operator enabling
+    # it (Meta flags unattended, high-volume automated activity across many accounts).
+    if os.getenv("ENABLE_ADS_SCHEDULER", "false").strip().lower() not in ("1", "true", "yes"):
+        logger.info("[Startup] Ads scheduler disabled (set ENABLE_ADS_SCHEDULER=true to enable)")
+        return
+
     from modules.agents.scheduler import start_rules_scheduler, rules_scheduler
     from database import SessionLocal
     from modules.marketing.models import MetaAdAccount

@@ -574,6 +574,11 @@ def send_bulk_whatsapp_messages(
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
 
     send_delay = float(os.getenv("WHATSAPP_BULK_SEND_DELAY_SECONDS", "1.0"))
+    # Bulk sends are marketing: require explicit opt-in per the WhatsApp Business
+    # Messaging Policy. On by default; only relax with another lawful basis.
+    require_opt_in = os.getenv(
+        "WHATSAPP_REQUIRE_MARKETING_OPT_IN", "true"
+    ).strip().lower() in ("1", "true", "yes")
 
     results: List[BulkMessageResult] = []
     successful = 0
@@ -603,6 +608,16 @@ def send_bulk_whatsapp_messages(
                     phone_number=to_clean,
                     success=False,
                     error="skipped: recipient has opted out (STOP)"
+                ))
+                skipped += 1
+                continue
+
+            # COMPLIANCE: marketing bulk sends require an explicit opt-in on file.
+            if require_opt_in and not consent.has_marketing_opt_in(db, account_id, to_clean):
+                results.append(BulkMessageResult(
+                    phone_number=to_clean,
+                    success=False,
+                    error="skipped: recipient has not opted in to marketing messages"
                 ))
                 skipped += 1
                 continue
