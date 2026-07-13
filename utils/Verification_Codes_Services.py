@@ -55,15 +55,18 @@ class VerificationCodeService:
             
             cls._config_loaded = True
 
-    # Content-ID referenced by the inline logo <img src="cid:shopivell_logo"> in email templates.
+    # Logo is referenced by its public URL so it is NOT attached to the message.
+    # (CID-attached images get listed in the attachment strip by Gmail and others.)
+    LOGO_URL = os.getenv("EMAIL_LOGO_URL", "https://api.shopivell.com/static/shopivell_logo.png")
+    # Kept for backward-compat with any caller that still embeds via Content-ID.
     LOGO_CID = "shopivell_logo"
     _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "shopivell_logo.png")
 
     @classmethod
     def _logo_img_tag(cls, height: int = 56) -> str:
-        """HTML for the inline Shopivell logo used in email headers."""
+        """HTML for the Shopivell logo used in email headers (hosted, not attached)."""
         return (
-            f'<img src="cid:{cls.LOGO_CID}" alt="Shopivell" height="{height}" '
+            f'<img src="{cls.LOGO_URL}" alt="Shopivell" height="{height}" '
             f'style="height:{height}px;width:auto;display:block;border:0;outline:none;text-decoration:none;">'
         )
 
@@ -287,7 +290,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="cid:shopivell_logo" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
+              <td><img src="https://api.shopivell.com/static/shopivell_logo.png" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
@@ -358,7 +361,7 @@ class VerificationCodeService:
         <tr><td style="padding:32px 40px;">
           <table width="100%" cellpadding="0" cellspacing="0">
             <tr>
-              <td><img src="cid:shopivell_logo" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
+              <td><img src="https://api.shopivell.com/static/shopivell_logo.png" alt="Shopivell" height="56" style="height:56px;width:auto;display:block;border:0;outline:none;text-decoration:none;"></td>
               <td align="right" style="font-size:14px;color:#666;">{user_name}</td>
             </tr>
           </table>
