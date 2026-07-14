@@ -156,3 +156,67 @@ async def graph_request(
         return resp
 
     return resp
+
+
+def request_sync(
+    method: str,
+    url: str,
+    *,
+    params: Optional[dict] = None,
+    data: Optional[dict] = None,
+    files: Optional[dict] = None,
+    timeout: float = 30.0,
+    max_retries: int = 4,
+):
+    """Synchronous rate-limit-aware Graph request, mirroring graph_request().
+
+    A drop-in for `requests.get/post` in sync code (returns a requests.Response):
+    reads Meta's usage headers, proactively cools down near the cap, and on a
+    throttle error honors estimated_time_to_regain_access before retrying. Use it
+    for unattended/bulk Graph traffic so we don't trip Meta's request-volume
+    enforcement.
+    """
+    import time
+    import requests
+
+    params = _with_appsecret_proof(params)
+    data = _with_appsecret_proof(data)
+    backoff = 2.0
+    resp = None
+
+    for attempt in range(max_retries + 1):
+        resp = requests.request(method, url, params=params, data=data, files=files, timeout=timeout)
+        usage_pct, regain = parse_usage(resp.headers)
+
+        if resp.status_code == 200:
+            if usage_pct >= USAGE_HARD_LIMIT:
+                sleep_for = min(MAX_BACKOFF_SECONDS, regain or 60.0)
+                logger.warning(f"[MetaGraph] usage {usage_pct:.0f}% - pausing {sleep_for:.0f}s")
+                time.sleep(sleep_for)
+            elif usage_pct >= USAGE_SOFT_LIMIT:
+                logger.info(f"[MetaGraph] usage {usage_pct:.0f}% - easing off")
+                time.sleep(2.0)
+            return resp
+
+        code = _error_code(resp)
+        if code in RATE_LIMIT_ERROR_CODES and attempt < max_retries:
+            sleep_for = min(MAX_BACKOFF_SECONDS, regain or backoff)
+            logger.warning(
+                f"[MetaGraph] rate-limited (code {code}); backing off {sleep_for:.0f}s "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
+            time.sleep(sleep_for)
+            backoff *= 2
+            continue
+
+        return resp
+
+    return resp
+
+
+def get_sync(url, **kwargs):
+    return request_sync("GET", url, **kwargs)
+
+
+def post_sync(url, **kwargs):
+    return request_sync("POST", url, **kwargs)

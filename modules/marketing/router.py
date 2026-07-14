@@ -44,6 +44,10 @@ marketing_router = APIRouter(prefix="/api/marketing", tags=["marketing"])
 # Facebook Graph API base URL
 FB_GRAPH_API_BASE = "https://graph.facebook.com/v24.0"
 
+# Rate-limit-aware sync Graph client for unattended/bulk Ads-API traffic, so the
+# background sync loops don't trip Meta's request-volume enforcement.
+from utils.meta_graph import get_sync as meta_get_sync
+
 # Helper Functions
 def get_meta_ad_accounts(access_token: str):
     """Get Meta ad accounts for the user"""
@@ -354,8 +358,8 @@ def get_meta_insights(ad_account_id: str, access_token: str, params: dict):
             "access_token": access_token,
             **params
         }
-        
-        response = requests.get(url, params=query_params)
+
+        response = meta_get_sync(url, params=query_params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -634,8 +638,8 @@ def sync_campaigns_background(db: Session, business_account_id: uuid.UUID):
 def sync_campaigns_for_account(ad_account: MetaAdAccount, db: Session):
     """Sync campaigns for a specific ad account"""
     try:
-        # Get campaigns from Meta API
-        response = requests.get(
+        # Get campaigns from Meta API (rate-limit-aware; runs unattended in a loop)
+        response = meta_get_sync(
             f"{FB_GRAPH_API_BASE}/{ad_account.ad_account_id}/campaigns",
             params={
                 "access_token": ad_account.access_token,
