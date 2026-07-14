@@ -101,6 +101,9 @@ def setup_logging() -> None:
     third = os.getenv("LOG_LEVEL_THIRDPARTY", "WARNING").upper()
     for noisy in ("httpx", "httpcore", "urllib3", "sqlalchemy.engine", "asyncio"):
         logging.getLogger(noisy).setLevel(third)
+    # Our RequestContextMiddleware already logs one correlated access line per
+    # request, so silence uvicorn's own (uncorrelated) access log to avoid dupes.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
     _configured = True
     logging.getLogger(__name__).info(

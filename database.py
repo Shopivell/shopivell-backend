@@ -9,13 +9,17 @@ env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 USE_SQLITE = os.getenv("USE_SQLITE", "true").lower() == "true"
+# SQL query echo is OFF by default: echo=True floods logs with every statement
+# (and double-logs once structured logging is configured). Enable per-need with
+# SQL_ECHO=true for debugging.
+SQL_ECHO = os.getenv("SQL_ECHO", "false").lower() == "true"
 
 if USE_SQLITE:
     DATABASE_DIR = Path(__file__).resolve().parent
     SQLALCHEMY_DATABASE_URL = f"sqlite:///{DATABASE_DIR}/shopivell.db"
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
-        echo=True,
+        echo=SQL_ECHO,
         connect_args={"check_same_thread": False},
     )
 
@@ -49,7 +53,7 @@ else:
     SQLALCHEMY_DATABASE_URL = (
         f"postgresql://{DB_USERNAME}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode={DB_SSLMODE}"
     )
-    engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=True)
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=SQL_ECHO)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
