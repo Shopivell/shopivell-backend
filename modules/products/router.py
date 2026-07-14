@@ -151,7 +151,8 @@ async def update_inventory_item(
         
         db.commit()
         db.refresh(product)
-        
+        invalidator.invalidate_product()  # stock changed -> bust cached listings
+
         return InventoryItemResponse(
             id=product.id,
             name=product.title,
@@ -215,8 +216,9 @@ async def bulk_update_inventory(
             ))
         
         db.commit()
+        invalidator.invalidate_product()  # stock changed -> bust cached listings
         return results
-        
+
     except Exception as e:
         db.rollback()
         raise HTTPException(
@@ -256,7 +258,8 @@ async def update_inventory_quantities(
         
         db.commit()
         db.refresh(product)
-        
+        invalidator.invalidate_product()  # stock changed -> bust cached listings
+
         return InventoryItemResponse(
             id=product.id,
             name=product.title,
@@ -268,7 +271,7 @@ async def update_inventory_quantities(
             status=product.status,
             inventory_tracked=product.inventory_tracked
         )
-        
+
     except HTTPException:
         db.rollback()
         raise

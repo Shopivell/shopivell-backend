@@ -996,6 +996,7 @@ async def update_store(
 
         db.commit()
         db.refresh(db_store)
+        invalidator.invalidate_store()  # bust cached store detail so edits show immediately
 
         print(f"[Store Update] After save - logo_url: {db_store.logo_url[:100] if db_store.logo_url else 'None'}...")
         return db_store
@@ -1028,6 +1029,7 @@ async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
         # Delete the store
         db.delete(db_store)
         db.commit()
+        invalidator.invalidate_store()  # bust cached store detail + lists
         return None
 
     except HTTPException:

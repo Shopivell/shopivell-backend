@@ -480,33 +480,47 @@ class CacheInvalidator:
     def __init__(self, cache_instance: RedisCache = None):
         self._cache = cache_instance or cache
 
-    def invalidate_product(self, product_id: str, store_id: str = None):
-        """Invalidate product-related caches"""
-        self._cache.delete(f"prod:{product_id}")
-        self._cache.invalidate_pattern(f"prod:*{product_id}*")
+    # NOTE ON KEY DESIGN: list/detail responses are cached under OPAQUE HASHED
+    # keys (generate_cache_key -> "<prefix><md5>"), so patterns that embed a
+    # literal id (e.g. "prod:*{product_id}*") never match and silently fail to
+    # invalidate. The reliable fix is to purge the whole prefix namespace. It is
+    # slightly coarse but CORRECT (no stale reads), which is what matters.
+
+    def invalidate_product(self, product_id: str = None, store_id: str = None):
+        """Invalidate product & collection caches after a write.
+
+        Args are optional: with none, still purges the product/collection list
+        namespace so callers that don't have the ids handy stay correct (and
+        don't crash on a missing positional arg)."""
+        if product_id:
+            self._cache.delete(f"prod:{product_id}")
+        # Product AND collection lists both live under the 'prod:' prefix.
+        self._cache.invalidate_pattern("prod:*")
         if store_id:
-            self._cache.invalidate_pattern(f"prod:store_{store_id}:*")
+            self._cache.invalidate_pattern("analytics:*")
 
-    def invalidate_store(self, store_id: str):
-        """Invalidate store-related caches"""
-        self._cache.invalidate_pattern(f"store:{store_id}:*")
-        self._cache.invalidate_pattern(f"prod:store_{store_id}:*")
-        self._cache.invalidate_pattern(f"order:store_{store_id}:*")
+    def invalidate_store(self, store_id: str = None):
+        """Invalidate store caches (store detail is under hashed 'store:' keys)."""
+        self._cache.invalidate_pattern("store:*")
 
-    def invalidate_user(self, user_id: str):
+    def invalidate_user(self, user_id: str = None):
         """Invalidate user-related caches"""
-        self._cache.invalidate_pattern(f"user:{user_id}:*")
+        self._cache.invalidate_pattern("user:*")
 
-    def invalidate_order(self, order_id: str, store_id: str = None):
-        """Invalidate order-related caches"""
-        self._cache.delete(f"order:{order_id}")
-        if store_id:
-            self._cache.invalidate_pattern(f"order:store_{store_id}:*")
-            self._cache.invalidate_pattern(f"analytics:store_{store_id}:*")
+    def invalidate_customer(self, store_id: str = None):
+        """Invalidate customer list caches (hashed 'cust:' keys)."""
+        self._cache.invalidate_pattern("cust:*")
 
-    def invalidate_analytics(self, store_id: str):
+    def invalidate_order(self, order_id: str = None, store_id: str = None):
+        """Invalidate order and analytics caches after a write."""
+        if order_id:
+            self._cache.delete(f"order:{order_id}")
+        self._cache.invalidate_pattern("order:*")
+        self._cache.invalidate_pattern("analytics:*")
+
+    def invalidate_analytics(self, store_id: str = None):
         """Invalidate analytics caches"""
-        self._cache.invalidate_pattern(f"analytics:store_{store_id}:*")
+        self._cache.invalidate_pattern("analytics:*")
 
     def invalidate_campaign(self, campaign_id: str, store_id: str = None):
         """Invalidate campaign-related caches"""

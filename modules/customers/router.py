@@ -358,7 +358,7 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
     db.refresh(customer)
 
     # Bust cached lists for this store so the new customer shows immediately.
-    cache.delete_pattern(f"cust:*{customer_data.store_id}*") if hasattr(cache, "delete_pattern") else None
+    cache.invalidate_pattern("cust:*")
 
     return customer
 
