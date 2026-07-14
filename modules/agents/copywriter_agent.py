@@ -171,15 +171,9 @@ Return ONLY valid JSON.
 """)
 
     def _clean_json_response(self, response: str) -> str:
-        """Clean the JSON response from markdown formatting"""
-        response = response.strip()
-        if response.startswith('```json'):
-            response = response[7:]
-        elif response.startswith('```'):
-            response = response[3:]
-        if response.endswith('```'):
-            response = response[:-3]
-        return response.strip()
+        """Clean the JSON response from markdown formatting (shared impl)."""
+        from modules.agents.llm_json import clean_json_response
+        return clean_json_response(response)
 
     async def generate_ad_copy(
         self,

@@ -392,19 +392,9 @@ IMPORTANT: Return ONLY valid JSON, no markdown or other text.
 """)
 
     def _clean_json_response(self, response: str) -> str:
-        """Clean the JSON response from markdown formatting"""
-        response = response.strip()
-
-        # Remove markdown code blocks
-        if response.startswith('```json'):
-            response = response[7:]
-        elif response.startswith('```'):
-            response = response[3:]
-
-        if response.endswith('```'):
-            response = response[:-3]
-
-        return response.strip()
+        """Clean the JSON response from markdown formatting (shared impl)."""
+        from modules.agents.llm_json import clean_json_response
+        return clean_json_response(response)
 
     def _collect_copy_text(self, ad_data: Dict[str, Any]) -> str:
         """Flatten all generated copy fields (str/list/dict shapes differ between

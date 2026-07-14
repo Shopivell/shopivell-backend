@@ -144,16 +144,9 @@ Return ONLY valid JSON, no other text.
     def _parse_creative_response(self, response_text: str) -> Dict[str, Any]:
         """Parse the AI response into structured creative data. JSON-first with prefix fallback."""
         # Try JSON parsing first (Pydantic validation)
+        from modules.agents.llm_json import clean_json_response
+        cleaned = clean_json_response(response_text)
         try:
-            cleaned = response_text.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.startswith("```"):
-                cleaned = cleaned[3:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-
             data = CreativeOutput.model_validate_json(cleaned)
             return data.model_dump()
         except Exception:
