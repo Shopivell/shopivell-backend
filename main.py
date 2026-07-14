@@ -3,6 +3,10 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
+# Configure structured, correlation-aware logging before anything else logs.
+from utils.observability import setup_logging, RequestContextMiddleware
+setup_logging()
+
 logger = logging.getLogger(__name__)
 from database import engine, init_db
 from utils.cache import cache, check_redis_health
@@ -113,6 +117,9 @@ app.add_middleware(
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
+
+# Correlation-id + access logging (outermost, so request_id is set for everything).
+app.add_middleware(RequestContextMiddleware)
 
 # Add caching middleware (optional - enable when Redis is configured)
 # Uncomment the following lines to enable Redis caching:
