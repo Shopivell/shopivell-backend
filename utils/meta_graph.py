@@ -14,13 +14,37 @@ This wrapper:
 Use graph_request() for any Meta Graph write/read that runs unattended or in bulk.
 """
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
 from typing import Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def appsecret_proof(access_token: str) -> Optional[str]:
+    """Meta's request-integrity proof: HMAC-SHA256(access_token, app_secret).
+
+    Sending it on Graph calls proves the request came from the app that owns the
+    token (Meta Platform Terms request integrity; required once the app enables
+    'Require App Secret'). Returns None if no app secret / token is available."""
+    secret = os.getenv("FACEBOOK_APP_SECRET") or os.getenv("META_APP_SECRET") or ""
+    if not secret or not access_token:
+        return None
+    return hmac.new(secret.encode("utf-8"), access_token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _with_appsecret_proof(container: Optional[dict]) -> Optional[dict]:
+    """Add appsecret_proof to a params/data dict that carries an access_token."""
+    if container and container.get("access_token") and "appsecret_proof" not in container:
+        proof = appsecret_proof(container["access_token"])
+        if proof:
+            return {**container, "appsecret_proof": proof}
+    return container
 
 # Meta rate-limit / throttling error codes (application, ads, and BUC throttles).
 RATE_LIMIT_ERROR_CODES = {
@@ -95,6 +119,10 @@ async def graph_request(
     """
     backoff = 2.0
     resp: Optional[httpx.Response] = None
+
+    # Attach appsecret_proof when the token is in params/data and an app secret is set.
+    params = _with_appsecret_proof(params)
+    data = _with_appsecret_proof(data)
 
     for attempt in range(max_retries + 1):
         async with httpx.AsyncClient(timeout=timeout) as client:

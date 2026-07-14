@@ -834,7 +834,29 @@ async def whatsapp_webhook_receive(
 ):
     """Receive WhatsApp webhook events (POST)"""
     try:
-        payload = await request.json()
+        import hmac as _hmac, hashlib as _hashlib, os as _os
+        raw = await request.body()
+        # Verify Meta's X-Hub-Signature-256 (Meta Platform Terms request integrity).
+        # Verify-and-log by default; only REJECT forged payloads when
+        # WHATSAPP_VERIFY_WEBHOOK_SIGNATURE=true, so enabling it can't accidentally
+        # silence the bot if the configured app secret doesn't match. Confirm the
+        # log shows "signature OK" first, then turn enforcement on.
+        app_secret = _os.getenv("WHATSAPP_APP_SECRET") or _os.getenv("FACEBOOK_APP_SECRET") or ""
+        if app_secret:
+            sig = request.headers.get("X-Hub-Signature-256", "")
+            expected = "sha256=" + _hmac.new(app_secret.encode("utf-8"), raw, _hashlib.sha256).hexdigest()
+            valid = bool(sig) and _hmac.compare_digest(sig, expected)
+            enforce = _os.getenv("WHATSAPP_VERIFY_WEBHOOK_SIGNATURE", "false").strip().lower() in ("1", "true", "yes")
+            if not valid:
+                logger.warning(f"[whatsapp webhook] X-Hub-Signature-256 INVALID/absent (enforce={enforce})")
+                if enforce:
+                    return {"status": "ignored"}
+            else:
+                logger.info("[whatsapp webhook] signature OK")
+        else:
+            logger.warning("[whatsapp webhook] no app secret configured - signature NOT verified")
+
+        payload = json.loads(raw.decode("utf-8") or "{}")
         logger.info(f"Received webhook payload: {json.dumps(payload, indent=2)}")
 
         # Process webhook using a thread to avoid async context issues

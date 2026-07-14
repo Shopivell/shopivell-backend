@@ -115,6 +115,23 @@ def keyword_classify_ad_category(text: str):
     return None
 
 
+def _check_copy_compliance(text: str):
+    """Fail-closed Meta ad-copy compliance gate used before publishing to Meta.
+
+    Regex-only (free, no LLM). Returns (is_compliant: bool, verdict: dict). A
+    checker infra error is treated as compliant (and logged) so a checker bug
+    cannot block all publishing, but any real policy violation blocks that ad."""
+    if not text or not text.strip():
+        return True, {}
+    try:
+        from modules.agents.compliance_agent import ComplianceAgent
+        verdict = ComplianceAgent().check_ad_copy(primary_text=text) or {}
+        return bool(verdict.get("compliant", True)), verdict
+    except Exception as e:
+        logger.warning(f"[publish] ad-copy compliance check skipped: {e}")
+        return True, {}
+
+
 campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
 
 
@@ -1033,6 +1050,17 @@ def publish_campaign_to_facebook(
 
         message = "\n\n".join(message_parts) if message_parts else f"Check out {campaign.name}!"
 
+        # Fail-closed Meta ad-copy compliance gate: never post non-compliant copy.
+        _ok, _verdict = _check_copy_compliance(message)
+        if not _ok:
+            logger.warning(f"[Facebook] Blocked non-compliant copy for ad set {ad_set.name}: {_verdict.get('blocked_words')}")
+            errors.append({
+                "ad_set_id": str(ad_set.id), "ad_set_name": ad_set.name,
+                "error": "ad_copy_policy_violation",
+                "blocked_words": _verdict.get("blocked_words", []),
+            })
+            continue
+
         post_data = FacebookPostCreate(
             message=message,
             link=ad_content.destination_url or campaign.source_url,
@@ -1328,6 +1356,18 @@ def publish_campaign_to_meta_ads(
                 # 3. Create Meta Ads for each ad content in this ad set
                 for ad_content in ad_set.ad_contents:
                     if not ad_content.is_active:
+                        continue
+
+                    # Fail-closed compliance gate on the copy before creating the ad.
+                    _copy = " ".join(x for x in [ad_content.primary_text, ad_content.headline, ad_content.description] if x)
+                    _ok, _verdict = _check_copy_compliance(_copy)
+                    if not _ok:
+                        logger.warning(f"[MetaAds] Blocked non-compliant copy in ad set {ad_set.name}: {_verdict.get('blocked_words')}")
+                        results.setdefault("errors", []).append({
+                            "ad_set_name": ad_set.name,
+                            "error": "ad_copy_policy_violation",
+                            "blocked_words": _verdict.get("blocked_words", []),
+                        })
                         continue
 
                     try:
