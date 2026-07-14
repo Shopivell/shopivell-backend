@@ -104,6 +104,7 @@ class CampaignUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     goal: Optional[CampaignGoal] = None
+    special_ad_category: Optional[str] = None
     conversion_button: Optional[str] = None
     daily_budget: Optional[float] = None
     total_budget: Optional[float] = None
