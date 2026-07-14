@@ -2624,11 +2624,10 @@ async def generate_audience_from_url_validated(
     """
     try:
         from .creative_strategist_agent import CreativeStrategistAgent
-        from .market_research_agent import MarketResearchAgent
+        from .market_research_agent import research_website_directly
 
         # Step 1: Research the URL
-        research_agent = MarketResearchAgent()
-        research_data = await research_agent.research_website(url, deep_scrape=deep_scrape)
+        research_data = await research_website_directly(url, deep_scrape=deep_scrape)
 
         # Step 2: Generate validated audience
         strategist = CreativeStrategistAgent()

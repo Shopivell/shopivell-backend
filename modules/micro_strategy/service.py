@@ -133,10 +133,6 @@ class MicroStrategyService:
         if strategy.status not in (StrategyStatus.DRAFT.value, StrategyStatus.PAUSED.value):
             raise ValueError(f"Cannot start strategy in {strategy.status} status")
 
-        # Scrape product context if not already set
-        if not strategy.product_context or not strategy.product_context.get("company_name"):
-            await self._scrape_product_context(strategy)
-
         strategy.status = StrategyStatus.RUNNING.value
         self.db.commit()
 
@@ -982,30 +978,6 @@ Only return the JSON array, no markdown."""
         if response.status_code != 200:
             logger.error(f"Meta API error updating {entity_type} {entity_id}: {response.text}")
 
-    async def _scrape_product_context(self, strategy: MicroStrategy):
-        """Scrape source URL to build product context."""
-        try:
-            from modules.agents.market_research_agent import MarketResearchAgent
-
-            agent = MarketResearchAgent()
-            result = await agent.research_website(strategy.source_url)
-
-            extracted = result.get("extracted_data", {})
-            summary = result.get("research_summary", {})
-
-            strategy.product_context = {
-                "company_name": extracted.get("company_info", {}).get("name", ""),
-                "industry": extracted.get("company_info", {}).get("industry", ""),
-                "primary_products": summary.get("primary_products", ""),
-                "products_services": extracted.get("products_services", []),
-                "target_audience": summary.get("target_audience", ""),
-                "unique_selling_points": summary.get("unique_selling_points", []),
-                "key_terms": extracted.get("key_terms", []),
-                "brand_voice": "professional yet approachable",
-            }
-            self.db.commit()
-        except Exception as e:
-            logger.error(f"Failed to scrape product context: {e}")
 
     # ─────────────────────────────────────────────────────────
     # Pixel Readiness / Traffic -> Lead Gen Auto-Switch
