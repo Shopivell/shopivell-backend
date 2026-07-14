@@ -146,14 +146,11 @@ async def create_faq(
     db.commit()
     db.refresh(faq)
 
-    # Sync to knowledge base if active
+    # Sync to knowledge base off the request path (durable + retried) so a slow
+    # or transiently-failing embedding call never blocks or silently drops.
     if faq.is_active:
-        try:
-            knowledge_service = KnowledgeService(store_id)
-            knowledge_service.sync_faq_to_knowledge(db, faq)
-        except Exception as e:
-            logger.error(f"Failed to sync FAQ to knowledge base: {e}")
-            # Don't fail the request, just log the error
+        from modules.jobs.queue import enqueue
+        enqueue("sync_store_knowledge", {"store_id": str(store_id), "faq_id": str(faq.id)})
 
     logger.info(f"Created FAQ {faq.id} for store {store_id}")
     return FAQResponse.model_validate(faq)
@@ -206,13 +203,10 @@ async def update_faq(
     db.commit()
     db.refresh(faq)
 
-    # Re-sync to knowledge base
+    # Re-sync to knowledge base off the request path (durable + retried).
     if faq.is_active:
-        try:
-            knowledge_service = KnowledgeService(faq.store_id)
-            knowledge_service.sync_faq_to_knowledge(db, faq)
-        except Exception as e:
-            logger.error(f"Failed to sync FAQ to knowledge base: {e}")
+        from modules.jobs.queue import enqueue
+        enqueue("sync_store_knowledge", {"store_id": str(faq.store_id), "faq_id": str(faq.id)})
     else:
         # Deactivate knowledge entry
         try:

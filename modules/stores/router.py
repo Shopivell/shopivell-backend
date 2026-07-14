@@ -302,6 +302,17 @@ async def complete_store_setup(
                     print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
                     # Continue with other FAQs if one fails
 
+        # Embed this store's FAQs (+ products) into the WhatsApp bot knowledge
+        # base. Deferred so it runs after this request commits — previously the
+        # onboarding path created FAQs but never synced them, leaving the bot mute.
+        try:
+            from modules.jobs.queue import enqueue
+            enqueue("sync_store_knowledge",
+                    {"store_id": str(db_store.id), "include_products": True},
+                    delay_seconds=20)
+        except Exception as _e:
+            print(f"[FAQ] enqueue knowledge sync failed: {_e}")
+
         # Create Assets from scraped images
         extracted_images = session_data.get('extracted_images', [])
         if extracted_images:
@@ -853,6 +864,17 @@ async def create_store(
                 except Exception as faq_err:
                     print(f"[FAQ] Error creating FAQ {i}: {faq_err}")
                     # Continue with other FAQs if one fails
+
+        # Embed this store's FAQs (+ products) into the WhatsApp bot knowledge
+        # base. Deferred so it runs after this request commits — previously the
+        # onboarding path created FAQs but never synced them, leaving the bot mute.
+        try:
+            from modules.jobs.queue import enqueue
+            enqueue("sync_store_knowledge",
+                    {"store_id": str(db_store.id), "include_products": True},
+                    delay_seconds=20)
+        except Exception as _e:
+            print(f"[FAQ] enqueue knowledge sync failed: {_e}")
 
         # Create Assets from scraped images
         extracted_images = store_data.extracted_images or []

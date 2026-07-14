@@ -29,6 +29,7 @@ from modules.reviews.models import *  # Review models (depends on User, Store)
 from modules.business.models import *  # Business models (Facebook, Instagram)
 from modules.openrouter.models import *  # AI usage tracking models
 from modules.micro_strategy.models import *  # Micro-strategy models (depends on Store, MetaAdAccount)
+from modules.jobs.models import *  # BackgroundJob (durable job queue)
 
 from modules.customers.router import customer_router
 from modules.orders.router import order_router  # Assuming 'o' is your orders router
@@ -194,6 +195,16 @@ async def startup_event():
     except Exception as e:
         logger.error(f"[Startup] Failed to restore persisted rules: {e}")
 
+    # Start the durable background-job worker (embedding sync, etc. off the
+    # request path). On by default; disable with ENABLE_JOB_WORKER=false.
+    if os.getenv("ENABLE_JOB_WORKER", "true").strip().lower() in ("1", "true", "yes"):
+        try:
+            from modules.jobs.queue import start_worker
+            start_worker()
+            logger.info("[Startup] Background job worker started")
+        except Exception as e:
+            logger.error(f"[Startup] Failed to start job worker: {e}")
+
     # The 24/7 ads automation scheduler is OPT-IN. Off by default so the app does
     # not autonomously change/pause ads or spend on Meta without an operator enabling
     # it (Meta flags unattended, high-volume automated activity across many accounts).
@@ -238,6 +249,12 @@ async def shutdown_event():
     from modules.agents.scheduler import stop_rules_scheduler
     stop_rules_scheduler()
     logger.info("[Shutdown] Scheduler stopped")
+    try:
+        from modules.jobs.queue import stop_worker
+        stop_worker()
+        logger.info("[Shutdown] Job worker stopped")
+    except Exception as e:
+        logger.error(f"[Shutdown] Failed to stop job worker: {e}")
 
 
 @app.get("/health")
