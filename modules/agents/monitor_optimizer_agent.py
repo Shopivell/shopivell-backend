@@ -1048,6 +1048,7 @@ class AutomatedRulesEngine:
             rule.id = str(uuid.uuid4())
         self.rules.append(rule)
         logger.info(f"[AutomatedRulesEngine] Added rule: {rule.name}")
+        self._persist_rule(rule)
 
     def remove_rule(self, rule_id: str) -> bool:
         """Remove a rule by ID"""
@@ -1055,8 +1056,89 @@ class AutomatedRulesEngine:
             if rule.id == rule_id:
                 self.rules.pop(i)
                 logger.info(f"[AutomatedRulesEngine] Removed rule: {rule_id}")
+                self._delete_persisted_rule(rule_id)
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # Rule persistence (survive process restarts). All best-effort: they
+    # open their own short-lived session and never raise into the caller.
+    # ------------------------------------------------------------------
+
+    def _persist_rule(self, rule: "AutomatedRule") -> None:
+        """Write-through a single rule to the DB (upsert by rule_id)."""
+        if not getattr(rule, "id", None):
+            return
+        try:
+            from database import SessionLocal
+            from modules.agents.models import PersistedAutomatedRule
+            db = SessionLocal()
+            try:
+                payload = rule.model_dump(mode="json")
+                row = db.query(PersistedAutomatedRule).filter(
+                    PersistedAutomatedRule.rule_id == rule.id
+                ).first()
+                if row:
+                    row.name = rule.name
+                    row.is_enabled = rule.is_enabled
+                    row.definition = payload
+                else:
+                    db.add(PersistedAutomatedRule(
+                        rule_id=rule.id,
+                        name=rule.name,
+                        is_enabled=rule.is_enabled,
+                        definition=payload,
+                    ))
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[AutomatedRulesEngine] Failed to persist rule {getattr(rule, 'id', '?')}: {e}")
+
+    def _delete_persisted_rule(self, rule_id: str) -> None:
+        try:
+            from database import SessionLocal
+            from modules.agents.models import PersistedAutomatedRule
+            db = SessionLocal()
+            try:
+                db.query(PersistedAutomatedRule).filter(
+                    PersistedAutomatedRule.rule_id == rule_id
+                ).delete()
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[AutomatedRulesEngine] Failed to delete persisted rule {rule_id}: {e}")
+
+    def load_persisted_rules(self) -> int:
+        """Load all persisted rules into memory, replacing self.rules.
+
+        Called at startup so the engine resumes with the rules (and their
+        cooldown/trigger state) it had before the restart. Returns the count."""
+        try:
+            from database import SessionLocal
+            from modules.agents.models import PersistedAutomatedRule
+            db = SessionLocal()
+            try:
+                rows = db.query(PersistedAutomatedRule).all()
+                loaded = []
+                for r in rows:
+                    try:
+                        loaded.append(AutomatedRule.model_validate(r.definition))
+                    except Exception as e:
+                        logger.error(f"[AutomatedRulesEngine] Skipping unloadable rule {r.rule_id}: {e}")
+                self.rules = loaded
+                logger.info(f"[AutomatedRulesEngine] Loaded {len(loaded)} persisted rules")
+                return len(loaded)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[AutomatedRulesEngine] Failed to load persisted rules: {e}")
+            return 0
+
+    def persist_rule(self, rule: "AutomatedRule") -> None:
+        """Public write-through hook (e.g. for the meta-learner after tuning)."""
+        self._persist_rule(rule)
 
     def get_performance_history(
         self,
@@ -1442,6 +1524,8 @@ class AutomatedRulesEngine:
             if not dry_run:
                 rule.last_triggered = datetime.utcnow()
                 rule.trigger_count += 1
+                # Persist so cooldown window + trigger count survive a restart.
+                self._persist_rule(rule)
 
         except Exception as e:
             result.success = False

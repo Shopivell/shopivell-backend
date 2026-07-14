@@ -401,3 +401,25 @@ class RulePerformanceTracker(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PersistedAutomatedRule(Base):
+    """Durable storage for AutomatedRulesEngine rules.
+
+    The engine holds rules in memory (AutomatedRulesEngine.rules). Without this
+    table they are lost on every process restart, so after a redeploy the engine
+    evaluates ZERO rules until someone re-adds them via the API — and per-rule
+    cooldowns/trigger counts reset too. Each row stores the full Pydantic rule
+    definition as JSON so it can be reloaded verbatim at startup; a few columns
+    are mirrored for querying.
+    """
+    __tablename__ = "persisted_automated_rules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    rule_id = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(String(255), nullable=True)
+    is_enabled = Column(Boolean, default=True, index=True)
+    # Full AutomatedRule.model_dump(mode="json") — reload with model_validate.
+    definition = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -2037,6 +2037,7 @@ async def toggle_rule(rule_id: str, enabled: bool = True, current_user: CurrentU
     for rule in automated_rules_engine.rules:
         if rule.id == rule_id:
             rule.is_enabled = enabled
+            automated_rules_engine.persist_rule(rule)  # survive restart
             return {
                 "success": True,
                 "message": f"Rule {'enabled' if enabled else 'disabled'}",

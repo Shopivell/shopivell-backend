@@ -694,6 +694,7 @@ class MetaLearner:
                     tracker.times_loosened += 1
 
                 tracker.current_conditions = [c.model_dump() for c in rule.conditions]
+                automated_rules_engine.persist_rule(rule)  # persist tuned thresholds
 
                 if action_taken:
                     log_ai_decision(
@@ -762,6 +763,7 @@ class MetaLearner:
 
                 if reason:
                     rule.is_enabled = False
+                    automated_rules_engine.persist_rule(rule)  # persist auto-retire
 
                     # Update tracker
                     tracker = db.query(RulePerformanceTracker).filter(

@@ -177,6 +177,16 @@ async def startup_event():
     """Start background services on app boot."""
     import os
 
+    # Restore automation rules from the DB so they (and their cooldown/trigger
+    # state) survive restarts. Done unconditionally — rules are usable via the
+    # API even when the autonomous scheduler below is disabled.
+    try:
+        from modules.agents.monitor_optimizer_agent import automated_rules_engine
+        n = automated_rules_engine.load_persisted_rules()
+        logger.info(f"[Startup] Restored {n} persisted automation rules")
+    except Exception as e:
+        logger.error(f"[Startup] Failed to restore persisted rules: {e}")
+
     # The 24/7 ads automation scheduler is OPT-IN. Off by default so the app does
     # not autonomously change/pause ads or spend on Meta without an operator enabling
     # it (Meta flags unattended, high-volume automated activity across many accounts).
