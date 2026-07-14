@@ -63,6 +63,11 @@ ENV PATH=/root/.local/bin:$PATH
 # Install Playwright browsers with system dependencies
 RUN playwright install --with-deps chromium
 
+# Pre-download the self-hosted embedding model into the image so there is no
+# runtime download / network dependency (default embedding provider).
+ENV FASTEMBED_CACHE_PATH=/app/.fastembed_cache
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/app/.fastembed_cache')"
+
 # Copy application code
 COPY . .
 

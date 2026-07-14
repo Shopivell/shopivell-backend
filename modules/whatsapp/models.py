@@ -121,8 +121,15 @@ class CompanyKnowledge(Base):
     content_type = Column(String(50), default="manual", index=True)  # manual, product, faq, policy
     source_id = Column(UUID(as_uuid=True), nullable=True)  # Link to product_id if synced from products
 
-    # Vector embedding for semantic search
-    embedding = Column(Vector(1536))
+    # Vector embedding for semantic search. Dimension matches the active
+    # embedding provider (utils.embeddings) — 384 for the self-hosted local
+    # model (BAAI/bge-small-en-v1.5), the default. Switching to a 1536-dim
+    # cloud provider is a migration (ALTER column + full re-embed).
+    embedding = Column(Vector(384))
+    # Which provider/model produced `embedding` (e.g. BAAI/bge-small-en-v1.5,
+    # text-embedding-3-small). Vectors from different models are NOT comparable,
+    # so this flags rows that need re-embedding after a provider switch.
+    embedding_model = Column(String(100), nullable=True)
 
     # Status
     is_active = Column(Boolean, default=True, index=True)

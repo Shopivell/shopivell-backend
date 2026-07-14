@@ -2521,24 +2521,24 @@ def create_knowledge_entry(
     Create a new knowledge entry with REAL OpenAI embedding
     """
     try:
-        from langchain_openai import OpenAIEmbeddings
-        
+        from utils.embeddings import embed_text, active_embedding_model
+
         print(f"📝 Creating knowledge: {request.content[:50]}...")
-        
-        # 1. Generate REAL embedding
-        embeddings = OpenAIEmbeddings()
-        embedding = embeddings.embed_query(request.content)
+
+        # 1. Generate embedding via the central, resilient layer
+        embedding = embed_text(request.content, agent_name="knowledge_embeddings")
         print(f"   ✅ Generated {len(embedding)}-dim embedding")
-        
+
         # 2. Create knowledge entry
         from .models import CompanyKnowledge
         import uuid
-        
+
         knowledge = CompanyKnowledge(
             id=uuid.uuid4(),
             store_id=request.store_id,
             content=request.content,
-            embedding=embedding  # REAL embedding
+            embedding=embedding,
+            embedding_model=active_embedding_model()
         )
         
         # 3. Save to database
@@ -2618,7 +2618,7 @@ def fix_all_embeddings(
     Regenerates embeddings for all entries (not just placeholders).
     """
     try:
-        from langchain_openai import OpenAIEmbeddings
+        from utils.embeddings import embed_text, active_embedding_model
         from sqlalchemy import text
 
         logger.info(f"Fixing ALL embeddings for store: {store_id}")
@@ -2635,7 +2635,7 @@ def fix_all_embeddings(
 
         logger.info(f"Found {len(rows)} knowledge entries to process")
 
-        embeddings = OpenAIEmbeddings()
+        model_tag = active_embedding_model()
         fixed = 0
         errors = []
 
@@ -2647,8 +2647,8 @@ def fix_all_embeddings(
                 logger.info(f"Processing row {row_id}...")
                 logger.info(f"  Content preview: {content[:50]}...")
 
-                # Generate real embedding using OpenAI
-                embedding = embeddings.embed_query(content)
+                # Generate embedding via the central, resilient layer
+                embedding = embed_text(content, agent_name="knowledge_embeddings")
 
                 # Convert to PostgreSQL vector string format: "[0.1, 0.2, ...]"
                 embedding_str = "[" + ",".join(str(float(x)) for x in embedding) + "]"
@@ -2657,10 +2657,12 @@ def fix_all_embeddings(
                 # Update using string format that pgvector expects
                 db.execute(text("""
                     UPDATE company_knowledge
-                    SET embedding = CAST(:embedding AS vector)
+                    SET embedding = CAST(:embedding AS vector),
+                        embedding_model = :model
                     WHERE id = :id
                 """), {
                     "embedding": embedding_str,
+                    "model": model_tag,
                     "id": str(row_id)
                 })
 

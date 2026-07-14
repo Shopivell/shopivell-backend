@@ -16,18 +16,16 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
-from openai import OpenAI
+
+from utils.embeddings import embed_text, embed_texts, active_embedding_model, EMBEDDING_DIM
 
 from .models import CompanyKnowledge, FAQ, StoreBotConfig
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Embedding model
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 1536
+# Embedding provider/model is now resolved centrally in utils.embeddings
+# (retry/backoff, provider failover, usage tracking). See that module.
+EMBEDDING_DIMENSIONS = EMBEDDING_DIM
 
 
 class KnowledgeService:
@@ -37,28 +35,12 @@ class KnowledgeService:
         self.store_id = store_id
 
     def _generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for text using OpenAI"""
-        try:
-            response = client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}")
-            raise
+        """Generate an embedding via the central, resilient embeddings layer."""
+        return embed_text(text, agent_name="knowledge_embeddings")
 
     def _generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts in batch"""
-        try:
-            response = client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=texts
-            )
-            return [item.embedding for item in response.data]
-        except Exception as e:
-            logger.error(f"Error generating batch embeddings: {e}")
-            raise
+        """Generate embeddings for multiple texts via the central layer."""
+        return embed_texts(texts, agent_name="knowledge_embeddings")
 
     # =========================================================================
     # FAQ Management
@@ -92,6 +74,7 @@ class KnowledgeService:
                 knowledge.content = content
                 knowledge.category = faq.category or "faq"
                 knowledge.embedding = embedding
+                knowledge.embedding_model = active_embedding_model()
                 knowledge.is_active = faq.is_active
                 knowledge.last_synced_at = datetime.utcnow()
                 knowledge.updated_at = datetime.utcnow()
@@ -111,6 +94,7 @@ class KnowledgeService:
             content_type="faq",
             source_id=faq.id,
             embedding=embedding,
+            embedding_model=active_embedding_model(),
             is_active=faq.is_active,
             last_synced_at=datetime.utcnow()
         )
@@ -244,6 +228,7 @@ class KnowledgeService:
                     existing.title = f"Product: {product.name}"
                     existing.content = texts[i]
                     existing.embedding = embeddings[i]
+                    existing.embedding_model = active_embedding_model()
                     existing.last_synced_at = datetime.utcnow()
                     existing.updated_at = datetime.utcnow()
                 else:
@@ -256,6 +241,7 @@ class KnowledgeService:
                         content_type="product",
                         source_id=product.id,
                         embedding=embeddings[i],
+                        embedding_model=active_embedding_model(),
                         is_active=True,
                         last_synced_at=datetime.utcnow()
                     )
@@ -293,6 +279,7 @@ class KnowledgeService:
             tags=tags,
             content_type="manual",
             embedding=embedding,
+            embedding_model=active_embedding_model(),
             priority=priority,
             is_active=True,
             last_synced_at=datetime.utcnow()
@@ -328,6 +315,7 @@ class KnowledgeService:
             knowledge.content = content
             # Re-generate embedding for new content
             knowledge.embedding = self._generate_embedding(content)
+            knowledge.embedding_model = active_embedding_model()
 
         if title is not None:
             knowledge.title = title
