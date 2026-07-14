@@ -1616,9 +1616,22 @@ Return ONLY valid JSON, no other text.
                     if len(p.get("content", "")) < min_content_length
                 ]
                 if thin_pages:
-                    logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright")
-                    for thin_page in thin_pages:
-                        pw_result = await self._scrape_with_playwright(thin_page["url"])
+                    logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright (concurrently)")
+                    # Each thin-page re-scrape is a slow, independent Playwright load.
+                    # Run them concurrently instead of one-by-one; bound concurrency so
+                    # we don't spawn too many headless browsers at once. Shared-state
+                    # mutations are applied sequentially afterwards to stay race-free.
+                    _sem = asyncio.Semaphore(3)
+
+                    async def _rescrape(tp):
+                        async with _sem:
+                            try:
+                                return tp, await self._scrape_with_playwright(tp["url"])
+                            except Exception as e:
+                                logger.warning(f"[MarketResearchAgent] Playwright re-scrape failed for {tp.get('url')}: {e}")
+                                return tp, {"success": False}
+
+                    for thin_page, pw_result in await asyncio.gather(*[_rescrape(tp) for tp in thin_pages]):
                         if pw_result.get("success") and len(pw_result.get("content", "")) > len(thin_page.get("content", "")):
                             old_content = thin_page["content"]
                             thin_page["content"] = pw_result["content"][:5000]
@@ -2196,9 +2209,20 @@ async def research_website_directly(
             if len(p.get("content", "")) < min_content_length
         ]
         if thin_pages:
-            logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright")
-            for thin_page in thin_pages:
-                pw_result = await agent._scrape_with_playwright(thin_page["url"])
+            logger.info(f"[MarketResearchAgent] Found {len(thin_pages)} thin pages, re-scraping with Playwright (concurrently)")
+            # Re-scrape thin pages concurrently (bounded), then apply mutations
+            # sequentially to keep shared-state updates race-free.
+            _sem = asyncio.Semaphore(3)
+
+            async def _rescrape(tp):
+                async with _sem:
+                    try:
+                        return tp, await agent._scrape_with_playwright(tp["url"])
+                    except Exception as e:
+                        logger.warning(f"[MarketResearchAgent] Playwright re-scrape failed for {tp.get('url')}: {e}")
+                        return tp, {"success": False}
+
+            for thin_page, pw_result in await asyncio.gather(*[_rescrape(tp) for tp in thin_pages]):
                 if pw_result.get("success") and len(pw_result.get("content", "")) > len(thin_page.get("content", "")):
                     # Replace thin content with Playwright content
                     old_content = thin_page["content"]
