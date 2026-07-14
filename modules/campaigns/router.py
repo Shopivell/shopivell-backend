@@ -9,6 +9,7 @@ import uuid
 import logging
 import json
 import asyncio
+import re
 
 from database import get_db
 from .models import UrlCampaign, CampaignStatus, UrlAdSet, UrlAdContent
@@ -86,7 +87,74 @@ def resolve_special_ad_categories(campaign) -> list:
         val = "NONE"
     return [val]
 
+
+# Keyword signals for the Meta Special Ad Category (deterministic, high-recall first pass).
+_SPECIAL_CATEGORY_KEYWORDS = {
+    "FINANCIAL_PRODUCTS_SERVICES": [r"\bloan", r"\bcredit\b", r"mortgage", r"insurance",
+        r"microfinance", r"\bforex\b", r"crypto", r"\bdebt\b", r"savings account",
+        r"financial service", r"invest(ment|ing)", r"\bbanking\b", r"cash advance"],
+    "EMPLOYMENT": [r"\bjob\b", r"\bjobs\b", r"hiring", r"\bvacan", r"recruit",
+        r"employment", r"we\W?re hiring", r"we are hiring",
+        r"apply .{0,20}(job|position|role|vacancy)", r"career opportunit"],
+    "HOUSING": [r"for rent\b", r"\brental\b", r"apartment", r"real estate",
+        r"property for (sale|rent)", r"house for (sale|rent)", r"flat to let",
+        r"stand for sale", r"\bto let\b"],
+    "ISSUES_ELECTIONS_POLITICS": [r"\bvote\b", r"\belection", r"political",
+        r"\bcandidate\b", r"referendum", r"manifesto"],
+    "ONLINE_GAMBLING_AND_GAMING": [r"\bcasino\b", r"\bbetting\b", r"\bbet now\b",
+        r"gambling", r"\bpoker\b", r"sports bet", r"\blottery\b", r"\bwager"],
+}
+
+
+def keyword_classify_ad_category(text: str):
+    """Deterministic keyword pass. Returns a category token, or None to defer to the LLM."""
+    t = (text or "").lower()
+    for cat, patterns in _SPECIAL_CATEGORY_KEYWORDS.items():
+        if any(re.search(p, t) for p in patterns):
+            return cat
+    return None
+
+
 campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
+
+
+class ClassifyAdCategoryRequest(BaseModel):
+    text: str = ""
+
+
+@campaign_router.post("/classify-ad-category")
+async def classify_ad_category(req: ClassifyAdCategoryRequest):
+    """AI-flag the Meta Special Ad Category from the ad's product/description text.
+
+    Keyword pass first (deterministic, high-recall), then the LLM for nuance. Returns
+    NONE by default, so a regular product ad is never wrongly restricted.
+    """
+    kw = keyword_classify_ad_category(req.text)
+    if kw:
+        return {"category": kw, "source": "keywords"}
+    try:
+        from modules.openrouter.service import openrouter_client
+        valid = ["NONE", "FINANCIAL_PRODUCTS_SERVICES", "EMPLOYMENT", "HOUSING",
+                 "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING"]
+        prompt = (
+            "Classify this advertisement into exactly one Meta Special Ad Category token. "
+            "NONE = regular products/services. FINANCIAL_PRODUCTS_SERVICES = credit, loans, "
+            "insurance, investments, banking. EMPLOYMENT = jobs/hiring. HOUSING = real estate/"
+            "rentals. ISSUES_ELECTIONS_POLITICS = social issues, elections, politics. "
+            "ONLINE_GAMBLING_AND_GAMING = betting/casino/lottery. Pick a special category only if "
+            "the ad clearly belongs to it; otherwise NONE.\n\n"
+            f'Ad text: "{(req.text or "")[:1500]}"\n\nReply with ONLY the token.'
+        )
+        resp = await openrouter_client.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0, max_tokens=16,
+        )
+        content = ((resp.get("choices") or [{}])[0].get("message", {}).get("content", "") or "").strip().upper()
+        cat = next((v for v in valid if v in content), "NONE")
+        return {"category": cat, "source": "ai"}
+    except Exception as e:
+        logger.warning(f"[classify-ad-category] LLM classify failed: {e}")
+        return {"category": "NONE", "source": "fallback"}
 
 
 @campaign_router.post("/edit-image")
