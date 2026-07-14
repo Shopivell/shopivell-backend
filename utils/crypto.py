@@ -7,8 +7,9 @@ Key handling:
 - The Fernet key is derived from TOKEN_ENCRYPTION_KEY if set, otherwise from the
   app SECRET_KEY (already a stable, persisted secret used for JWTs). No new key to
   manage, and rotating SECRET_KEY is already something the app avoids.
-- If no real secret is configured (dev with the fallback key), encryption is a
-  no-op pass-through so local development still works.
+- If no real secret is configured, writing a secret RAISES (fail-loud) so a
+  misconfigured deploy never silently stores tokens in plaintext. Set
+  ALLOW_PLAINTEXT_TOKENS=true to allow pass-through for local development.
 
 Migration safety: ciphertext is stored with an `enc::` prefix. Legacy plaintext
 rows (no prefix) are returned as-is on read and get encrypted the next time they
@@ -54,13 +55,31 @@ def _get_fernet():
     return _fernet
 
 
+def _plaintext_allowed():
+    return os.getenv("ALLOW_PLAINTEXT_TOKENS", "false").strip().lower() in ("1", "true", "yes")
+
+
 def encrypt_value(plaintext):
-    """Encrypt a string. Returns it unchanged if encryption is off or already encrypted."""
+    """Encrypt a string. Returns it unchanged if already encrypted or not a string.
+
+    Fail-loud: if no encryption key is configured, refuse to store a secret in
+    plaintext (raise) unless ALLOW_PLAINTEXT_TOKENS=true is explicitly set for
+    local dev. This prevents a misconfigured deploy from silently persisting
+    access tokens in the clear, which Meta Platform Terms 6.a forbids.
+    """
     if plaintext is None:
         return None
-    f = _get_fernet()
-    if f is None or not isinstance(plaintext, str) or plaintext.startswith(_PREFIX):
+    if not isinstance(plaintext, str) or plaintext.startswith(_PREFIX):
         return plaintext
+    f = _get_fernet()
+    if f is None:
+        if _plaintext_allowed():
+            return plaintext
+        raise RuntimeError(
+            "[crypto] Refusing to store a secret in plaintext: no TOKEN_ENCRYPTION_KEY "
+            "or SECRET_KEY is configured. Set one of them, or set ALLOW_PLAINTEXT_TOKENS=true "
+            "for local development only."
+        )
     return _PREFIX + f.encrypt(plaintext.encode("utf-8")).decode("utf-8")
 
 

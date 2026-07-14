@@ -40,6 +40,42 @@ logger = logging.getLogger(__name__)
 FB_GRAPH_URL = "https://graph.facebook.com/v24.0"
 
 
+def resolve_special_ad_categories_for_store(db, ad_account, extra_text: str = "") -> str:
+    """Declare the Meta Special Ad Category for an auto-created micro-strategy
+    campaign, classified from the owning store's business context.
+
+    Housing/employment/credit/financial/politics/gambling ads MUST declare the
+    category so Meta applies its required targeting restrictions. These paths
+    previously hardcoded "[]" (no declaration), a policy violation for such ads.
+    Returns a JSON array string, e.g. '["NONE"]' or '["HOUSING"]'.
+    """
+    text = extra_text or ""
+    try:
+        from modules.stores.models import Store
+        sid = getattr(ad_account, "store_id", None)
+        store = db.query(Store).filter(Store.id == sid).first() if sid else None
+        if store:
+            pos = getattr(store, "products_or_services", None)
+            parts = [
+                getattr(store, "store_name", "") or "",
+                getattr(store, "business_type", "") or "",
+                getattr(store, "description", "") or "",
+                " ".join(str(p) for p in pos) if isinstance(pos, list) else "",
+            ]
+            text = (text + " " + " ".join(p for p in parts if p)).strip()
+    except Exception as e:
+        logger.warning(f"[micro_strategy] SAC store lookup failed: {e}")
+    try:
+        from modules.campaigns.router import keyword_classify_ad_category, META_SPECIAL_AD_CATEGORIES
+        cat = (keyword_classify_ad_category(text) or "NONE").upper()
+        if cat not in META_SPECIAL_AD_CATEGORIES:
+            cat = "NONE"
+    except Exception as e:
+        logger.warning(f"[micro_strategy] SAC classify failed: {e}")
+        cat = "NONE"
+    return json.dumps([cat])
+
+
 class MicroStrategyService:
     """Business logic for Lexi Micro-Strategy and Pixel Auto-Switch."""
 
@@ -538,7 +574,8 @@ Only return the JSON array, no markdown."""
                 "name": f"[LEXI] {strategy.name}",
                 "objective": "OUTCOME_TRAFFIC",
                 "status": "PAUSED",
-                "special_ad_categories": "[]",
+                "special_ad_categories": resolve_special_ad_categories_for_store(
+                    self.db, ad_account, strategy.name),
                 "daily_budget": str(strategy.daily_budget_cents),
             }
             try:
@@ -1040,7 +1077,7 @@ Only return the JSON array, no markdown."""
             "name": f"[PIXEL-WARMUP] Traffic - {tracker.pixel_id[:8]}",
             "objective": "OUTCOME_TRAFFIC",
             "status": "ACTIVE",
-            "special_ad_categories": "[]",
+            "special_ad_categories": resolve_special_ad_categories_for_store(self.db, ad_account),
             "daily_budget": "1000",
         }
 
@@ -1159,7 +1196,7 @@ Only return the JSON array, no markdown."""
             "name": f"[AUTO-SWITCH] Lead Gen - {tracker.pixel_id[:8]}",
             "objective": "OUTCOME_LEADS",
             "status": go_live,
-            "special_ad_categories": "[]",
+            "special_ad_categories": resolve_special_ad_categories_for_store(self.db, ad_account),
             "daily_budget": "1000",
         }
 
