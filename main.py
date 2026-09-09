@@ -28,7 +28,7 @@ from modules.reviews.models import *  # Review models (depends on User, Store)
 # from modules.returns.models import *  # Return models (depends on User, Store)
 from modules.business.models import *  # Business models (Facebook, Instagram)
 from modules.openrouter.models import *  # AI usage tracking models
-from modules.micro_strategy.models import *  # Micro-strategy models (depends on Store, MetaAdAccount)
+# from modules.micro_strategy.models import *  # REMOVED - Replaced by OpenClaw
 from modules.jobs.models import *  # BackgroundJob (durable job queue)
 
 from modules.customers.router import customer_router
@@ -46,16 +46,16 @@ from modules.content.content.router import content_router
 from modules.social.router import social_router
 from modules.business.router import business_router   
 from modules.payment.router import payment_router 
-from modules.marketing.router import marketing_router
+# from modules.marketing.router import marketing_router  # REMOVED - Replaced by OpenClaw
 from modules.whatsapp.router import whatsapp_router
 from modules.whatsapp.faq_router import faq_router
 from modules.whatsapp.embedded_signup_router import embedded_signup_router
 from modules.whatsapp.flow_endpoint import flow_router
-from modules.agents.router import agents_router
+# from modules.agents.router import agents_router  # REMOVED - Replaced by OpenClaw
 from modules.agency.router import agency_router
 from modules.campaigns.router import campaign_router
 from modules.assets.router import asset_router
-from modules.ad_generator.router import ad_generator_router
+# from modules.ad_generator.router import ad_generator_router  # REMOVED - Replaced by OpenClaw
 from modules.notifications.router import notification_router
 from modules.referral.router import referral_router
 from modules.feedback.router import feedback_router
@@ -70,7 +70,8 @@ from modules.reviews.router import review_router
 # from modules.coupons.router import coupon_router
 # from modules.returns.router import return_router
 from modules.openrouter.router import ai_usage_router
-from modules.micro_strategy.router import micro_strategy_router
+# from modules.micro_strategy.router import micro_strategy_router  # REMOVED - Replaced by OpenClaw
+from modules.openclaw.router import openclaw_router
 from fastapi.middleware.cors import CORSMiddleware
 
 # Initialize the database
@@ -143,16 +144,16 @@ app.include_router(content_router, prefix="/v1")
 app.include_router(social_router, prefix="/v1")
 app.include_router(business_router, prefix="/v1")
 app.include_router(payment_router, prefix="/v1")
-app.include_router(marketing_router, prefix="/v1")
+# app.include_router(marketing_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(whatsapp_router, prefix="/v1")
 app.include_router(faq_router, prefix="/v1")
 app.include_router(embedded_signup_router, prefix="/v1/api")
 app.include_router(flow_router, prefix="/v1")
-app.include_router(agents_router, prefix="/v1")
+# app.include_router(agents_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(agency_router, prefix="/v1")
 app.include_router(campaign_router, prefix="/v1")
 app.include_router(asset_router, prefix="/v1")
-app.include_router(ad_generator_router, prefix="/v1")
+# app.include_router(ad_generator_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(notification_router, prefix="/v1")
 app.include_router(referral_router, prefix="/v1")
 app.include_router(feedback_router, prefix="/v1/api")
@@ -167,7 +168,8 @@ app.include_router(review_router, prefix="/v1")
 # app.include_router(coupon_router, prefix="/v1")
 # app.include_router(return_router, prefix="/v1")
 app.include_router(ai_usage_router, prefix="/v1")
-app.include_router(micro_strategy_router, prefix="/v1")
+# app.include_router(micro_strategy_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
+app.include_router(openclaw_router, prefix="/v1")  # OpenClaw - AI ad management via Zernio
 
 # Mount static files for local asset uploads
 uploads_dir = Path("uploads/assets")
@@ -185,16 +187,6 @@ async def startup_event():
     """Start background services on app boot."""
     import os
 
-    # Restore automation rules from the DB so they (and their cooldown/trigger
-    # state) survive restarts. Done unconditionally — rules are usable via the
-    # API even when the autonomous scheduler below is disabled.
-    try:
-        from modules.agents.monitor_optimizer_agent import automated_rules_engine
-        n = automated_rules_engine.load_persisted_rules()
-        logger.info(f"[Startup] Restored {n} persisted automation rules")
-    except Exception as e:
-        logger.error(f"[Startup] Failed to restore persisted rules: {e}")
-
     # Start the durable background-job worker (embedding sync, etc. off the
     # request path). On by default; disable with ENABLE_JOB_WORKER=false.
     if os.getenv("ENABLE_JOB_WORKER", "true").strip().lower() in ("1", "true", "yes"):
@@ -205,50 +197,14 @@ async def startup_event():
         except Exception as e:
             logger.error(f"[Startup] Failed to start job worker: {e}")
 
-    # The 24/7 ads automation scheduler is OPT-IN. Off by default so the app does
-    # not autonomously change/pause ads or spend on Meta without an operator enabling
-    # it (Meta flags unattended, high-volume automated activity across many accounts).
-    if os.getenv("ENABLE_ADS_SCHEDULER", "false").strip().lower() not in ("1", "true", "yes"):
-        logger.info("[Startup] Ads scheduler disabled (set ENABLE_ADS_SCHEDULER=true to enable)")
-        return
-
-    from modules.agents.scheduler import start_rules_scheduler, rules_scheduler
-    from database import SessionLocal
-    from modules.marketing.models import MetaAdAccount
-
-    # Auto-register all connected ad accounts with the scheduler
-    db = SessionLocal()
-    try:
-        # Per-store scoping: only automate accounts that belong to a client
-        # (shopivell_user_id set). Unowned/legacy accounts (e.g. the old shared
-        # account) are never registered, so automation only ever touches an
-        # account owned by the client it belongs to.
-        connected_accounts = db.query(MetaAdAccount).filter(
-            MetaAdAccount.is_connected == True,
-            MetaAdAccount.is_active == True,
-            MetaAdAccount.shopivell_user_id.isnot(None)
-        ).all()
-
-        for account in connected_accounts:
-            rules_scheduler.add_ad_account(account.ad_account_id)
-
-        if connected_accounts:
-            start_rules_scheduler(interval_minutes=15)
-            logger.info(f"[Startup] Scheduler started with {len(connected_accounts)} ad accounts")
-        else:
-            logger.info("[Startup] No connected ad accounts — scheduler not started")
-    except Exception as e:
-        logger.warning(f"[Startup] Could not auto-start scheduler: {e}")
-    finally:
-        db.close()
+    # NOTE: 24/7 ads automation is now handled by OpenClaw optimizer plugin
+    # via Zernio API. The legacy agents scheduler has been removed.
+    logger.info("[Startup] Ads automation handled by OpenClaw optimizer plugin")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Gracefully stop background services."""
-    from modules.agents.scheduler import stop_rules_scheduler
-    stop_rules_scheduler()
-    logger.info("[Shutdown] Scheduler stopped")
     try:
         from modules.jobs.queue import stop_worker
         stop_worker()
