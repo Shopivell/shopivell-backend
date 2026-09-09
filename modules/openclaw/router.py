@@ -360,6 +360,10 @@ async def update_ad_settings(
 
 # ============ Zernio Connection ============
 
+class FacebookPagesRequest(BaseModel):
+    temp_token: str
+
+
 class ZernioFinalizeRequest(BaseModel):
     profile_id: str
     connect_token: str
@@ -369,6 +373,27 @@ class ZernioFinalizeRequest(BaseModel):
     page_id: Optional[str] = None       # selected Facebook page id
     phone_number_id: Optional[str] = None  # selected WhatsApp number id
     waba_id: Optional[str] = None       # selected WhatsApp Business Account id
+
+
+@router.post("/facebook-pages")
+async def facebook_pages(
+    payload: FacebookPagesRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """List the Facebook Pages available to a pending headless connection.
+
+    In headless mode Zernio returns only the user's basic profile (not their
+    pages) at the select_page step, so the frontend callback fetches the pages
+    here using the temp token, then posts the chosen page id to /zernio-finalize.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            "https://graph.facebook.com/v20.0/me/accounts",
+            params={"access_token": payload.temp_token, "fields": "id,name,category"},
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=r.status_code, detail=f"Facebook pages error: {r.text[:200]}")
+    return {"pages": r.json().get("data", [])}
 
 
 @router.post("/stores/{store_id}/connect-zernio")
