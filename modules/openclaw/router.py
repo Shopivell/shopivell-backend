@@ -21,30 +21,211 @@ from modules.users.models import User
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/openclaw", tags=["OpenClaw"])
 
-# OpenClaw Gateway URL
-OPENCLAW_GATEWAY = os.getenv("OPENCLAW_GATEWAY_URL", "http://openclaw:18789")
-OPENCLAW_API_KEY = os.getenv("OPENCLAW_API_KEY", "")
+# ---------------------------------------------------------------------------
+# Zernio REST integration
+#
+# The original migration targeted an OpenClaw "gateway" REST API
+# (http://openclaw:18789/api/skills/<skill>/<action>). The deployed OpenClaw
+# image does not expose that API — it serves the OpenClaw Control UI. Meta Ads
+# and Click-to-WhatsApp are provided directly by Zernio's REST API, so we call
+# Zernio directly. `call_openclaw` is kept as a compatibility shim that routes
+# each skill action to the service that actually provides it:
+#   * skills/zernio-ads/* -> Zernio REST API (ads, CTWA, insights)
+#   * skills/ad-creator/*  -> OpenAI (ad copy + image generation)
+#   * plugins/optimizer/*, agents/* -> not deployed -> 501
+# ---------------------------------------------------------------------------
+ZERNIO_API_BASE = os.getenv("ZERNIO_API_BASE", "https://zernio.com/api/v1")
+ZERNIO_API_KEY = os.getenv("ZERNIO_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+
+def _first(d, *keys, default=None):
+    """Return the first present, non-None key from a dict (defensive parsing)."""
+    if isinstance(d, dict):
+        for k in keys:
+            if d.get(k) is not None:
+                return d[k]
+    return default
+
+
+def _safe_json(text: str) -> dict:
+    import json as _json
+    import re as _re
+    try:
+        return _json.loads(text)
+    except Exception:
+        m = _re.search(r"\{.*\}", text or "", _re.S)
+        if m:
+            try:
+                return _json.loads(m.group(0))
+            except Exception:
+                pass
+    return {}
+
+
+async def _zernio(method: str, path: str, json_body: dict = None, params: dict = None) -> dict:
+    """Low-level Zernio REST call (Bearer API-key auth)."""
+    if not ZERNIO_API_KEY:
+        raise HTTPException(status_code=503, detail="ZERNIO_API_KEY is not configured on the backend.")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        headers = {"Authorization": f"Bearer {ZERNIO_API_KEY}", "Content-Type": "application/json"}
+        resp = await client.request(method, f"{ZERNIO_API_BASE}{path}", headers=headers, json=json_body, params=params)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=f"Zernio API error ({resp.status_code}): {resp.text[:500]}")
+        try:
+            return resp.json()
+        except Exception:
+            return {"raw": resp.text}
+
+
+async def _openai(path: str, payload: dict, timeout: float = 60.0) -> dict:
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured for ad creative generation.")
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            f"https://api.openai.com/v1{path}",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=f"OpenAI error ({resp.status_code}): {resp.text[:300]}")
+        return resp.json()
+
+
+def _ctwa_payload(d: dict) -> dict:
+    return {
+        "adAccountId": _first(d, "ad_account_id", "adAccountId"),
+        "name": _first(d, "name", default=f"CTWA - {d.get('product_name', 'Campaign')}"),
+        "headline": _first(d, "headline", default=""),
+        "body": _first(d, "body", "primary_text", default=""),
+        "imageUrl": _first(d, "image_url", "imageUrl", default=""),
+        "budgetAmount": _first(d, "budget", "budgetAmount", default=20),
+        "budgetType": _first(d, "budget_type", "budgetType", default="daily"),
+        "currency": _first(d, "currency", default="USD"),
+        "destination": "whatsapp",
+        "countries": _first(d, "countries", default=["US"]),
+    }
+
+
+def _campaign_payload(d: dict) -> dict:
+    return {
+        "adAccountId": _first(d, "ad_account_id", "adAccountId"),
+        "name": _first(d, "name", "product_name", default="Campaign"),
+        "objective": _first(d, "objective", "campaign_goal", default="OUTCOME_SALES"),
+        "headline": _first(d, "headline", default=""),
+        "body": _first(d, "body", "primary_text", default=""),
+        "imageUrl": _first(d, "image_url", "imageUrl", default=""),
+        "budgetAmount": _first(d, "budget", "budgetAmount", default=20),
+        "budgetType": _first(d, "budget_type", "budgetType", default="daily"),
+        "currency": _first(d, "currency", default="USD"),
+        "countries": _first(d, "countries", default=["US"]),
+    }
+
+
+async def _dispatch_zernio(action: str, d: dict) -> dict:
+    d = d or {}
+    if action == "list_connected_accounts":
+        res = await _zernio("GET", "/ads/accounts")
+        return {"accounts": _first(res, "accounts", "data", default=res if isinstance(res, list) else [])}
+    if action == "create_store_profile":
+        # Ads are scoped under a Zernio profile. Create one for the store; fall
+        # back to the store id as an external reference if profile creation is
+        # unavailable.
+        try:
+            res = await _zernio("POST", "/profiles", json_body={"name": d.get("store_name") or "Store"})
+            return {"profile_id": _first(res, "id", "profileId", "profile_id", default=d.get("store_id"))}
+        except HTTPException:
+            return {"profile_id": d.get("store_id")}
+    if action == "get_oauth_url":
+        from urllib.parse import urlencode
+        params = {"profileId": d.get("profile_id")}
+        if d.get("redirect_url"):
+            params["redirectUrl"] = d["redirect_url"]
+        return {"auth_url": f"{ZERNIO_API_BASE}/connect/facebook/ads?{urlencode(params)}"}
+    if action == "list_campaigns":
+        acct = _first(d, "ad_account_id", "profile_id")
+        res = await _zernio("GET", "/ads/tree", params={"adAccountId": acct})
+        return {"campaigns": _first(res, "campaigns", "data", "tree", default=[])}
+    if action in ("get_insights", "get_ctwa_insights"):
+        params = {k: v for k, v in {
+            "adId": d.get("ad_id"), "campaignId": d.get("campaign_id"),
+            "datePreset": d.get("date_preset"),
+        }.items() if v}
+        return await _zernio("GET", "/ads/tree", params=params)
+    if action == "get_all_store_insights":
+        acct = _first(d, "ad_account_id", "profile_id")
+        return await _zernio("GET", "/ads/tree", params={"adAccountId": acct, "datePreset": d.get("date_preset", "last_7d")})
+    if action == "get_conversion_stats":
+        acct = _first(d, "ad_account_id", "profile_id")
+        return await _zernio("GET", "/ads/tree", params={"adAccountId": acct, "fields": "conversions,leads"})
+    if action == "create_campaign":
+        return await _zernio("POST", "/ads/create", json_body=_campaign_payload(d))
+    if action == "create_ctwa_campaign":
+        return await _zernio("POST", "/ads/messaging", json_body=_ctwa_payload(d))
+    if action == "pause_ad":
+        aid = _first(d, "ad_id", "campaign_id")
+        return await _zernio("PATCH", f"/ads/{aid}", json_body={"status": "PAUSED"})
+    if action == "update_campaign":
+        cid = d.get("campaign_id")
+        return await _zernio("PATCH", f"/ads/{cid}", json_body=_first(d, "updates", default={k: v for k, v in d.items() if k != "campaign_id"}))
+    if action == "scale_budget":
+        cid = d.get("campaign_id")
+        return await _zernio("PATCH", f"/ads/{cid}", json_body={"budgetAmount": _first(d, "new_budget", "budget")})
+    raise HTTPException(status_code=501, detail=f"Zernio action '{action}' is not implemented.")
+
+
+async def _dispatch_ad_creator(action: str, d: dict) -> dict:
+    d = d or {}
+    if action in ("generate_ad_copy", "generate_whatsapp_copy"):
+        name = d.get("product_name", "the product")
+        desc = d.get("product_description", "")
+        channel = ("for a Click-to-WhatsApp ad that gets the user to message the business on WhatsApp"
+                   if action == "generate_whatsapp_copy" else "for a Meta conversion ad")
+        prompt = (f"Write ad copy {channel}. Product: {name}. Details: {desc}. "
+                  f'Return strict JSON with keys "headline" (max 40 chars) and "body" (max 125 chars).')
+        res = await _openai("/chat/completions", {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are an expert Meta Ads copywriter. Reply with JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.7,
+        })
+        parsed = _safe_json(res["choices"][0]["message"]["content"])
+        body = parsed.get("body", "")
+        return {"headline": parsed.get("headline", ""), "body": body, "primary_text": body}
+    if action == "generate_image":
+        prompt = d.get("prompt") or (
+            f"Professional, high-converting product marketing image for "
+            f"{d.get('product_name', 'a product')}. {d.get('product_description', '')}")
+        res = await _openai("/images/generations", {
+            "model": "gpt-image-1", "prompt": prompt, "size": "1024x1024", "n": 1,
+        }, timeout=120.0)
+        item = (res.get("data") or [{}])[0]
+        url = item.get("url") or (f"data:image/png;base64,{item['b64_json']}" if item.get("b64_json") else "")
+        return {"image_url": url, "url": url}
+    if action == "generate_full_campaign":
+        copy = await _dispatch_ad_creator("generate_ad_copy", d)
+        image = await _dispatch_ad_creator("generate_image", d)
+        return {"copy": copy, "image": image}
+    raise HTTPException(status_code=501, detail=f"ad-creator action '{action}' is not implemented.")
 
 
 async def call_openclaw(method: str, endpoint: str, data: dict = None) -> dict:
-    """Call OpenClaw gateway API"""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        headers = {"Authorization": f"Bearer {OPENCLAW_API_KEY}"}
-        url = f"{OPENCLAW_GATEWAY}{endpoint}"
+    """Compatibility shim routing OpenClaw skill actions to real services.
 
-        if method == "GET":
-            response = await client.get(url, headers=headers, params=data)
-        elif method == "POST":
-            response = await client.post(url, headers=headers, json=data)
-        elif method == "PATCH":
-            response = await client.patch(url, headers=headers, json=data)
-        else:
-            raise ValueError(f"Unsupported method: {method}")
-
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-
-        return response.json()
+    The OpenClaw gateway REST API the migration targeted does not exist on the
+    deployed platform, so route each action to the service that provides it.
+    """
+    data = data or {}
+    if "/skills/zernio-ads/" in endpoint:
+        return await _dispatch_zernio(endpoint.rsplit("/", 1)[-1], data)
+    if "/skills/ad-creator/" in endpoint:
+        return await _dispatch_ad_creator(endpoint.rsplit("/", 1)[-1], data)
+    raise HTTPException(
+        status_code=501,
+        detail="This OpenClaw feature (autonomous agents / optimizer plugin) is not available in the current deployment.",
+    )
 
 
 # ============ Request/Response Models ============
