@@ -142,9 +142,11 @@ async def _dispatch_zernio(action: str, d: dict) -> dict:
     if action == "get_oauth_url":
         # Ask Zernio for the real provider OAuth URL. /connect/facebook/ads covers
         # Meta ads + page messaging; /connect/whatsapp connects a WhatsApp Business
-        # account for conversational messaging.
+        # account for conversational messaging. headless=true keeps the whole
+        # experience white-labelled: after approval Zernio returns the user to our
+        # redirect_url (app.shopivell.com) instead of showing Zernio's own UI.
         connect_path = "/connect/whatsapp" if d.get("connect_type") == "whatsapp" else "/connect/facebook/ads"
-        params = {"profileId": d.get("profile_id")}
+        params = {"profileId": d.get("profile_id"), "headless": "true"}
         if d.get("redirect_url"):
             params["redirect_url"] = d["redirect_url"]
         res = await _zernio("GET", connect_path, params=params)
@@ -338,60 +340,115 @@ async def update_ad_settings(
 
 # ============ Zernio Connection ============
 
+class ZernioFinalizeRequest(BaseModel):
+    profile_id: str
+    connect_token: str
+    temp_token: Optional[str] = None
+    user_profile: Optional[Any] = None
+    platform: str = "facebook"          # "facebook" (ads) or "whatsapp"
+    page_id: Optional[str] = None       # selected Facebook page id
+    phone_number_id: Optional[str] = None  # selected WhatsApp number id
+    waba_id: Optional[str] = None       # selected WhatsApp Business Account id
+
+
 @router.post("/stores/{store_id}/connect-zernio")
 async def connect_zernio(
     store_id: str,
     redirect_url: str,
+    connect_type: str = "ads",   # "ads" (Meta ads + CTWA) or "whatsapp"
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Start Zernio OAuth flow to connect Meta ad account"""
+    """Start the headless white-label Zernio OAuth flow.
+
+    Returns an auth_url the frontend redirects the user to. After the user
+    approves on Facebook/WhatsApp, Zernio (headless mode) redirects them back to
+    `redirect_url` (app.shopivell.com/...) with connect params, which the frontend
+    then posts to /zernio-finalize.
+    """
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
 
-    # Create or get Zernio profile for this store
-    result = await call_openclaw("POST", "/api/skills/zernio-ads/create_store_profile", {
-        "store_id": store_id,
-        "store_name": store.store_name
-    })
+    # Reuse the store's Zernio profile if it already has one, else create one.
+    profile_id = store.zernio_profile_id
+    if not profile_id:
+        result = await call_openclaw("POST", "/api/skills/zernio-ads/create_store_profile", {
+            "store_id": store_id,
+            "store_name": store.store_name,
+        })
+        profile_id = result.get("profile_id")
+        # Persist the profile now so the finalize step (and future connects) reuse it.
+        store.zernio_profile_id = profile_id
+        db.commit()
 
-    profile_id = result.get("profile_id")
-
-    # Get OAuth URL
     oauth_result = await call_openclaw("POST", "/api/skills/zernio-ads/get_oauth_url", {
         "profile_id": profile_id,
-        "redirect_url": redirect_url
+        "redirect_url": redirect_url,
+        "connect_type": connect_type,
     })
 
-    return {
-        "auth_url": oauth_result.get("auth_url"),
-        "profile_id": profile_id
-    }
+    return {"auth_url": oauth_result.get("auth_url"), "profile_id": profile_id}
 
 
-@router.post("/stores/{store_id}/zernio-callback")
-async def zernio_callback(
+@router.post("/stores/{store_id}/zernio-finalize")
+async def zernio_finalize(
     store_id: str,
-    code: str,
+    payload: ZernioFinalizeRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Complete Zernio OAuth flow"""
+    """Finalize a headless Zernio connection.
+
+    The frontend callback page collects the params Zernio appended to the
+    redirect_url (connect_token, tempToken, userProfile) plus the page/number the
+    user picked, and posts them here. We complete the connection with Zernio and
+    mark the store connected.
+    """
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
 
-    # Exchange code for access (handled by Zernio)
-    # The profile_id should have been stored during connect_zernio
-    # For now, we'll update the store with the profile_id
+    if payload.platform == "whatsapp":
+        path = "/connect/whatsapp/select-number"
+        body = {
+            "profileId": payload.profile_id,
+            "tempToken": payload.temp_token,
+            "userProfile": payload.user_profile,
+            "phoneNumberId": payload.phone_number_id,
+            "wabaId": payload.waba_id,
+        }
+    else:
+        path = "/connect/facebook/select-page"
+        body = {
+            "profileId": payload.profile_id,
+            "tempToken": payload.temp_token,
+            "userProfile": payload.user_profile,
+            "pageId": payload.page_id,
+        }
+    body = {k: v for k, v in body.items() if v is not None}
 
-    # In production, verify the code with Zernio API
-    store.zernio_profile_id = store_id  # Placeholder
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            f"{ZERNIO_API_BASE}{path}",
+            headers={
+                "Authorization": f"Bearer {ZERNIO_API_KEY}",
+                "X-Connect-Token": payload.connect_token,
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=f"Zernio finalize error ({resp.status_code}): {resp.text[:400]}")
+        try:
+            result = resp.json()
+        except Exception:
+            result = {"raw": resp.text}
+
+    store.zernio_profile_id = payload.profile_id
     store.ads_enabled = True
     db.commit()
-
-    return {"success": True, "profile_id": store.zernio_profile_id}
+    return {"success": True, "profile_id": payload.profile_id, "platform": payload.platform, "result": result}
 
 
 @router.get("/stores/{store_id}/connected-accounts")
