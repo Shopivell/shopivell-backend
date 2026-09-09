@@ -1,5 +1,34 @@
 # Shopivell AI Ad Engine - Component Reference
 
+> **DEPRECATED (September 2026)**: This document describes the legacy Python agents system.
+> All components below have been replaced by **OpenClaw + Zernio**.
+
+---
+
+## Current Implementation (OpenClaw)
+
+| Legacy Component | Replaced By | Location |
+|------------------|-------------|----------|
+| Website Scraper | `ad-creator.analyze_product()` | `modules/openclaw/skills/ad-creator/` |
+| Market Research Agent | `ad-creator.research_market()` | `modules/openclaw/skills/ad-creator/` |
+| Creative Strategist Agent | `ad-creator.generate_angles()` | `modules/openclaw/skills/ad-creator/` |
+| Ad Copy Agent | `ad-creator.generate_ad_copy()` | `modules/openclaw/skills/ad-creator/` |
+| Media Generator Agent | `ad-creator.generate_image()` (GPT-Image-2.5) | `modules/openclaw/skills/ad-creator/` |
+| Meta Marketing API | `zernio-ads` skill | `modules/openclaw/skills/zernio-ads/` |
+| Monitor Optimizer Agent | `optimizer` plugin | `modules/openclaw/plugins/optimizer/` |
+| Tiered Scheduler | `optimizer` plugin (built-in) | `modules/openclaw/plugins/optimizer/` |
+
+**API Router:** `modules/openclaw/router.py`
+
+**Skill Documentation:**
+- `modules/openclaw/skills/ad-creator/SKILL.md`
+- `modules/openclaw/skills/zernio-ads/SKILL.md`
+- `modules/openclaw/plugins/optimizer/PLUGIN.md`
+
+---
+
+## Legacy Documentation (Archived)
+
 **Last Updated:** March 2026
 
 ---

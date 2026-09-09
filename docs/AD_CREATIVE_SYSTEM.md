@@ -1,5 +1,37 @@
 # Ad Creative System - Technical Reference
 
+> **DEPRECATED (September 2026)**: This document describes the legacy Python agents system.
+> The ad creative system has been replaced by **OpenClaw + Zernio**.
+> See: `modules/openclaw/skills/ad-creator/SKILL.md` for the new implementation.
+
+---
+
+## New Architecture (OpenClaw)
+
+```
+OpenClaw (AI Agent Platform)
+├── skills/
+│   ├── ad-creator/     → AI ad generation (GPT-Image-2.5)
+│   │   ├── research_market()
+│   │   ├── generate_angles()
+│   │   ├── generate_ad_copy()
+│   │   ├── generate_image()
+│   │   └── generate_full_campaign()
+│   └── zernio-ads/     → Meta Ads via Zernio API (no App Review needed)
+└── plugins/
+    └── optimizer/      → 24/7 autonomous monitoring
+```
+
+**Key Changes:**
+- Image generation: Gemini → **OpenAI GPT-Image-2.5**
+- Meta API access: Direct → **Zernio** (Meta Marketing Partner)
+- Agent platform: Python agents → **OpenClaw** (TypeScript)
+- API endpoints: `/api/agents/*` → `/api/openclaw/*`
+
+---
+
+## Legacy Documentation (Archived)
+
 ## Overview
 
 The ad creative system generates brand-matched ad images autonomously from a website URL. It scrapes the website, extracts visual branding (logo, colors, uniforms, vehicles, products), generates ad copy and image prompts, and produces actual images using Gemini AI with reference images from the website.

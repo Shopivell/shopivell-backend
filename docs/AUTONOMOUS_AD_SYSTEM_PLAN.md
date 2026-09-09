@@ -1,5 +1,61 @@
 # Shopivell AI Ad Engine - System Architecture
 
+> **DEPRECATED (September 2026)**: This document describes the legacy Python agents system.
+> The system has been replaced by **OpenClaw + Zernio**.
+> See: `modules/openclaw/` for the new implementation.
+
+---
+
+## New Architecture (OpenClaw + Zernio)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Shopivell Frontend                    │
+│                  (openclawService.ts)                    │
+└─────────────────────┬───────────────────────────────────┘
+                      │ /api/openclaw/*
+┌─────────────────────▼───────────────────────────────────┐
+│                 Shopivell Backend                        │
+│              (modules/openclaw/router.py)                │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────┐
+│                     OpenClaw                             │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ Skills                                           │    │
+│  │  • ad-creator    → AI campaign generation        │    │
+│  │  • zernio-ads    → Meta Ads via Zernio API       │    │
+│  └─────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ Plugins                                          │    │
+│  │  • optimizer     → 24/7 autonomous monitoring    │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────┐
+│                   Zernio API                             │
+│         (Meta Marketing Partner - No App Review)         │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────┐
+│                   Meta Ads API                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why the change:**
+1. Meta App Review rejected `ads_management` permission
+2. Zernio provides Meta API access without App Review
+3. OpenClaw unifies fragmented Python agents into one platform
+
+**New API Endpoints:**
+- `POST /api/openclaw/stores/{id}/generate-campaign`
+- `POST /api/openclaw/stores/{id}/launch-campaign`
+- `GET /api/openclaw/stores/{id}/optimizer/status`
+
+---
+
+## Legacy Documentation (Archived)
+
 ## Overview
 
 Shopivell's AI Ad Engine is a fully autonomous advertising system. Given a website URL, it scrapes the site, understands the business, generates ad creatives with brand-matched visuals, publishes to Meta Ads, and optimizes 24/7 with automated rules, creative refresh, lead scoring, and audience refinement.

@@ -1,5 +1,11 @@
 # Data Collection Framework
 
+> **Note (September 2026)**: The ad system has migrated to OpenClaw + Zernio.
+> This data framework remains relevant - data is now collected via:
+> - **Zernio API** for Meta Ads performance data
+> - **OpenClaw optimizer plugin** for lead scoring and optimization signals
+> - **Offline Conversions API** via `zernio-ads.send_offline_conversion()`
+
 A comprehensive data collection framework covering what to collect, where to get it, and how to structure it for future modeling.
 
 ---
