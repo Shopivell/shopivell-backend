@@ -82,7 +82,13 @@ class Store(Base):
     # Default is review (False) — the safe default so nothing goes live unseen.
     ai_creative_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ai_creative_auto_publish: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    
+
+    # OpenClaw / Zernio ad management. Zernio profile the store's Meta ad account
+    # and WhatsApp Business account are connected under (via Zernio OAuth), and a
+    # flag for whether ads/CTWA management is enabled for this store.
+    zernio_profile_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ads_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     # Setup Progress - UPDATED DEFAULT
     current_step: Mapped[StoreSetupStep] = mapped_column(SQLEnum(StoreSetupStep), default=StoreSetupStep.CREATE_STORE)
     is_setup_completed: Mapped[bool] = mapped_column(Boolean, default=False)

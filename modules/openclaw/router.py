@@ -125,7 +125,10 @@ def _campaign_payload(d: dict) -> dict:
 async def _dispatch_zernio(action: str, d: dict) -> dict:
     d = d or {}
     if action == "list_connected_accounts":
-        res = await _zernio("GET", "/ads/accounts")
+        # /accounts lists the platform accounts connected under the API key/profile
+        # (Facebook, WhatsApp, etc.). /ads/accounts needs a specific accountId, so
+        # it can't be used to discover what's connected.
+        res = await _zernio("GET", "/accounts")
         return {"accounts": _first(res, "accounts", "data", default=res if isinstance(res, list) else [])}
     if action == "create_store_profile":
         # Ads are scoped under a Zernio profile. Create one for the store; fall
@@ -137,11 +140,15 @@ async def _dispatch_zernio(action: str, d: dict) -> dict:
         except HTTPException:
             return {"profile_id": d.get("store_id")}
     if action == "get_oauth_url":
-        from urllib.parse import urlencode
+        # Ask Zernio for the real provider OAuth URL. /connect/facebook/ads covers
+        # Meta ads + page messaging; /connect/whatsapp connects a WhatsApp Business
+        # account for conversational messaging.
+        connect_path = "/connect/whatsapp" if d.get("connect_type") == "whatsapp" else "/connect/facebook/ads"
         params = {"profileId": d.get("profile_id")}
         if d.get("redirect_url"):
-            params["redirectUrl"] = d["redirect_url"]
-        return {"auth_url": f"{ZERNIO_API_BASE}/connect/facebook/ads?{urlencode(params)}"}
+            params["redirect_url"] = d["redirect_url"]
+        res = await _zernio("GET", connect_path, params=params)
+        return {"auth_url": _first(res, "authUrl", "auth_url", "url", default=""), "raw": res}
     if action == "list_campaigns":
         acct = _first(d, "ad_account_id", "profile_id")
         res = await _zernio("GET", "/ads/tree", params={"adAccountId": acct})

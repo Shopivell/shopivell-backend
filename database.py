@@ -150,6 +150,30 @@ def run_column_migrations():
         except Exception as e:
             print(f"[WARN] Could not add screenshot_url column: {e}")
 
+        # Add Zernio ad-management columns to stores if missing (OpenClaw migration)
+        try:
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'stores' AND column_name = 'zernio_profile_id'
+                    ) THEN
+                        ALTER TABLE stores ADD COLUMN zernio_profile_id VARCHAR(255);
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'stores' AND column_name = 'ads_enabled'
+                    ) THEN
+                        ALTER TABLE stores ADD COLUMN ads_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+                    END IF;
+                END$$;
+            """))
+            conn.commit()
+            print("[OK] Verified zernio_profile_id and ads_enabled columns exist in stores table")
+        except Exception as e:
+            print(f"[WARN] Could not add Zernio store columns: {e}")
+
         # Add rating column to feedback table if missing
         try:
             conn.execute(text("""
