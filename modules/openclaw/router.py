@@ -135,11 +135,29 @@ async def _dispatch_zernio(action: str, d: dict) -> dict:
         # returns the profile as a Mongo document whose id is `_id` (a 24-char
         # ObjectId) — do NOT fall back to our own store UUID, which Zernio rejects
         # as "Invalid profileId format".
-        res = await _zernio("POST", "/profiles", json_body={"name": d.get("store_name") or "Store"})
-        prof = res.get("profile") if isinstance(res, dict) and isinstance(res.get("profile"), dict) else res
-        pid = _first(prof, "_id", "id", "profileId", "profile_id")
+        import re as _re
+        name = d.get("store_name") or "Store"
+        try:
+            res = await _zernio("POST", "/profiles", json_body={"name": name})
+            prof = res.get("profile") if isinstance(res, dict) and isinstance(res.get("profile"), dict) else res
+            pid = _first(prof, "_id", "id", "profileId", "profile_id")
+        except HTTPException as e:
+            # Zernio profile names are unique. If one already exists it returns 409
+            # with the existing profile id — reuse it rather than failing.
+            detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+            m = _re.search(r'"existingProfileId"\s*:\s*"([^"]+)"', detail)
+            if m:
+                pid = m.group(1)
+            elif e.status_code == 409 or "already exists" in detail:
+                # Fall back to looking the profile up by name.
+                listing = await _zernio("GET", "/profiles")
+                profs = listing.get("profiles", []) if isinstance(listing, dict) else (listing or [])
+                match = next((p for p in profs if p.get("name") == name), None)
+                pid = _first(match or {}, "_id", "id")
+            else:
+                raise
         if not pid:
-            raise HTTPException(status_code=502, detail=f"Zernio did not return a profile id: {str(res)[:200]}")
+            raise HTTPException(status_code=502, detail="Could not resolve a Zernio profile id.")
         return {"profile_id": pid}
     if action == "get_oauth_url":
         # Ask Zernio for the real provider OAuth URL. /connect/facebook/ads covers
