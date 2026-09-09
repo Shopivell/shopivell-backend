@@ -131,14 +131,16 @@ async def _dispatch_zernio(action: str, d: dict) -> dict:
         res = await _zernio("GET", "/accounts")
         return {"accounts": _first(res, "accounts", "data", default=res if isinstance(res, list) else [])}
     if action == "create_store_profile":
-        # Ads are scoped under a Zernio profile. Create one for the store; fall
-        # back to the store id as an external reference if profile creation is
-        # unavailable.
-        try:
-            res = await _zernio("POST", "/profiles", json_body={"name": d.get("store_name") or "Store"})
-            return {"profile_id": _first(res, "id", "profileId", "profile_id", default=d.get("store_id"))}
-        except HTTPException:
-            return {"profile_id": d.get("store_id")}
+        # Ads are scoped under a Zernio profile. Create one for the store. Zernio
+        # returns the profile as a Mongo document whose id is `_id` (a 24-char
+        # ObjectId) — do NOT fall back to our own store UUID, which Zernio rejects
+        # as "Invalid profileId format".
+        res = await _zernio("POST", "/profiles", json_body={"name": d.get("store_name") or "Store"})
+        prof = res.get("profile") if isinstance(res, dict) and isinstance(res.get("profile"), dict) else res
+        pid = _first(prof, "_id", "id", "profileId", "profile_id")
+        if not pid:
+            raise HTTPException(status_code=502, detail=f"Zernio did not return a profile id: {str(res)[:200]}")
+        return {"profile_id": pid}
     if action == "get_oauth_url":
         # Ask Zernio for the real provider OAuth URL. /connect/facebook/ads covers
         # Meta ads + page messaging; /connect/whatsapp connects a WhatsApp Business
@@ -370,9 +372,11 @@ async def connect_zernio(
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
 
-    # Reuse the store's Zernio profile if it already has one, else create one.
+    # Reuse the store's Zernio profile if it already has a valid one. A valid
+    # Zernio profile id is a 24-char hex ObjectId; a stored value containing "-"
+    # is a stale store-UUID from an earlier bug — discard and recreate.
     profile_id = store.zernio_profile_id
-    if not profile_id:
+    if not profile_id or "-" in str(profile_id):
         result = await call_openclaw("POST", "/api/skills/zernio-ads/create_store_profile", {
             "store_id": store_id,
             "store_name": store.store_name,
