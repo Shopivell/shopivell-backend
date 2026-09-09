@@ -20,9 +20,7 @@ from modules.content.content import models as content_models
 from modules.social import models as social_models
 from modules.business import models as business_models
 from modules.payment import models as payment_models
-from modules.marketing import models as marketing_models
 from modules.whatsapp import models as whatsapp_models
-from modules.agents import models as agents_models
 from modules.agency import models as agency_models
 
 from modules.payment.models import PackagePricing, SubscriptionPlan, PackageFeature

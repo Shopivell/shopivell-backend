@@ -183,6 +183,12 @@ async def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
     image URL. The owner sees the result and chooses whether to use it (the review
     step), so it publishes nothing on its own.
     """
+    # AI ad-image generation/editing was removed in the OpenClaw migration and now
+    # lives in OpenClaw. This endpoint is retired.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Ad image editing has moved to OpenClaw.",
+    )
     import httpx as _httpx
     import base64 as _b64
     from modules.agents.media_generator_agent import MediaGeneratorAgent
@@ -2110,12 +2116,11 @@ def collect_campaign_metrics(
     db: Session = Depends(get_db),
 ):
     """Pull latest performance metrics from Meta for all ad content variants."""
-    from .optimizer import CampaignOptimizer
-    optimizer = CampaignOptimizer(db)
-    result = optimizer.collect_metrics(campaign_id)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    # Meta ads optimization/metrics moved to the OpenClaw optimizer plugin.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Campaign metrics collection has moved to OpenClaw.",
+    )
 
 
 @campaign_router.post("/{campaign_id}/optimize")
@@ -2133,12 +2138,11 @@ def optimize_campaign(
     - Pauses variants with CTR < 50% of the best performer
     - Increases budget on winning ad sets by 30%
     """
-    from .optimizer import CampaignOptimizer
-    optimizer = CampaignOptimizer(db)
-    result = optimizer.optimize_campaign(campaign_id, min_impressions=min_impressions, dry_run=dry_run)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+    # Campaign optimization moved to the OpenClaw optimizer plugin.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Campaign optimization has moved to OpenClaw.",
+    )
 
 
 @campaign_router.post("/{campaign_id}/check-fatigue")
@@ -2157,17 +2161,9 @@ async def check_ad_fatigue(
 
     When auto_refresh=True, fatigued ads are paused and replaced with fresh copy/images.
     """
-    from .fatigue_detector import FatigueDetector
-    detector = FatigueDetector(db)
-    result = detector.check_fatigue(campaign_id)
-
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-
-    # Auto-refresh if requested and fatigue detected
-    if auto_refresh and result.get("fatigued_content_ids"):
-        fatigued_ids = [uuid.UUID(fid) for fid in result["fatigued_content_ids"]]
-        refresh_result = await detector.refresh_creatives(campaign_id, fatigued_ids)
-        result["refresh_result"] = refresh_result
-
-    return result
+    # Ad fatigue detection + creative refresh depend on the ad-generation modules
+    # removed in the OpenClaw migration; this is handled by OpenClaw now.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Ad fatigue detection and creative refresh have moved to OpenClaw.",
+    )

@@ -157,6 +157,13 @@ class FatigueDetector:
         - fatigue_score > 80: refresh both copy AND image
         - fatigue_score 60-80: refresh copy only (cheaper)
         """
+        # Creative regeneration (copywriter + media generator agents) was removed in
+        # the OpenClaw migration; ad creative refresh is handled by OpenClaw now.
+        return {
+            "error": "Creative refresh has moved to OpenClaw",
+            "refreshed": [],
+            "errors": [],
+        }
         from modules.agents.copywriter_agent import CopywriterAgent
         from modules.agents.media_generator_agent import MediaGeneratorAgent
 

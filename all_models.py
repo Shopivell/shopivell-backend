@@ -40,17 +40,8 @@ from modules.assets.models import *
 # Campaigns - depends on Store, Asset
 from modules.campaigns.models import *
 
-# Marketing - Meta ad accounts, campaigns, etc.
-try:
-    from modules.marketing.models import *
-except ImportError:
-    pass
-
-# Agents - AI campaign generation
-try:
-    from modules.agents.models import *
-except ImportError:
-    pass
+# Marketing (Meta ad accounts) and Agents (AI campaign generation) modules were
+# removed in the OpenClaw migration — ad management now lives in OpenClaw.
 
 # Customers
 try:
