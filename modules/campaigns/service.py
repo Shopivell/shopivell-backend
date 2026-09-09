@@ -20,13 +20,25 @@ import uuid
 import logging
 
 from .models import UrlCampaign, CampaignStatus, CampaignGoal, UrlAdSet, UrlAdContent
-from modules.ad_generator.service import AdGeneratorService
-from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
-from modules.agents.ad_creative_agent import AdCreativeAgent
-from modules.agents.media_generator_agent import MediaGeneratorAgent
-from modules.agents.copywriter_agent import CopywriterAgent
-from modules.agents.gemini_image_generator import GeminiImageGenerator
-from modules.agents.ad_image_composer import AdImageComposer
+
+# Ad-generation modules were removed in the OpenClaw migration (ad creation now
+# lives in OpenClaw). Guard the imports so this service still loads and the
+# URL-campaign scraping/analysis features keep working. When unavailable, the
+# AI ad-set creative/image generation path is skipped gracefully.
+try:
+    from modules.ad_generator.service import AdGeneratorService
+    from modules.ad_generator.schemas import GenerateAdRequest, AdStyle, AdFormat, AdPlatform
+    from modules.agents.ad_creative_agent import AdCreativeAgent
+    from modules.agents.media_generator_agent import MediaGeneratorAgent
+    from modules.agents.copywriter_agent import CopywriterAgent
+    from modules.agents.gemini_image_generator import GeminiImageGenerator
+    from modules.agents.ad_image_composer import AdImageComposer
+    AD_MODULES_AVAILABLE = True
+except ImportError:
+    AdGeneratorService = AdCreativeAgent = MediaGeneratorAgent = None
+    CopywriterAgent = GeminiImageGenerator = AdImageComposer = None
+    GenerateAdRequest = AdStyle = AdFormat = AdPlatform = None
+    AD_MODULES_AVAILABLE = False
 
 # Import Vision AI analysis for extracting uniforms, vehicles, brand colors from images
 try:
@@ -88,12 +100,23 @@ class CampaignService:
         self.openrouter = None
         self.openai = None
         self._init_ai_clients()
-        self.ad_generator = AdGeneratorService()
-        self.ad_creative_agent = AdCreativeAgent()
-        self.copywriter_agent = CopywriterAgent()
-        self.media_generator = MediaGeneratorAgent()  # Fallback image generator
-        self.gemini_generator = GeminiImageGenerator()  # Primary image generator with reference images
-        self.ad_image_composer = AdImageComposer()  # Adds text overlays to generated images
+        # Ad-generation agents live in OpenClaw now; instantiate only if the
+        # legacy modules are still present, otherwise leave them as None and
+        # skip the AI ad-set creative path in _create_ad_sets.
+        if AD_MODULES_AVAILABLE:
+            self.ad_generator = AdGeneratorService()
+            self.ad_creative_agent = AdCreativeAgent()
+            self.copywriter_agent = CopywriterAgent()
+            self.media_generator = MediaGeneratorAgent()  # Fallback image generator
+            self.gemini_generator = GeminiImageGenerator()  # Primary image generator with reference images
+            self.ad_image_composer = AdImageComposer()  # Adds text overlays to generated images
+        else:
+            self.ad_generator = None
+            self.ad_creative_agent = None
+            self.copywriter_agent = None
+            self.media_generator = None
+            self.gemini_generator = None
+            self.ad_image_composer = None
         self.brand_dna_extractor = BrandDNAExtractor() if BRAND_DNA_AVAILABLE else None
 
     def _init_ai_clients(self):
@@ -938,6 +961,18 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             num_copies: Number of copy variations per ad set (1-5). Default 1 for backward compat.
             num_images: Number of image variations per ad set (1-3). Default 1 for backward compat.
         """
+        # Ad-set creative/image generation depended on the ad-generation modules
+        # that were removed in the OpenClaw migration. When those are unavailable,
+        # skip generating ad sets — the campaign is still created and retains its
+        # scraped data and AI-generated headlines/descriptions. Ad creation is
+        # now handled by OpenClaw.
+        if not AD_MODULES_AVAILABLE:
+            logger.warning(
+                "[CampaignService] Skipping ad-set generation: ad-generation modules "
+                "were removed in the OpenClaw migration (ad creation now lives in OpenClaw)."
+            )
+            return
+
         # Clamp to safe ranges
         num_copies = max(1, min(num_copies, 5))
         num_images = max(1, min(num_images, 3))

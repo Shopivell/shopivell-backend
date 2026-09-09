@@ -1411,12 +1411,22 @@ def _delete_fb_user_data(db: Session, fb_user_id: str) -> None:
     """
     if not fb_user_id:
         return
+    # The Meta ads model (MetaAdAccount) was removed in the OpenClaw migration, but
+    # the meta_ad_accounts table may still hold rows. Purge them via raw SQL first
+    # (best-effort, own transaction) so a missing/empty table can't abort the rest,
+    # then delete the Facebook business accounts. This preserves Meta's data-deletion
+    # compliance for the deauthorize / data-deletion callbacks.
+    from sqlalchemy import text as _sql_text
     try:
-        from modules.marketing.models import MetaAdAccount
-        for acct in db.query(MetaAdAccount).filter(
-            MetaAdAccount.user_id == fb_user_id
-        ).all():
-            db.delete(acct)
+        db.execute(
+            _sql_text("DELETE FROM meta_ad_accounts WHERE user_id = :uid"),
+            {"uid": fb_user_id},
+        )
+        db.commit()
+    except Exception as meta_err:
+        db.rollback()
+        print(f"[WARN] meta_ad_accounts purge skipped for FB user {fb_user_id}: {meta_err}")
+    try:
         for biz in db.query(FacebookBusinessAccount).filter(
             FacebookBusinessAccount.user_id == fb_user_id
         ).all():
