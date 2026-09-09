@@ -13,9 +13,9 @@ import httpx
 import os
 import logging
 
-from app.database import get_db
+from database import get_db
 from modules.stores.models import Store
-from modules.users.auth_utils import get_current_user
+from utils.jwt_auth import get_current_user
 from modules.users.models import User
 
 logger = logging.getLogger(__name__)
