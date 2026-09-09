@@ -538,3 +538,397 @@ async def get_ctwa_insights(
         "date_preset": date_preset
     })
     return result
+
+
+# ============ Autonomous Multi-Agent System ============
+
+class AutonomousSessionRequest(BaseModel):
+    auto_generate_goals: bool = True
+    budget_limit: float = 500.0
+    evaluation_interval_minutes: int = 60
+    max_concurrent_tasks: int = 3
+    time_limit_hours: Optional[float] = None
+    pause_on_error: bool = True
+    initial_goals: Optional[List[Dict[str, Any]]] = None
+
+
+class GoalRequest(BaseModel):
+    type: str  # maximize_roas, minimize_cpa, etc.
+    description: str
+    target_metric: str
+    target_value: float
+    deadline: Optional[str] = None
+    priority: str = "high"  # critical, high, medium, low
+
+
+# In-memory session storage (use Redis/DB in production)
+_autonomous_sessions: Dict[str, dict] = {}
+
+
+@router.post("/stores/{store_id}/autonomous/start")
+async def start_autonomous_session(
+    store_id: str,
+    request: AutonomousSessionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Start an autonomous advertising session.
+
+    The system will:
+    1. Analyze current performance and generate goals (or use provided goals)
+    2. Create execution plans for each goal
+    3. Execute tasks (create campaigns, optimize, scale, etc.)
+    4. Continuously evaluate and adjust until goals are achieved
+    """
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    if not store.zernio_profile_id:
+        raise HTTPException(status_code=400, detail="Store must be connected to Zernio first")
+
+    # Get current performance
+    try:
+        insights = await call_openclaw("GET", "/api/skills/zernio-ads/get_all_store_insights", {
+            "profile_id": store.zernio_profile_id,
+            "date_preset": "last_7d"
+        })
+    except Exception:
+        insights = {"campaigns": []}
+
+    # Calculate performance snapshot
+    campaigns = insights.get("campaigns", [])
+    total_spend = sum(c.get("spend", 0) for c in campaigns)
+    total_revenue = sum(c.get("revenue", 0) for c in campaigns)
+
+    performance = {
+        "roas": total_revenue / total_spend if total_spend > 0 else 0,
+        "cpa": total_spend / max(sum(c.get("conversions", 0) for c in campaigns), 1),
+        "ctr": sum(c.get("ctr", 0) for c in campaigns) / max(len(campaigns), 1),
+        "conversion_rate": 0.03,  # Would calculate from actual data
+        "total_spend": total_spend,
+        "total_revenue": total_revenue,
+        "active_campaigns": len([c for c in campaigns if c.get("status") == "ACTIVE"]),
+        "date_range": "last_7d"
+    }
+
+    # Create session
+    session_id = f"session-{store_id}-{int(datetime.utcnow().timestamp())}"
+
+    session = {
+        "id": session_id,
+        "store_id": store_id,
+        "config": request.dict(),
+        "performance": performance,
+        "state": "initializing",
+        "goals": [],
+        "plans": [],
+        "completed_tasks": [],
+        "failed_tasks": [],
+        "total_spend": 0,
+        "started_at": datetime.utcnow().isoformat(),
+        "last_update": datetime.utcnow().isoformat()
+    }
+
+    _autonomous_sessions[session_id] = session
+
+    # Start autonomous loop in background
+    background_tasks.add_task(
+        run_autonomous_loop,
+        session_id,
+        store.zernio_profile_id,
+        performance,
+        request
+    )
+
+    return {
+        "session_id": session_id,
+        "state": "initializing",
+        "message": "Autonomous session started. Goals will be generated and executed."
+    }
+
+
+async def run_autonomous_loop(
+    session_id: str,
+    profile_id: str,
+    performance: dict,
+    config: AutonomousSessionRequest
+):
+    """Background task that runs the autonomous loop"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        return
+
+    try:
+        session["state"] = "running"
+
+        # Step 1: Generate or use provided goals
+        if config.initial_goals:
+            goals = config.initial_goals
+        else:
+            # Call Goal Agent via OpenClaw
+            goal_result = await call_openclaw("POST", "/api/agents/goal/generate", {
+                "store_id": session["store_id"],
+                "performance": performance,
+                "constraints": {
+                    "max_budget": config.budget_limit,
+                    "max_daily_spend": config.budget_limit / 30
+                }
+            })
+            goals = goal_result.get("goals", [])
+
+        session["goals"] = goals
+        session["last_update"] = datetime.utcnow().isoformat()
+
+        # Step 2: For each goal, create and execute plan
+        for goal in goals:
+            if session["state"] != "running":
+                break
+
+            # Create plan
+            plan_result = await call_openclaw("POST", "/api/agents/planner/create", {
+                "goal": goal,
+                "available_budget": config.budget_limit - session["total_spend"]
+            })
+            plan = plan_result.get("plan", {})
+            session["plans"].append(plan)
+
+            # Execute tasks
+            for task in plan.get("tasks", []):
+                if session["state"] != "running":
+                    break
+
+                try:
+                    task_result = await call_openclaw("POST", "/api/agents/executor/run", {
+                        "task": task
+                    })
+
+                    if task_result.get("success"):
+                        session["completed_tasks"].append({
+                            "task": task,
+                            "result": task_result.get("result"),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        if task_result.get("result", {}).get("spend"):
+                            session["total_spend"] += task_result["result"]["spend"]
+                    else:
+                        session["failed_tasks"].append({
+                            "task": task,
+                            "error": task_result.get("error"),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+
+                except Exception as e:
+                    session["failed_tasks"].append({
+                        "task": task,
+                        "error": str(e),
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+
+                    if config.pause_on_error:
+                        session["state"] = "paused"
+                        break
+
+                session["last_update"] = datetime.utcnow().isoformat()
+
+            # Check budget limit
+            if session["total_spend"] >= config.budget_limit:
+                session["state"] = "completed"
+                break
+
+        if session["state"] == "running":
+            session["state"] = "completed"
+
+    except Exception as e:
+        session["state"] = "failed"
+        session["error"] = str(e)
+
+    session["ended_at"] = datetime.utcnow().isoformat()
+
+
+@router.get("/stores/{store_id}/autonomous/sessions")
+async def list_autonomous_sessions(
+    store_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all autonomous sessions for a store"""
+    sessions = [
+        s for s in _autonomous_sessions.values()
+        if s.get("store_id") == store_id
+    ]
+    return {"sessions": sessions}
+
+
+@router.get("/autonomous/{session_id}/status")
+async def get_autonomous_session_status(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get status of an autonomous session"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return {
+        "id": session["id"],
+        "state": session["state"],
+        "goals": session.get("goals", []),
+        "completed_tasks": len(session.get("completed_tasks", [])),
+        "failed_tasks": len(session.get("failed_tasks", [])),
+        "total_spend": session.get("total_spend", 0),
+        "started_at": session.get("started_at"),
+        "last_update": session.get("last_update"),
+        "ended_at": session.get("ended_at")
+    }
+
+
+@router.post("/autonomous/{session_id}/pause")
+async def pause_autonomous_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Pause an autonomous session"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session["state"] == "running":
+        session["state"] = "paused"
+        return {"success": True, "state": "paused"}
+
+    return {"success": False, "message": f"Cannot pause session in state: {session['state']}"}
+
+
+@router.post("/autonomous/{session_id}/resume")
+async def resume_autonomous_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user)
+):
+    """Resume a paused autonomous session"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session["state"] == "paused":
+        session["state"] = "running"
+        # Would need to resume the loop from last checkpoint
+        return {"success": True, "state": "running"}
+
+    return {"success": False, "message": f"Cannot resume session in state: {session['state']}"}
+
+
+@router.post("/autonomous/{session_id}/stop")
+async def stop_autonomous_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Stop an autonomous session"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session["state"] = "completed"
+    session["ended_at"] = datetime.utcnow().isoformat()
+    return {"success": True, "state": "completed"}
+
+
+@router.post("/autonomous/{session_id}/add-goal")
+async def add_goal_to_session(
+    session_id: str,
+    goal: GoalRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Add a new goal to a running session"""
+    session = _autonomous_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session["state"] not in ["running", "paused"]:
+        raise HTTPException(status_code=400, detail="Cannot add goal to completed session")
+
+    new_goal = {
+        "id": f"goal-{int(datetime.utcnow().timestamp())}",
+        "type": goal.type,
+        "description": goal.description,
+        "target_metric": goal.target_metric,
+        "target_value": goal.target_value,
+        "deadline": goal.deadline,
+        "priority": goal.priority,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+    session["goals"].append(new_goal)
+    return {"success": True, "goal": new_goal}
+
+
+# ============ Reporting ============
+
+@router.get("/stores/{store_id}/report/weekly")
+async def get_weekly_report(
+    store_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get weekly performance report"""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or not store.zernio_profile_id:
+        raise HTTPException(status_code=400, detail="Store not connected")
+
+    insights = await call_openclaw("GET", "/api/skills/zernio-ads/get_all_store_insights", {
+        "profile_id": store.zernio_profile_id,
+        "date_preset": "last_7d"
+    })
+
+    campaigns = insights.get("campaigns", [])
+
+    return {
+        "period": "last_7d",
+        "summary": {
+            "total_spend": sum(c.get("spend", 0) for c in campaigns),
+            "total_impressions": sum(c.get("impressions", 0) for c in campaigns),
+            "total_clicks": sum(c.get("clicks", 0) for c in campaigns),
+            "total_conversions": sum(c.get("conversions", 0) for c in campaigns),
+            "average_ctr": sum(c.get("ctr", 0) for c in campaigns) / max(len(campaigns), 1),
+            "average_roas": sum(c.get("roas", 0) for c in campaigns) / max(len(campaigns), 1)
+        },
+        "campaigns": campaigns,
+        "generated_at": datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/stores/{store_id}/report/demographics")
+async def get_demographics_report(
+    store_id: str,
+    campaign_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get demographic breakdown of ad performance"""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or not store.zernio_profile_id:
+        raise HTTPException(status_code=400, detail="Store not connected")
+
+    # Get insights with demographic breakdowns
+    params = {
+        "date_preset": "last_30d",
+        "breakdowns": ["age", "gender"]
+    }
+
+    if campaign_id:
+        params["ad_id"] = campaign_id
+
+    insights = await call_openclaw("GET", "/api/skills/zernio-ads/get_insights", params)
+
+    return {
+        "demographics": insights,
+        "generated_at": datetime.utcnow().isoformat()
+    }
+
+
+# Export router
+openclaw_router = router
