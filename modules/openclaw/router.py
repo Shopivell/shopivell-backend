@@ -364,6 +364,11 @@ class FacebookPagesRequest(BaseModel):
     temp_token: str
 
 
+class WhatsappNumbersRequest(BaseModel):
+    profile_id: str
+    temp_token: str
+
+
 class ZernioFinalizeRequest(BaseModel):
     profile_id: str
     connect_token: str
@@ -394,6 +399,26 @@ async def facebook_pages(
         if r.status_code >= 400:
             raise HTTPException(status_code=r.status_code, detail=f"Facebook pages error: {r.text[:200]}")
     return {"pages": r.json().get("data", [])}
+
+
+@router.post("/whatsapp-numbers")
+async def whatsapp_numbers(
+    payload: WhatsappNumbersRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """List the WhatsApp phone numbers available to a pending headless connection.
+
+    Headless WhatsApp returns step=select_phone_number with profileId + tempToken;
+    the numbers are listed via GET /connect/whatsapp/select-phone-number, then the
+    chosen phoneNumberId + wabaId are posted to /zernio-finalize.
+    """
+    res = await _zernio(
+        "GET",
+        "/connect/whatsapp/select-phone-number",
+        params={"profileId": payload.profile_id, "tempToken": payload.temp_token},
+    )
+    numbers = _first(res, "numbers", "phoneNumbers", "data", default=res if isinstance(res, list) else [])
+    return {"numbers": numbers}
 
 
 @router.post("/stores/{store_id}/connect-zernio")
@@ -457,15 +482,18 @@ async def zernio_finalize(
         raise HTTPException(status_code=404, detail="Store not found")
 
     if payload.platform == "whatsapp":
-        path = "/connect/whatsapp/select-number"
+        # WhatsApp finalize: POST /connect/whatsapp/select-phone-number with the
+        # selected number + WABA and the temp token (no X-Connect-Token).
+        path = "/connect/whatsapp/select-phone-number"
         body = {
             "profileId": payload.profile_id,
-            "tempToken": payload.temp_token,
-            "userProfile": payload.user_profile,
             "phoneNumberId": payload.phone_number_id,
             "wabaId": payload.waba_id,
+            "tempToken": payload.temp_token,
         }
+        headers = {"Authorization": f"Bearer {ZERNIO_API_KEY}", "Content-Type": "application/json"}
     else:
+        # Facebook finalize: POST /connect/facebook/select-page with X-Connect-Token.
         path = "/connect/facebook/select-page"
         body = {
             "profileId": payload.profile_id,
@@ -473,18 +501,15 @@ async def zernio_finalize(
             "userProfile": payload.user_profile,
             "pageId": payload.page_id,
         }
+        headers = {
+            "Authorization": f"Bearer {ZERNIO_API_KEY}",
+            "X-Connect-Token": payload.connect_token,
+            "Content-Type": "application/json",
+        }
     body = {k: v for k, v in body.items() if v is not None}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            f"{ZERNIO_API_BASE}{path}",
-            headers={
-                "Authorization": f"Bearer {ZERNIO_API_KEY}",
-                "X-Connect-Token": payload.connect_token,
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
+        resp = await client.post(f"{ZERNIO_API_BASE}{path}", headers=headers, json=body)
         if resp.status_code >= 400:
             raise HTTPException(status_code=resp.status_code, detail=f"Zernio finalize error ({resp.status_code}): {resp.text[:400]}")
         try:
