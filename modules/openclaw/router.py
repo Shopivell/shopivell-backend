@@ -512,8 +512,19 @@ async def get_connected_accounts(
     result = await call_openclaw("GET", "/api/skills/zernio-ads/list_connected_accounts", {
         "profile_id": store.zernio_profile_id
     })
+    all_accounts = result.get("accounts", [])
 
-    return {"accounts": result.get("accounts", [])}
+    # Zernio returns every account on the API key; scope to this store's profile.
+    pid = str(store.zernio_profile_id)
+
+    def _acc_profile(a):
+        p = a.get("profileId") or a.get("profile")
+        if isinstance(p, dict):
+            return str(p.get("_id") or p.get("id") or "")
+        return str(p or "")
+
+    scoped = [a for a in all_accounts if _acc_profile(a) == pid]
+    return {"accounts": scoped}
 
 
 # ============ Campaign Management ============
