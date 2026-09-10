@@ -92,8 +92,40 @@ async def _openai(path: str, payload: dict, timeout: float = 60.0) -> dict:
         return resp.json()
 
 
+_META_CTAS = {
+    "LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_TRAVEL", "CONTACT_US", "DOWNLOAD",
+    "GET_OFFER", "GET_QUOTE", "SUBSCRIBE", "WATCH_MORE", "ADD_TO_CART", "APPLY_NOW",
+    "BOOK_NOW", "BUY_NOW", "BUY_TICKETS", "DONATE", "DONATE_NOW", "GET_DIRECTIONS",
+    "GET_SHOWTIMES", "LISTEN_NOW", "ORDER_NOW", "PLAY_GAME", "REQUEST_TIME",
+    "SEE_MENU", "START_ORDER", "INSTALL_MOBILE_APP", "USE_APP",
+}
+
+
+def _cta(v, default="LEARN_MORE"):
+    v = (str(v or "")).strip().upper().replace(" ", "_")
+    return v if v in _META_CTAS else default
+
+
+def _goal(v, default="traffic"):
+    # Zernio Meta goals: engagement, traffic, awareness, video_views,
+    # lead_generation, lead_conversion, conversions, app_promotion,
+    # catalog_sales, page_likes.
+    m = {
+        "conversions": "conversions", "sales": "conversions", "outcome_sales": "conversions",
+        "traffic": "traffic", "outcome_traffic": "traffic", "link_clicks": "traffic",
+        "awareness": "awareness", "reach": "awareness", "outcome_awareness": "awareness",
+        "leads": "lead_generation", "lead_generation": "lead_generation", "outcome_leads": "lead_generation",
+        "engagement": "engagement", "outcome_engagement": "engagement",
+        "video_views": "video_views", "app_promotion": "app_promotion",
+        "catalog_sales": "catalog_sales", "page_likes": "page_likes",
+    }
+    return m.get((str(v or "")).strip().lower(), default)
+
+
 def _ctwa_payload(d: dict) -> dict:
+    # POST /ads/messaging (destination=whatsapp). Zernio locks CTA/destination.
     return {
+        "accountId": _first(d, "account_id", "accountId"),
         "adAccountId": _first(d, "ad_account_id", "adAccountId"),
         "name": _first(d, "name", default=f"CTWA - {d.get('product_name', 'Campaign')}"),
         "headline": _first(d, "headline", default=""),
@@ -108,13 +140,18 @@ def _ctwa_payload(d: dict) -> dict:
 
 
 def _campaign_payload(d: dict) -> dict:
+    # POST /ads/create. Requires accountId (Zernio account) + adAccountId (act_),
+    # goal (not objective), linkUrl, imageUrl and callToAction.
     return {
+        "accountId": _first(d, "account_id", "accountId"),
         "adAccountId": _first(d, "ad_account_id", "adAccountId"),
         "name": _first(d, "name", "product_name", default="Campaign"),
-        "objective": _first(d, "objective", "campaign_goal", default="OUTCOME_SALES"),
+        "goal": _goal(_first(d, "goal", "objective", "campaign_goal")),
         "headline": _first(d, "headline", default=""),
         "body": _first(d, "body", "primary_text", default=""),
+        "linkUrl": _first(d, "link_url", "linkUrl", "url", "destination_url", default=""),
         "imageUrl": _first(d, "image_url", "imageUrl", default=""),
+        "callToAction": _cta(_first(d, "call_to_action", "callToAction", "conversion_button")),
         "budgetAmount": _first(d, "budget", "budgetAmount", default=20),
         "budgetType": _first(d, "budget_type", "budgetType", default="daily"),
         "currency": _first(d, "currency", default="USD"),
@@ -712,24 +749,46 @@ async def launch_campaign(
     if not store or not store.zernio_profile_id:
         raise HTTPException(status_code=400, detail="Store not connected to Zernio")
 
-    # Get ad account
-    accounts = await call_openclaw("GET", "/api/skills/zernio-ads/list_connected_accounts", {
-        "profile_id": store.zernio_profile_id
-    })
+    pid = str(store.zernio_profile_id)
 
-    if not accounts.get("accounts"):
-        raise HTTPException(status_code=400, detail="No ad account connected")
+    def _acc_profile(a):
+        p = a.get("profileId") or a.get("profile")
+        return str(p.get("_id") if isinstance(p, dict) else (p or ""))
 
-    ad_account_id = accounts["accounts"][0]["ad_account_id"]
+    # Find this store's connected Meta account (Zernio account id).
+    listing = await _zernio("GET", "/accounts")
+    accts = listing.get("accounts", []) if isinstance(listing, dict) else (listing or [])
+    meta_acc = next((a for a in accts if a.get("platform") in ("facebook", "metaads") and _acc_profile(a) == pid), None)
+    if not meta_acc:
+        raise HTTPException(status_code=400, detail="No Meta (Facebook/ads) account connected to this store.")
+    zernio_account_id = meta_acc.get("_id") or meta_acc.get("id")
 
-    # Create campaign via Zernio
-    result = await call_openclaw("POST", "/api/skills/zernio-ads/create_campaign", {
-        "profile_id": store.zernio_profile_id,
+    # Resolve the Meta ad account (act_...) under it.
+    ad_accounts = await _zernio("GET", "/ads/accounts", params={"accountId": zernio_account_id})
+    ad_list = ad_accounts.get("accounts", []) if isinstance(ad_accounts, dict) else (ad_accounts or [])
+    if not ad_list:
+        raise HTTPException(status_code=400, detail="No Meta ad account is available on the connected account.")
+    ad_account_id = ad_list[0].get("id") or ad_list[0].get("accountId")
+
+    # Assemble the create data with sensible store-derived defaults.
+    is_ctwa = bool(
+        campaign_data.get("whatsapp_number")
+        or campaign_data.get("ctwa")
+        or campaign_data.get("destination") == "whatsapp"
+    )
+    data = {
+        "link_url": store.store_link or store.domain or "https://shopivell.com",
+        "currency": store.currency or "USD",
+        "countries": [store.country_code] if store.country_code else ["US"],
+        **campaign_data,
+        # These override any client-supplied values (resolved server-side).
+        "account_id": zernio_account_id,
         "ad_account_id": ad_account_id,
-        **campaign_data
-    })
+    }
+    action = "create_ctwa_campaign" if is_ctwa else "create_campaign"
+    result = await call_openclaw("POST", f"/api/skills/zernio-ads/{action}", data)
 
-    return {"success": True, "campaign_id": result.get("campaign_id")}
+    return {"success": True, "campaign_id": result.get("id") or result.get("campaign_id"), "result": result}
 
 
 # ============ Creative Generation ============
