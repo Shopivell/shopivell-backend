@@ -67,15 +67,28 @@ async def _zernio(method: str, path: str, json_body: dict = None, params: dict =
     """Low-level Zernio REST call (Bearer API-key auth)."""
     if not ZERNIO_API_KEY:
         raise HTTPException(status_code=503, detail="ZERNIO_API_KEY is not configured on the backend.")
+    import asyncio as _asyncio
+    headers = {"Authorization": f"Bearer {ZERNIO_API_KEY}", "Content-Type": "application/json"}
     async with httpx.AsyncClient(timeout=60.0) as client:
-        headers = {"Authorization": f"Bearer {ZERNIO_API_KEY}", "Content-Type": "application/json"}
-        resp = await client.request(method, f"{ZERNIO_API_BASE}{path}", headers=headers, json=json_body, params=params)
-        if resp.status_code >= 400:
-            raise HTTPException(status_code=resp.status_code, detail=f"Zernio API error ({resp.status_code}): {resp.text[:500]}")
-        try:
-            return resp.json()
-        except Exception:
-            return {"raw": resp.text}
+        # Zernio (behind Cloudflare) intermittently returns 429/403 under bursty
+        # traffic. Retry those transient statuses with backoff so a momentary
+        # rate-limit doesn't surface as "no connected accounts" in the UI.
+        last = None
+        for attempt in range(3):
+            resp = await client.request(method, f"{ZERNIO_API_BASE}{path}", headers=headers, json=json_body, params=params)
+            if resp.status_code in (429, 403) and attempt < 2:
+                last = resp
+                await _asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=resp.status_code, detail=f"Zernio API error ({resp.status_code}): {resp.text[:500]}")
+            try:
+                return resp.json()
+            except Exception:
+                return {"raw": resp.text}
+        # exhausted retries on 429/403
+        raise HTTPException(status_code=last.status_code if last else 502,
+                            detail=f"Zernio API error ({last.status_code if last else 502}): {(last.text[:500] if last else 'rate limited')}")
 
 
 async def _openai(path: str, payload: dict, timeout: float = 60.0) -> dict:
