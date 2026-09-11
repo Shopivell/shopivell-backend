@@ -585,10 +585,10 @@ async def scrape_url_stream(
             await asyncio.sleep(0.1)
 
             try:
-                from modules.agents.market_research_agent import MarketResearchAgent
+                from modules.market_research.service import MarketResearchService
                 from urllib.parse import urlparse
 
-                research_agent = MarketResearchAgent()
+                research_agent = MarketResearchService()
                 parsed_url = urlparse(url)
                 research_domain = parsed_url.netloc.replace("www.", "")
 
