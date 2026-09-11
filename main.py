@@ -54,6 +54,7 @@ from modules.whatsapp.flow_endpoint import flow_router
 # from modules.agents.router import agents_router  # REMOVED - Replaced by OpenClaw
 from modules.agency.router import agency_router
 from modules.campaigns.router import campaign_router
+from modules.market_research.router import research_router
 from modules.assets.router import asset_router
 # from modules.ad_generator.router import ad_generator_router  # REMOVED - Replaced by OpenClaw
 from modules.notifications.router import notification_router
@@ -152,6 +153,7 @@ app.include_router(flow_router, prefix="/v1")
 # app.include_router(agents_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(agency_router, prefix="/v1")
 app.include_router(campaign_router, prefix="/v1")
+app.include_router(research_router, prefix="/v1")  # /v1/api/research/* (OpenClaw calls these)
 app.include_router(asset_router, prefix="/v1")
 # app.include_router(ad_generator_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(notification_router, prefix="/v1")
