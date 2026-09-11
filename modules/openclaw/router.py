@@ -13,7 +13,7 @@ import httpx
 import os
 import logging
 
-from database import get_db
+from database import get_db, SessionLocal
 from modules.stores.models import Store
 from utils.jwt_auth import get_current_user
 from modules.users.models import User
