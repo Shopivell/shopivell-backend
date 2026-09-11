@@ -2131,6 +2131,30 @@ def send_whatsapp_direct_text_message(
     """
     Send a direct text message within the 24-hour customer service window.
     """
+    # Sandbox accounts (Zernio) don't use the Meta send path — route via Zernio's
+    # inbox so replies typed in the UI reach the customer.
+    _sandbox_acct = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if _sandbox_acct is not None:
+        from modules.openclaw.router import (
+            is_sandbox_wa_account, sandbox_send_text_sync, _persist_sandbox_message,
+        )
+        if is_sandbox_wa_account(_sandbox_acct):
+            try:
+                mid = sandbox_send_text_sync(message_data.to, message_data.body)
+                _persist_sandbox_message(
+                    db, _sandbox_acct, message_data.to, None,
+                    "outbound", message_data.body, mid,
+                )
+                db.commit()
+                return WhatsAppMessageSendResponse(
+                    success=True, message_id=mid, wamid=mid, message="Sent via Zernio sandbox.",
+                )
+            except HTTPException as he:
+                return WhatsAppMessageSendResponse(
+                    success=False, message_id=None, wamid=None,
+                    message=str(he.detail),
+                )
+
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
     to_clean = message_data.to.replace(" ", "").replace("+", "").strip()
 

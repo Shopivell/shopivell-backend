@@ -1435,6 +1435,121 @@ async def _generate_bot_reply(user_text: str, store) -> str:
         return f"Thanks for reaching out to {name}! How can we help you today?"
 
 
+SANDBOX_NUMBER_DISPLAY = "+1 202 908 7457"
+SANDBOX_NUMBER_DIGITS = "12029087457"
+ZERNIO_SANDBOX_ACCOUNT_ID = os.getenv("ZERNIO_SANDBOX_ACCOUNT_ID", "6a180a034c7f364ffded3c9c")
+
+
+def is_sandbox_wa_account(wa) -> bool:
+    return bool(wa) and str(getattr(wa, "waba_id", "") or "").startswith("zernio-sandbox")
+
+
+def sandbox_send_text_sync(to_phone: str, body: str) -> str:
+    """Send a WhatsApp text via Zernio's sandbox from a sync context (used by the
+    UI send-text endpoint). Replies into the recipient's open conversation."""
+    import asyncio
+
+    async def _go():
+        convs = await _zernio("GET", "/inbox/conversations", params={"platform": "whatsapp", "limit": 50})
+        target = (to_phone or "").lstrip("+").replace(" ", "")
+        conv = next(
+            (c for c in (convs.get("data") or [])
+             if str(c.get("participantId") or c.get("participantUsername") or "").lstrip("+").replace(" ", "") == target),
+            None,
+        )
+        if not conv:
+            raise HTTPException(status_code=400, detail=(
+                "No open WhatsApp conversation with this number — the customer must "
+                "message the sandbox number first."))
+        r = await _zernio(
+            "POST", f"/inbox/conversations/{conv['id']}/messages",
+            json_body={"accountId": ZERNIO_SANDBOX_ACCOUNT_ID, "message": body},
+        )
+        return ((r or {}).get("data") or {}).get("messageId")
+
+    return asyncio.run(_go())
+
+
+def _ensure_sandbox_wa_account(db: Session, store):
+    """Get/create a Shopivell WhatsAppAccount row representing Zernio's sandbox
+    number, bound to `store`, so the existing WhatsApp inbox UI can show the
+    sandbox conversation. One account per store (unique waba/phone_number_id)."""
+    if not store:
+        return None
+    from modules.whatsapp.models import WhatsAppAccount
+    from modules.business.models import FacebookBusinessAccount
+    marker = f"zernio-sandbox-{store.id}"
+    wa = db.query(WhatsAppAccount).filter(WhatsAppAccount.phone_number_id == marker).first()
+    if wa:
+        return wa
+    fba = db.query(FacebookBusinessAccount).filter(
+        FacebookBusinessAccount.business_account_id == "zernio-sandbox"
+    ).first()
+    if not fba:
+        fba = FacebookBusinessAccount(
+            business_account_id="zernio-sandbox",
+            business_name="Zernio Sandbox",
+            access_token="zernio-sandbox",
+            user_id="zernio",
+        )
+        db.add(fba)
+        db.flush()
+    wa = WhatsAppAccount(
+        business_account_id=fba.id,
+        waba_id=marker,
+        phone_number_id=marker,
+        phone_number=SANDBOX_NUMBER_DISPLAY,
+        display_name="Zernio Sandbox",
+        verified_name="Zernio Sandbox",
+        is_enabled=True,
+        store_id=store.id,
+    )
+    db.add(wa)
+    db.flush()
+    return wa
+
+
+def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: str,
+                             direction: str, text: str, msg_id: str, ts=None):
+    """Upsert a conversation + insert one message into Shopivell's WhatsApp tables
+    so the sandbox chat shows in the inbox UI. Deduped by message_id."""
+    from modules.whatsapp.models import WhatsAppMessage, WhatsAppConversation
+    ts = ts or datetime.utcnow()
+    other = (other_phone or "").lstrip("+")
+    if not other:
+        return
+    if msg_id and db.query(WhatsAppMessage).filter(
+        WhatsAppMessage.whatsapp_account_id == wa.id,
+        WhatsAppMessage.message_id == msg_id,
+    ).first():
+        return
+    conv = db.query(WhatsAppConversation).filter(
+        WhatsAppConversation.whatsapp_account_id == wa.id,
+        WhatsAppConversation.phone_number == other,
+    ).first()
+    if not conv:
+        conv = WhatsAppConversation(
+            whatsapp_account_id=wa.id, store_id=wa.store_id,
+            phone_number=other, customer_name=customer_name, status="active",
+        )
+        db.add(conv)
+        db.flush()
+    if customer_name and not conv.customer_name:
+        conv.customer_name = customer_name
+    conv.last_message_at = ts
+    db.add(WhatsAppMessage(
+        whatsapp_account_id=wa.id,
+        message_id=msg_id or f"zernio-{ts.timestamp()}",
+        from_number=("+" + other) if direction == "inbound" else ("+" + SANDBOX_NUMBER_DIGITS),
+        to_number=("+" + SANDBOX_NUMBER_DIGITS) if direction == "inbound" else ("+" + other),
+        message_type="text",
+        direction=direction,
+        status="delivered",
+        message_text=text,
+        timestamp=ts,
+    ))
+
+
 async def _handle_inbound_whatsapp(payload: dict):
     """Background task: read an inbound message and reply via Zernio."""
     try:
@@ -1449,6 +1564,10 @@ async def _handle_inbound_whatsapp(payload: dict):
         account = payload.get("account") or {}
         account_id = account.get("id") or account.get("_id")
         user_text = msg.get("text") or ""
+        sender = msg.get("sender") or {}
+        sender_phone = sender.get("phoneNumber") or sender.get("id") or ""
+        sender_name = sender.get("name") or ""
+        in_msg_id = msg.get("platformMessageId") or msg.get("id")
         if not conv_id or not account_id:
             logger.warning("inbound webhook missing conversationId/accountId: %s", payload)
             return
@@ -1457,15 +1576,30 @@ async def _handle_inbound_whatsapp(payload: dict):
         try:
             store = _resolve_bot_store(db, account)
             reply = await _generate_bot_reply(user_text, store)
+
+            resp = await _zernio(
+                "POST",
+                f"/inbox/conversations/{conv_id}/messages",
+                json_body={"accountId": account_id, "message": reply},
+            )
+            logger.info("Replied to WhatsApp conversation %s", conv_id)
+
+            # Mirror the exchange into Shopivell's WhatsApp tables so the inbox UI
+            # shows it (best-effort; never fail the reply on a persistence error).
+            try:
+                wa = _ensure_sandbox_wa_account(db, store)
+                if wa:
+                    _persist_sandbox_message(db, wa, sender_phone, sender_name,
+                                             "inbound", user_text, in_msg_id)
+                    out_id = ((resp or {}).get("data") or {}).get("messageId")
+                    _persist_sandbox_message(db, wa, sender_phone, sender_name,
+                                             "outbound", reply, out_id)
+                    db.commit()
+            except Exception as pe:
+                db.rollback()
+                logger.warning("Failed to mirror sandbox message to UI tables: %s", pe)
         finally:
             db.close()
-
-        await _zernio(
-            "POST",
-            f"/inbox/conversations/{conv_id}/messages",
-            json_body={"accountId": account_id, "message": reply},
-        )
-        logger.info("Replied to WhatsApp conversation %s", conv_id)
     except Exception as e:
         logger.exception("Failed to handle inbound WhatsApp webhook: %s", e)
 
@@ -1486,6 +1620,53 @@ async def zernio_webhook(request: Request, background_tasks: BackgroundTasks):
         background_tasks.add_task(_handle_inbound_whatsapp, payload)
     # Always 200 quickly so Zernio doesn't retry/disable the webhook.
     return {"ok": True, "event": event}
+
+
+@router.post("/stores/{store_id}/sync-whatsapp-inbox")
+async def sync_whatsapp_inbox(
+    store_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Backfill existing Zernio WhatsApp conversations for this store into
+    Shopivell's WhatsApp tables so they appear in the inbox UI."""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    wa = _ensure_sandbox_wa_account(db, store)
+    if not wa:
+        raise HTTPException(status_code=400, detail="Could not create sandbox WhatsApp account.")
+
+    convs_res = await _zernio("GET", "/inbox/conversations", params={"platform": "whatsapp", "limit": 50})
+    conversations = convs_res.get("data") or []
+    imported = 0
+    for c in conversations:
+        cid = c.get("id")
+        phone = c.get("participantId") or c.get("participantUsername") or ""
+        name = c.get("participantName") or ""
+        if not cid:
+            continue
+        try:
+            msgs_res = await _zernio("GET", f"/inbox/conversations/{cid}/messages", params={"limit": 200})
+        except HTTPException:
+            continue
+        msgs = msgs_res.get("data") or msgs_res.get("messages") or []
+        for m in msgs:
+            direction = "inbound" if m.get("direction") in ("incoming", "in", "inbound") else "outbound"
+            text = m.get("text") or ""
+            mid = m.get("platformMessageId") or m.get("id")
+            sent = m.get("sentAt")
+            ts = None
+            if sent:
+                try:
+                    ts = datetime.fromisoformat(str(sent).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    ts = None
+            _persist_sandbox_message(db, wa, phone, name, direction, text, mid, ts)
+            imported += 1
+    db.commit()
+    return {"account_id": str(wa.id), "conversations": len(conversations), "messages_imported": imported}
 
 
 # Export router
