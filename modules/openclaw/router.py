@@ -823,6 +823,27 @@ async def launch_campaign(
         raise HTTPException(status_code=400, detail="No Meta ad account is available on the connected account.")
     ad_account_id = ad_list[0].get("id") or ad_list[0].get("accountId")
 
+    # Zernio requires a hosted imageUrl. The UI's ad creative is often base64
+    # (AI-generated), so upload it to storage and use the resulting URL when no
+    # hosted image_url was supplied.
+    if not _first(campaign_data, "image_url", "imageUrl"):
+        b64 = campaign_data.get("image_base64") or campaign_data.get("generated_image_base64")
+        if b64:
+            try:
+                import base64 as _b64
+                raw = b64.split(",", 1)[-1] if isinstance(b64, str) and "," in b64 else b64
+                img_bytes = _b64.b64decode(raw)
+                from modules.assets.service import AssetService
+                up, err = AssetService(db)._upload_file(
+                    img_bytes, f"ad_{store_id}.png", store.id, "image/png", "image"
+                )
+                if up and up.get("url"):
+                    campaign_data = {**campaign_data, "image_url": up["url"]}
+                else:
+                    logger.warning("ad image upload failed: %s", err)
+            except Exception as e:
+                logger.warning("could not upload ad image_base64: %s", e)
+
     # Assemble the create data with sensible store-derived defaults.
     is_ctwa = bool(
         campaign_data.get("whatsapp_number")
