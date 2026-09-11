@@ -869,9 +869,16 @@ def get_store_campaigns(
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
     status: Optional[CampaignStatus] = None,
+    summary: bool = Query(False, description="Omit heavy fields (scraped_data) for list views"),
     db: Session = Depends(get_db)
 ):
-    """Get all campaigns for a store."""
+    """Get all campaigns for a store.
+
+    `summary=true` drops the heavy fields — `scraped_data` (raw scraped page
+    content) and `ad_sets` (whose `ad_contents` hold base64 ad images) — so list
+    views like the Drafts page don't pull multi-MB payloads (14MB -> ~50KB here).
+    The full object is still available via the detail endpoint.
+    """
     query = db.query(Campaign).filter(Campaign.store_id == store_id)
 
     if status:
@@ -880,8 +887,16 @@ def get_store_campaigns(
     total = query.count()
     campaigns = query.order_by(Campaign.created_at.desc()).offset((page - 1) * size).limit(size).all()
 
+    items = []
+    for c in campaigns:
+        resp = CampaignResponse.model_validate(c)
+        if summary:
+            resp.scraped_data = None
+            resp.ad_sets = []
+        items.append(resp)
+
     return CampaignListResponse(
-        campaigns=[CampaignResponse.model_validate(c) for c in campaigns],
+        campaigns=items,
         total=total,
         page=page,
         size=size
