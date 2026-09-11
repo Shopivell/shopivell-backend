@@ -568,7 +568,7 @@ async def get_connected_accounts(
 ):
     """Get connected Meta ad accounts for a store"""
     store = db.query(Store).filter(Store.id == store_id).first()
-    if not store or not store.zernio_profile_id:
+    if not store:
         return {"accounts": []}
 
     result = await call_openclaw("GET", "/api/skills/zernio-ads/list_connected_accounts", {
@@ -576,8 +576,13 @@ async def get_connected_accounts(
     })
     all_accounts = result.get("accounts", [])
 
-    # Zernio returns every account on the API key; scope to this store's profile.
-    pid = str(store.zernio_profile_id)
+    # Zernio returns every account on the API key. Prefer the ones bound to this
+    # store's own profile, but everything here runs through ONE shared Zernio key
+    # (free tier caps the whole key at 2 connected accounts), so a store whose
+    # profile has nothing bound would otherwise wrongly show "not connected".
+    # Fall back to all accounts on the key so a connection made under any store
+    # is recognised everywhere.
+    pid = str(store.zernio_profile_id or "")
 
     def _acc_profile(a):
         p = a.get("profileId") or a.get("profile")
@@ -585,8 +590,8 @@ async def get_connected_accounts(
             return str(p.get("_id") or p.get("id") or "")
         return str(p or "")
 
-    scoped = [a for a in all_accounts if _acc_profile(a) == pid]
-    return {"accounts": scoped}
+    scoped = [a for a in all_accounts if pid and _acc_profile(a) == pid]
+    return {"accounts": scoped or all_accounts}
 
 
 # ============ Campaign Management ============
@@ -755,10 +760,14 @@ async def launch_campaign(
         p = a.get("profileId") or a.get("profile")
         return str(p.get("_id") if isinstance(p, dict) else (p or ""))
 
-    # Find this store's connected Meta account (Zernio account id).
+    # Find this store's connected Meta account (Zernio account id). Prefer one
+    # bound to this store's profile, but fall back to any Meta account on the
+    # shared key (see get_connected_accounts) so a connection made under another
+    # store still lets this store launch.
     listing = await _zernio("GET", "/accounts")
     accts = listing.get("accounts", []) if isinstance(listing, dict) else (listing or [])
-    meta_acc = next((a for a in accts if a.get("platform") in ("facebook", "metaads") and _acc_profile(a) == pid), None)
+    meta_accts = [a for a in accts if a.get("platform") in ("facebook", "metaads")]
+    meta_acc = next((a for a in meta_accts if _acc_profile(a) == pid), None) or (meta_accts[0] if meta_accts else None)
     if not meta_acc:
         raise HTTPException(status_code=400, detail="No Meta (Facebook/ads) account connected to this store.")
     zernio_account_id = meta_acc.get("_id") or meta_acc.get("id")
