@@ -122,6 +122,50 @@ def _goal(v, default="traffic"):
     return m.get((str(v or "")).strip().lower(), default)
 
 
+# Country name -> ISO 3166-1 alpha-2. Zernio requires 2-letter codes; the UI
+# (country-state-city) may submit full names. Covers common markets; extend freely.
+_COUNTRY_ISO = {
+    "united states": "US", "united states of america": "US", "usa": "US", "america": "US",
+    "united kingdom": "GB", "uk": "GB", "great britain": "GB", "england": "GB",
+    "canada": "CA", "australia": "AU", "new zealand": "NZ", "ireland": "IE",
+    "south africa": "ZA", "zimbabwe": "ZW", "zambia": "ZM", "botswana": "BW",
+    "namibia": "NA", "mozambique": "MZ", "malawi": "MW", "kenya": "KE",
+    "nigeria": "NG", "ghana": "GH", "tanzania": "TZ", "uganda": "UG",
+    "egypt": "EG", "morocco": "MA", "ethiopia": "ET", "rwanda": "RW",
+    "india": "IN", "pakistan": "PK", "bangladesh": "BD", "china": "CN",
+    "japan": "JP", "south korea": "KR", "singapore": "SG", "malaysia": "MY",
+    "indonesia": "ID", "philippines": "PH", "thailand": "TH", "vietnam": "VN",
+    "united arab emirates": "AE", "uae": "AE", "saudi arabia": "SA", "qatar": "QA",
+    "germany": "DE", "france": "FR", "spain": "ES", "italy": "IT", "portugal": "PT",
+    "netherlands": "NL", "belgium": "BE", "switzerland": "CH", "austria": "AT",
+    "sweden": "SE", "norway": "NO", "denmark": "DK", "finland": "FI", "poland": "PL",
+    "brazil": "BR", "mexico": "MX", "argentina": "AR", "chile": "CL", "colombia": "CO",
+}
+
+
+def _iso_country(v) -> str:
+    """Coerce a country value to a 2-letter ISO code (best effort)."""
+    s = str(v or "").strip()
+    if len(s) == 2 and s.isalpha():
+        return s.upper()
+    return _COUNTRY_ISO.get(s.lower(), "")
+
+
+def _iso_countries(v, default=None) -> list:
+    """Normalise a countries value (list or scalar, names or codes) to ISO codes."""
+    default = default or ["US"]
+    if v is None:
+        return default
+    items = v if isinstance(v, (list, tuple)) else [v]
+    out = [c for c in (_iso_country(x) for x in items) if c]
+    # de-dupe, preserve order
+    seen, uniq = set(), []
+    for c in out:
+        if c not in seen:
+            seen.add(c); uniq.append(c)
+    return uniq or default
+
+
 def _ctwa_payload(d: dict) -> dict:
     # POST /ads/messaging (destination=whatsapp). Zernio locks CTA/destination.
     return {
@@ -135,7 +179,7 @@ def _ctwa_payload(d: dict) -> dict:
         "budgetType": _first(d, "budget_type", "budgetType", default="daily"),
         "currency": _first(d, "currency", default="USD"),
         "destination": "whatsapp",
-        "countries": _first(d, "countries", default=["US"]),
+        "countries": _iso_countries(_first(d, "countries")),
     }
 
 
@@ -155,7 +199,7 @@ def _campaign_payload(d: dict) -> dict:
         "budgetAmount": _first(d, "budget", "budgetAmount", default=20),
         "budgetType": _first(d, "budget_type", "budgetType", default="daily"),
         "currency": _first(d, "currency", default="USD"),
-        "countries": _first(d, "countries", default=["US"]),
+        "countries": _iso_countries(_first(d, "countries")),
     }
 
 
