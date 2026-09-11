@@ -4,7 +4,7 @@ Full API for frontend to interact with OpenClaw ad management
 Add to Shopivell backend: modules/openclaw/router.py
 """
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -1324,6 +1324,166 @@ async def get_demographics_report(
         "demographics": insights,
         "generated_at": datetime.utcnow().isoformat()
     }
+
+
+# ============ Zernio Webhook (inbound WhatsApp -> bot reply) ============
+#
+# Zernio delivers inbound messages over webhooks (event `message.received`),
+# not through the REST inbox, so two-way WhatsApp needs a public receiver.
+# Flow:
+#   Zernio --message.received--> POST /v1/openclaw/zernio-webhook
+#     -> resolve the store for business context
+#     -> generate a reply with OpenAI
+#     -> POST /inbox/conversations/{conversationId}/messages  (service reply,
+#        allowed inside the 24h window the customer's inbound just opened)
+#
+# Register once with:
+#   POST /webhooks/settings {name, url, events:["message.received"], secret}
+# Signature: Zernio signs the raw body with HMAC-SHA256 -> X-Zernio-Signature.
+
+ZERNIO_WEBHOOK_SECRET = os.getenv("ZERNIO_WEBHOOK_SECRET", "")
+# Which store's persona the shared sandbox bot speaks as (the sandbox account is
+# not bound to any store). Optional; falls back to the most recent ads store.
+WHATSAPP_BOT_STORE_ID = os.getenv("WHATSAPP_BOT_STORE_ID", "")
+
+
+def _verify_zernio_signature(raw: bytes, signature: str) -> bool:
+    """Best-effort HMAC-SHA256 verification of a Zernio webhook body."""
+    if not ZERNIO_WEBHOOK_SECRET:
+        return True  # no secret configured -> accept (test mode)
+    if not signature:
+        return False
+    import hmac as _hmac
+    import hashlib as _hashlib
+    digest = _hmac.new(ZERNIO_WEBHOOK_SECRET.encode(), raw, _hashlib.sha256).hexdigest()
+    candidate = signature.split("=", 1)[1] if "=" in signature else signature
+    return _hmac.compare_digest(digest, candidate.strip())
+
+
+def _resolve_bot_store(db: Session, account: dict):
+    """Pick the store whose business info the bot should answer with."""
+    # 1) Account bound to a store's Zernio profile.
+    prof = account.get("profileId") or account.get("profile") if isinstance(account, dict) else None
+    pid = (prof.get("_id") if isinstance(prof, dict) else prof) or None
+    if pid:
+        s = db.query(Store).filter(Store.zernio_profile_id == str(pid)).first()
+        if s:
+            return s
+    # 2) Explicitly configured store for the sandbox.
+    if WHATSAPP_BOT_STORE_ID:
+        s = db.query(Store).filter(Store.id == WHATSAPP_BOT_STORE_ID).first()
+        if s:
+            return s
+    # 3) Best-effort: the most recently updated ads-enabled store.
+    return (
+        db.query(Store)
+        .filter(Store.ads_enabled == True)  # noqa: E712
+        .order_by(Store.updated_at.desc())
+        .first()
+    )
+
+
+def _business_context(store) -> str:
+    """Compact business brief for the bot's system prompt."""
+    if not store:
+        return "You are a helpful WhatsApp assistant for a Shopivell online store."
+    parts = [f"Business name: {store.store_name}"]
+    for label, val in [
+        ("What they sell / category", store.store_category),
+        ("Description", store.store_description),
+        ("Products or services", ", ".join(store.products_or_services) if isinstance(store.products_or_services, list) else None),
+        ("Address", store.store_address),
+        ("City", store.store_city),
+        ("Country", store.store_country),
+        ("Currency", store.currency),
+        ("Phone", store.store_phone),
+        ("Email", store.store_email),
+        ("Hours", str(store.operating_hours) if store.operating_hours else None),
+        ("Brand voice", store.store_voice),
+        ("Tone", store.store_tone),
+        ("Store link", store.store_link),
+    ]:
+        if val:
+            parts.append(f"{label}: {val}")
+    return "\n".join(parts)
+
+
+async def _generate_bot_reply(user_text: str, store) -> str:
+    context = _business_context(store)
+    name = store.store_name if store else "the store"
+    system = (
+        "You are the customer-service assistant for a business on WhatsApp. "
+        "Answer as the business, warmly and concisely (WhatsApp-length, 1-3 short "
+        "sentences, no markdown). Use ONLY the business info below; if you don't "
+        "know something, offer to connect the customer with the team. Never invent "
+        "prices or stock.\n\n=== BUSINESS INFO ===\n" + context
+    )
+    try:
+        res = await _openai("/chat/completions", {
+            "model": os.getenv("WHATSAPP_BOT_MODEL", "gpt-4o-mini"),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text or "Hi"},
+            ],
+            "max_tokens": 300,
+            "temperature": 0.5,
+        }, timeout=30.0)
+        return (res["choices"][0]["message"]["content"] or "").strip() or \
+            f"Thanks for messaging {name}! How can we help you today?"
+    except Exception as e:  # never fail the webhook on the AI call
+        logger.warning("bot reply generation failed: %s", e)
+        return f"Thanks for reaching out to {name}! How can we help you today?"
+
+
+async def _handle_inbound_whatsapp(payload: dict):
+    """Background task: read an inbound message and reply via Zernio."""
+    try:
+        msg = payload.get("message") or {}
+        if msg.get("direction") not in (None, "inbound", "in"):
+            return  # ignore our own / outbound echoes
+        if (msg.get("platform") or "").lower() not in ("whatsapp", ""):
+            return
+        conv_id = msg.get("conversationId") or (payload.get("conversation") or {}).get("id")
+        account = payload.get("account") or {}
+        account_id = account.get("id") or account.get("_id")
+        user_text = msg.get("text") or ""
+        if not conv_id or not account_id:
+            logger.warning("inbound webhook missing conversationId/accountId: %s", payload)
+            return
+
+        db = SessionLocal()
+        try:
+            store = _resolve_bot_store(db, account)
+            reply = await _generate_bot_reply(user_text, store)
+        finally:
+            db.close()
+
+        await _zernio(
+            "POST",
+            f"/inbox/conversations/{conv_id}/messages",
+            json_body={"accountId": account_id, "message": reply},
+        )
+        logger.info("Replied to WhatsApp conversation %s", conv_id)
+    except Exception as e:
+        logger.exception("Failed to handle inbound WhatsApp webhook: %s", e)
+
+
+@router.post("/zernio-webhook")
+async def zernio_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Public receiver for Zernio webhooks (no auth; verified via signature)."""
+    raw = await request.body()
+    sig = request.headers.get("X-Zernio-Signature", "")
+    if not _verify_zernio_signature(raw, sig):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    try:
+        payload = _safe_json(raw.decode("utf-8"))
+    except Exception:
+        payload = {}
+    event = payload.get("event") or request.headers.get("X-Zernio-Event", "")
+    if event == "message.received":
+        background_tasks.add_task(_handle_inbound_whatsapp, payload)
+    # Always 200 quickly so Zernio doesn't retry/disable the webhook.
+    return {"ok": True, "event": event}
 
 
 # Export router
