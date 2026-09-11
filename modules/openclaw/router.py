@@ -1648,15 +1648,15 @@ async def sync_whatsapp_inbox(
         if not cid:
             continue
         try:
-            msgs_res = await _zernio("GET", f"/inbox/conversations/{cid}/messages", params={"limit": 200})
+            msgs_res = await _zernio("GET", f"/inbox/conversations/{cid}/messages", params={"limit": 200, "accountId": ZERNIO_SANDBOX_ACCOUNT_ID})
         except HTTPException:
             continue
         msgs = msgs_res.get("data") or msgs_res.get("messages") or []
         for m in msgs:
             direction = "inbound" if m.get("direction") in ("incoming", "in", "inbound") else "outbound"
-            text = m.get("text") or ""
-            mid = m.get("platformMessageId") or m.get("id")
-            sent = m.get("sentAt")
+            text = m.get("message") or m.get("text") or ""
+            mid = m.get("id") or m.get("platformMessageId")
+            sent = m.get("createdAt") or m.get("sentAt")
             ts = None
             if sent:
                 try:
