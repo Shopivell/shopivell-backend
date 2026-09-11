@@ -1439,8 +1439,10 @@ async def _handle_inbound_whatsapp(payload: dict):
     """Background task: read an inbound message and reply via Zernio."""
     try:
         msg = payload.get("message") or {}
-        if msg.get("direction") not in (None, "inbound", "in"):
-            return  # ignore our own / outbound echoes
+        # Zernio uses "incoming"/"outgoing"; only reply to customer messages so we
+        # don't loop on our own outbound echoes.
+        if msg.get("direction") in ("outgoing", "out", "outbound"):
+            return
         if (msg.get("platform") or "").lower() not in ("whatsapp", ""):
             return
         conv_id = msg.get("conversationId") or (payload.get("conversation") or {}).get("id")
