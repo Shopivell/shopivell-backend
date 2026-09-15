@@ -123,6 +123,26 @@ class MarketResearchService:
 
     # ---------------- competitors ----------------
 
+    @staticmethod
+    def _name_key(text: str) -> str:
+        """Compact brand key for de-duplication, e.g. 'Elite Dreams Global — Bringing
+        Technology…' and 'Elite Dreams Global (Pvt) Ltd' both -> 'elitedreamsglobal'."""
+        name = re.split(r"\s[-|—–:]\s|\s\|", (text or "").lower())[0]
+        name = re.sub(r"\((pvt|private)\)|\b(pvt|ltd|limited|inc|llc)\b\.?", " ", name)
+        return re.sub(r"[^a-z0-9]", "", name)
+
+    @classmethod
+    def _same_business(cls, place_key: str, comp: Dict[str, Any]) -> bool:
+        """True if a Maps place (by name key) is a competitor we already have, matched
+        on its name or, for organic results, its domain (fusertech.co.zw ~ 'Fuser Technologies')."""
+        if len(place_key) < 6:
+            return False
+        keys = [cls._name_key(comp.get("name", ""))]
+        if comp.get("source") == "serper":
+            host = urlparse(comp.get("url", "")).netloc.lower().replace("www.", "")
+            keys.append(re.sub(r"[^a-z0-9]", "", host.split(".")[0]))
+        return any(len(k) >= 6 and (k.startswith(place_key) or place_key.startswith(k)) for k in keys)
+
     def _search_competitors_enhanced(self, business_type: str, location: str,
                                      products: List[str], domain: str = None,
                                      country_code: str = "US", company_name: str = None) -> List[Dict[str, Any]]:
@@ -151,22 +171,27 @@ class MarketResearchService:
                 competitors.append({"name": item.get("title", ""), "url": url,
                                     "description": (item.get("snippet", "") or "")[:500],
                                     "rating": None, "reviews": None, "source": "serper"})
-            for rel in result.get("relatedSearches", []):
-                q = rel.get("query", "")
-                if q:
-                    competitors.append({"name": "__related_search__", "url": "",
-                                        "description": q, "source": "serper_related"})
 
         maps = self._serper_search(f"{business_type} {location}".strip(),
                                    country=country, search_type="places")
         for place in maps.get("places", []):
             title = place.get("title", "")
-            if company_name and company_name.lower() in title.lower():
+            if not title or (company_name and company_name.lower() in title.lower()):
                 continue
-            competitors.append({"name": title, "url": place.get("website", ""),
+            # Serper places use `ratingCount` (not `reviews`) and carry no website.
+            rating, reviews = place.get("rating"), place.get("ratingCount")
+            key = self._name_key(title)
+            match = next((c for c in competitors if self._same_business(key, c)), None)
+            if match:
+                # Already found (organic or another branch): keep one entry, add Maps stats.
+                match["rating"] = match.get("rating") or rating
+                match["reviews"] = match.get("reviews") or reviews
+                continue
+            cid = place.get("cid")
+            competitors.append({"name": title,
+                                "url": place.get("website") or (f"https://www.google.com/maps?cid={cid}" if cid else ""),
                                 "description": place.get("address", ""),
-                                "rating": place.get("rating"), "reviews": place.get("reviews", 0),
-                                "source": "serper_maps"})
+                                "rating": rating, "reviews": reviews, "source": "serper_maps"})
         logger.info("[MarketResearch] competitors: %d", len(competitors))
         return competitors
 
