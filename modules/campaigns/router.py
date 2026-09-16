@@ -624,8 +624,12 @@ async def scrape_url_stream(
                     logger.warning(f"Structured extraction failed: {extract_err}")
 
                 # Use structured data first, fall back to ad_content
+                # business_type first: `industry` is a broad sector ("Information
+                # Technology") which sends competitor/trend search to consultancies and
+                # listicles instead of the shops this business competes with.
                 business_type = (
-                    structured_data.get("industry")
+                    structured_data.get("business_type")
+                    or structured_data.get("industry")
                     or ad_content.get("business_type", "")
                 )
                 business_name = (

@@ -123,6 +123,34 @@ class MarketResearchService:
 
     # ---------------- competitors ----------------
 
+    # Model numbers / specs / sales phrasing mark a product-listing title, not a business.
+    _PRODUCT_TITLE = re.compile(r"\b[a-z]*\d{2,}[a-z]*\b|\b(gb|tb|ghz|ssd)\b|"
+                                r"\bfor sale\b|\bprice(s)?\b|\bbuy\b", re.I)
+    # Trailing segments that are navigation/CTA text, not the site's name.
+    _JUNK_TAIL = re.compile(r"^(page\s*\d*(\s*of\s*\d+)?|call us.*|home|shop( now)?|store|"
+                            r"contact( us)?|archives?|about( us)?|products?|blog|news|"
+                            r"online (shop|store)|zimbabwe|harare)$", re.I)
+
+    @staticmethod
+    def _brand_from_domain(domain: str) -> str:
+        return (domain or "").split(".")[0].replace("-", " ").strip().title()
+
+    @classmethod
+    def _display_name(cls, title: str, domain: str) -> str:
+        """The business behind a result. Product pages ("HP ProBook 450 G10 8GB/512GB")
+        name a product, not a competitor, so use the trailing site name when the title
+        carries one ("hp probook 450 g10 - Laptop World") else the domain's brand."""
+        t = (title or "").strip()
+        if not t:
+            return cls._brand_from_domain(domain)
+        if len(t) > 45 or cls._PRODUCT_TITLE.search(t):
+            tail = re.split(r"\s[-|–—]\s", t)[-1].strip()
+            if (2 < len(tail) <= 30 and not cls._PRODUCT_TITLE.search(tail)
+                    and not cls._JUNK_TAIL.match(tail)):
+                return tail
+            return cls._brand_from_domain(domain)
+        return t
+
     @staticmethod
     def _name_key(text: str) -> str:
         """Compact brand key for de-duplication, e.g. 'Elite Dreams Global — Bringing
@@ -150,13 +178,20 @@ class MarketResearchService:
         own_domain = (domain or "").replace("www.", "").lower()
         seen, competitors = set(), []
 
-        queries = [f"top {business_type} companies in {location}".strip()]
-        if products:
-            queries.append(f"{', '.join([p for p in products if p][:3])} {location}".strip())
+        # Buyer-intent queries first: "top <x> companies in <y>" pulls directory pages,
+        # listicles and agencies rather than the businesses a shop competes with.
+        top_products = [p for p in (products or []) if p][:3]
+        queries = []
+        if top_products:
+            # "shop"/"store" keeps Google on businesses; "buy <product>" or a bare
+            # product name returns individual product listing pages instead.
+            queries.append(f"{top_products[0]} shop {location}".strip())
+            queries.append(f"{', '.join(top_products)} store {location}".strip())
+        queries.append(f"best {business_type} in {location}".strip())
         if company_name:
             queries.append(f"{company_name} competitors alternatives {location}".strip())
 
-        for query in queries[:3]:
+        for query in queries[:4]:
             result = self._serper_search(query, country=country)
             for item in result.get("organic", []):
                 url = item.get("link", "")
@@ -168,11 +203,13 @@ class MarketResearchService:
                 if d in seen:
                     continue
                 seen.add(d)
-                competitors.append({"name": item.get("title", ""), "url": url,
+                competitors.append({"name": self._display_name(item.get("title", ""), d), "url": url,
                                     "description": (item.get("snippet", "") or "")[:500],
                                     "rating": None, "reviews": None, "source": "serper"})
 
-        maps = self._serper_search(f"{business_type} {location}".strip(),
+        # Maps: a product term ("laptops Harare") finds shops; a sector term
+        # ("Information Technology Harare") finds consultancies.
+        maps = self._serper_search(f"{top_products[0] if top_products else business_type} {location}".strip(),
                                    country=country, search_type="places")
         for place in maps.get("places", []):
             title = place.get("title", "")
@@ -331,6 +368,9 @@ class MarketResearchService:
             "Analyze the following website content and return ONLY a JSON object.\n\n"
             f"Website URL: {url}\nWebsite Content:\n{content[:8000]}\n\n"
             "JSON fields: company_name, tagline, industry, "
+            '"business_type" (specific, buyer-facing description of what kind of business '
+            'this is — e.g. "computer and IT equipment retailer", "wedding photographer", '
+            '"pharmacy" — NOT a broad sector like "Information Technology" or "Retail"), '
             '"services_products" (array of {name, description, category}), '
             "value_propositions (array), target_audiences (array), "
             "geographic_coverage (countries/regions served), "

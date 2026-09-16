@@ -49,9 +49,12 @@ returns `{"ok":true,"sources":{...}}` and needs no token.
 ## How to run an analysis
 
 1. **Understand the business.** Fetch the site's text (`curl -s <url>`, strip tags) and
-   POST it to `/extract`. Use `industry` as the business type, `services_products` as
-   the products, `keyword_seeds` as the keyword seeds, `geographic_coverage` as the
-   location. If extraction returns nothing, fall back to what the user told you.
+   POST it to `/extract`. Use `business_type` (specific, e.g. "computer and IT
+   equipment retailer") as the business type — not `industry`, which is a broad sector
+   that sends competitor search to consultancies and listicles. Use
+   `services_products` as the products, `keyword_seeds` as the keyword seeds, and
+   `geographic_coverage` as the location. If extraction returns nothing, fall back to
+   what the user told you.
 2. **Gather data.** Call `/competitors`, `/keywords` and `/trends` with those values.
    Set `country_code` from the domain's TLD where it's a country (`.co.zw` → `ZW`),
    else the user's market.
