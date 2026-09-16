@@ -312,9 +312,10 @@ class AssetService:
         color_scheme: Optional[str] = None,
         campaign_id: Optional[uuid.UUID] = None
     ) -> Tuple[Optional[Asset], Optional[str]]:
-        """Generate an ad image using DALL-E and upload."""
-        if not self.openai:
-            return None, "OpenAI API key not configured"
+        """Generate an ad image (OpenRouter image model, or DALL-E without an OpenRouter key)."""
+        import os as _os
+        if not self.openai and not _os.getenv("OPENROUTER_API_KEY", ""):
+            return None, "No OPENROUTER_API_KEY / OPENAI_API_KEY configured"
 
         try:
             features_text = ", ".join(features[:3]) if features else ""
@@ -329,24 +330,46 @@ class AssetService:
 - Make it suitable for Facebook/Instagram ads
 - 1024x1024, high quality, visually striking"""
 
-            response = self.openai.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1
-            )
-
-            image_url = response.data[0].url
-
-            import requests
-            img_response = requests.get(image_url)
-            if img_response.status_code != 200:
-                return None, "Failed to download generated image"
+            import os as _os
+            import requests as _requests
+            or_key = _os.getenv("OPENROUTER_API_KEY", "")
+            if or_key:
+                # OpenRouter has no /images/generations; image models return the PNG
+                # as a data URI in message.images on the chat endpoint.
+                import base64 as _b64
+                r = _requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {or_key}",
+                             "HTTP-Referer": "https://shopivell.com",
+                             "X-Title": "Shopivell Ad Images", "Content-Type": "application/json"},
+                    json={"model": _os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
+                          "modalities": ["image", "text"],
+                          "messages": [{"role": "user", "content": prompt}]},
+                    timeout=180,
+                )
+                if r.status_code >= 400:
+                    return None, f"Image generation failed ({r.status_code})"
+                images = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("images") or []
+                data_url = ((images[0].get("image_url") or {}).get("url") or "") if images else ""
+                if not data_url:
+                    return None, "Image model returned no image"
+                image_data = _b64.b64decode(data_url.split(",", 1)[-1])
+            else:
+                response = self.openai.images.generate(
+                    model="dall-e-3",
+                    prompt=prompt,
+                    size="1024x1024",
+                    quality="standard",
+                    n=1
+                )
+                img_response = _requests.get(response.data[0].url)
+                if img_response.status_code != 200:
+                    return None, "Failed to download generated image"
+                image_data = img_response.content
 
             filename = f"generated_{uuid.uuid4().hex[:8]}.png"
             upload_result, error = self._upload_file(
-                file_data=img_response.content,
+                file_data=image_data,
                 filename=filename,
                 store_id=store_id,
                 content_type="image/png",
