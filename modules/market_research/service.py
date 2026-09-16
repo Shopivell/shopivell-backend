@@ -29,6 +29,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 KEYWORDS_EVERYWHERE_API_KEY = os.getenv("KEYWORDS_EVERYWHERE_API_KEY", "")
@@ -284,17 +285,31 @@ class MarketResearchService:
     # ---------------- structured website extraction (LLM) --------------
 
     def _llm_ready(self) -> bool:
-        return ANTHROPIC_API_KEY.startswith("sk-ant") or OPENAI_API_KEY.startswith("sk-")
+        return bool(OPENROUTER_API_KEY) or ANTHROPIC_API_KEY.startswith("sk-ant") or OPENAI_API_KEY.startswith("sk-")
 
     def _llm_json(self, prompt: str) -> Dict[str, Any]:
         content = ""
         try:
-            if ANTHROPIC_API_KEY.startswith("sk-ant"):
+            if OPENROUTER_API_KEY:
+                # OpenRouter first: one key for every model (see modules/openrouter).
+                r = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                             "HTTP-Referer": "https://shopivell.com",
+                             "X-Title": "Shopivell Market Research",
+                             "Content-Type": "application/json"},
+                    json={"model": os.getenv("RESEARCH_LLM_MODEL", "openai/gpt-4o-mini"),
+                          "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]},
+                    timeout=60,
+                )
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"]
+            elif ANTHROPIC_API_KEY.startswith("sk-ant"):
                 r = requests.post(
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
                              "Content-Type": "application/json"},
-                    json={"model": os.getenv("RESEARCH_LLM_MODEL", "claude-sonnet-4-5"),
+                    json={"model": os.getenv("RESEARCH_LLM_MODEL_ANTHROPIC", "claude-sonnet-4-5"),
                           "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]},
                     timeout=40,
                 )

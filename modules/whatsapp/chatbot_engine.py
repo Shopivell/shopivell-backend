@@ -325,14 +325,37 @@ Remember: It's better to say you don't have the information than to make somethi
         # Add current message
         messages.append({"role": "user", "content": user_message})
 
-        # Tier-based model routing: paid tiers -> Claude Sonnet, free -> GPT-4o-mini
-        from modules.openrouter.credits import pick_model
+        # Tier-based model routing: paid tiers -> Claude Sonnet, free -> the cheap model.
+        # Everything goes through OpenRouter when OPENROUTER_API_KEY is set (one key,
+        # every model); Anthropic/OpenAI direct remain as fallbacks. Note the Anthropic
+        # prompt-cache prefix below only applies on the direct-Anthropic path.
+        from modules.openrouter.credits import pick_model, openrouter_model
         primary_model = pick_model(package)
-        use_claude = primary_model.startswith("claude") and ANTHROPIC_AVAILABLE
+        use_openrouter = bool(os.getenv("OPENROUTER_API_KEY", ""))
+        use_claude = primary_model.startswith("claude") and ANTHROPIC_AVAILABLE and not use_openrouter
 
         try:
             # Generate response using the tier's model (Claude primary / GPT fallback)
-            if use_claude:
+            if use_openrouter:
+                from modules.openrouter.service import openrouter_client
+                from modules.openrouter.context import set_ai_context
+                from modules.openrouter.credits import output_token_floor
+                model_used = openrouter_model(primary_model)
+                # The client records usage from this context, so name the store here.
+                with set_ai_context(store_id=str(self.store_id), agent_name="whatsapp_chatbot"):
+                    response = await openrouter_client.chat_completion(
+                        messages=messages,
+                        model=model_used,
+                        temperature=self.temperature,
+                        # Reasoning models return empty content if this is too small.
+                        max_tokens=output_token_floor(model_used, self.max_tokens),
+                    )
+                bot_response = (response["choices"][0]["message"].get("content") or "").strip()
+                usage = response.get("usage") or {}
+                prompt_tokens = usage.get("prompt_tokens", 0) or 0
+                completion_tokens = usage.get("completion_tokens", 0) or 0
+                usage_metadata = {"via": "openrouter"}
+            elif use_claude:
                 anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
                 # Convert format for Claude (system goes in its own param)
                 user_messages = [m for m in messages if m["role"] != "system"]
@@ -380,18 +403,21 @@ Remember: It's better to say you don't have the information than to make somethi
                 model_used = "gpt-4o-mini"
                 usage_metadata = {}
 
-            # Record token usage for per-store cost tracking & budgeting
+            # Record token usage for per-store cost tracking & budgeting. The
+            # OpenRouter client already records its own calls (under the context set
+            # above), so tracking here too would count the same message twice.
             try:
                 from modules.openrouter.ai_usage_service import track_usage
-                track_usage(
-                    model=model_used,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
-                    agent_name="whatsapp_chatbot",
-                    store_id=str(self.store_id),
-                    request_metadata=usage_metadata,
-                )
+                if not use_openrouter:
+                    track_usage(
+                        model=model_used,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens + completion_tokens,
+                        agent_name="whatsapp_chatbot",
+                        store_id=str(self.store_id),
+                        request_metadata=usage_metadata,
+                    )
             except Exception as e:
                 logger.error(f"[ChatbotEngine] Usage tracking failed: {e}")
 

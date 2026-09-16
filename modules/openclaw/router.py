@@ -91,17 +91,24 @@ async def _zernio(method: str, path: str, json_body: dict = None, params: dict =
                             detail=f"Zernio API error ({last.status_code if last else 502}): {(last.text[:500] if last else 'rate limited')}")
 
 
-async def _openai(path: str, payload: dict, timeout: float = 60.0) -> dict:
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured for ad creative generation.")
+async def _llm(path: str, payload: dict, timeout: float = 60.0) -> dict:
+    """Chat/image generation through OpenRouter when configured, else OpenAI direct."""
+    or_key = os.getenv("OPENROUTER_API_KEY", "")
+    if or_key:
+        base = "https://openrouter.ai/api/v1"
+        headers = {"Authorization": f"Bearer {or_key}", "HTTP-Referer": "https://shopivell.com",
+                   "X-Title": "Shopivell Ad Creator", "Content-Type": "application/json"}
+    elif OPENAI_API_KEY:
+        base = "https://api.openai.com/v1"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    else:
+        raise HTTPException(status_code=503,
+                            detail="No OPENROUTER_API_KEY / OPENAI_API_KEY configured for ad creative generation.")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            f"https://api.openai.com/v1{path}",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json=payload,
-        )
+        resp = await client.post(f"{base}{path}", headers=headers, json=payload)
         if resp.status_code >= 400:
-            raise HTTPException(status_code=resp.status_code, detail=f"OpenAI error ({resp.status_code}): {resp.text[:300]}")
+            raise HTTPException(status_code=resp.status_code,
+                                detail=f"LLM error ({resp.status_code}): {resp.text[:300]}")
         return resp.json()
 
 
@@ -306,8 +313,8 @@ async def _dispatch_ad_creator(action: str, d: dict) -> dict:
                    if action == "generate_whatsapp_copy" else "for a Meta conversion ad")
         prompt = (f"Write ad copy {channel}. Product: {name}. Details: {desc}. "
                   f'Return strict JSON with keys "headline" (max 40 chars) and "body" (max 125 chars).')
-        res = await _openai("/chat/completions", {
-            "model": "gpt-4o-mini",
+        res = await _llm("/chat/completions", {
+            "model": os.getenv("AD_COPY_MODEL", "openai/gpt-4o-mini"),
             "messages": [
                 {"role": "system", "content": "You are an expert Meta Ads copywriter. Reply with JSON only."},
                 {"role": "user", "content": prompt},
@@ -321,11 +328,22 @@ async def _dispatch_ad_creator(action: str, d: dict) -> dict:
         prompt = d.get("prompt") or (
             f"Professional, high-converting product marketing image for "
             f"{d.get('product_name', 'a product')}. {d.get('product_description', '')}")
-        res = await _openai("/images/generations", {
-            "model": "gpt-image-1", "prompt": prompt, "size": "1024x1024", "n": 1,
-        }, timeout=120.0)
-        item = (res.get("data") or [{}])[0]
-        url = item.get("url") or (f"data:image/png;base64,{item['b64_json']}" if item.get("b64_json") else "")
+        if os.getenv("OPENROUTER_API_KEY", ""):
+            # OpenRouter has no /images/generations — image models return the PNG
+            # as a data URI in message.images on the chat endpoint.
+            res = await _llm("/chat/completions", {
+                "model": os.getenv("AD_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
+                "modalities": ["image", "text"],
+                "messages": [{"role": "user", "content": prompt}],
+            }, timeout=120.0)
+            images = ((res.get("choices") or [{}])[0].get("message") or {}).get("images") or []
+            url = ((images[0].get("image_url") or {}).get("url") or "") if images else ""
+        else:
+            res = await _llm("/images/generations", {
+                "model": "gpt-image-1", "prompt": prompt, "size": "1024x1024", "n": 1,
+            }, timeout=120.0)
+            item = (res.get("data") or [{}])[0]
+            url = item.get("url") or (f"data:image/png;base64,{item['b64_json']}" if item.get("b64_json") else "")
         return {"image_url": url, "url": url}
     if action == "generate_full_campaign":
         copy = await _dispatch_ad_creator("generate_ad_copy", d)

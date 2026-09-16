@@ -42,6 +42,41 @@ TIER_PRIMARY_MODEL = {
 }
 FALLBACK_MODEL = "gpt-4o-mini"
 
+# OpenRouter slugs for the tier models above. OpenRouter resolves bare OpenAI
+# names ("gpt-4o-mini" -> "openai/gpt-4o-mini") but rejects Anthropic's own
+# naming ("claude-sonnet-4-6"), so Claude has to be mapped explicitly.
+OPENROUTER_SLUGS = {
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4.5",
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+}
+
+
+def openrouter_model(model: str) -> str:
+    """The OpenRouter slug for a tier model name (unchanged if already a slug)."""
+    return OPENROUTER_SLUGS.get(model, model)
+
+
+# Reasoning models (GPT-5.x "luna", o-series) spend part of the output budget on
+# hidden reasoning tokens — with a small max_tokens they return EMPTY content
+# (measured: gpt-5.6-luna used 79 of 113 completion tokens on reasoning for a
+# two-field JSON reply). Give them room, or the caller gets an empty string.
+REASONING_MODEL_MARKERS = ("luna", "gpt-5", "openai/o1", "openai/o3", "openai/o4")
+MIN_REASONING_OUTPUT_TOKENS = 1200
+
+
+def is_reasoning_model(model: str) -> bool:
+    m = (model or "").lower()
+    return any(marker in m for marker in REASONING_MODEL_MARKERS)
+
+
+def output_token_floor(model: str, max_tokens: int) -> int:
+    """max_tokens raised to a workable floor for reasoning models."""
+    if is_reasoning_model(model):
+        return max(max_tokens or 0, MIN_REASONING_OUTPUT_TOKENS)
+    return max_tokens
+
 
 def monthly_allowance(package: str) -> int:
     """Free credits granted to this tier each month."""
