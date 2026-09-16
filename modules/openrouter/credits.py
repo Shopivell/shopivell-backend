@@ -4,8 +4,8 @@
 A "credit" is the unit a store owner buys and spends. Each answered bot message
 consumes credits = ceil(real_provider_cost_usd * MARKUP_MULTIPLIER / CREDIT_USD_VALUE),
 floored at MIN_CREDITS_PER_MESSAGE. This keeps pricing cost-plus while showing
-whole-number credits, and naturally makes Claude messages cost more credits than
-GPT-4o-mini messages (because they cost us more to serve).
+whole-number credits, and scales with whatever model is configured (a pricier
+model costs more credits per message, because it costs us more to serve).
 
 All values below are tunable — adjust to match your retail pricing & target margin.
 """
@@ -18,8 +18,7 @@ import math
 MARKUP_MULTIPLIER = 3.0
 
 # USD value of one credit (internal billable value = cost x markup, per credit).
-# At 0.002: a ~$0.0006 GPT-4o-mini msg (x3 = $0.0018) ≈ 1 credit; a ~$0.012 Claude
-# Sonnet msg (x3 = $0.036) ≈ 18 credits (less with prompt-cache hits).
+# At 0.002: a ~$0.0006 GPT-4o-mini msg (x3 = $0.0018) ≈ 1 credit.
 CREDIT_USD_VALUE = 0.002
 
 # Every answered message costs at least this many credits.

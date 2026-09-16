@@ -21,12 +21,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from openai import OpenAI
 
-# Try Anthropic for better conversational quality
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = bool(os.getenv("ANTHROPIC_API_KEY"))
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+# Claude/Anthropic is deliberately not used here: ~20x the cost per bot message,
+# and these replies are short and high-volume. Models are served via OpenRouter.
 
 from database import SessionLocal
 from .models import (
@@ -251,7 +247,7 @@ Remember: It's better to say you don't have the information than to make somethi
 
         # Enforce per-store AI credits (monthly tier allowance + purchased top-ups)
         # before spending on embeddings or LLM calls. Also resolves the tier, which
-        # selects the model below (free -> GPT-4o-mini, paid -> Claude Sonnet).
+        # selects the model below (every tier -> GPT-4o-mini).
         package = "free"
         try:
             from modules.openrouter.credit_service import has_credits
@@ -325,17 +321,13 @@ Remember: It's better to say you don't have the information than to make somethi
         # Add current message
         messages.append({"role": "user", "content": user_message})
 
-        # Tier-based model routing: paid tiers -> Claude Sonnet, free -> the cheap model.
-        # Everything goes through OpenRouter when OPENROUTER_API_KEY is set (one key,
-        # every model); Anthropic/OpenAI direct remain as fallbacks. Note the Anthropic
-        # prompt-cache prefix below only applies on the direct-Anthropic path.
+        # Tier model (gpt-4o-mini on every tier today), served through OpenRouter when
+        # OPENROUTER_API_KEY is set — one key, every model — else the OpenAI SDK direct.
         from modules.openrouter.credits import pick_model, openrouter_model
         primary_model = pick_model(package)
         use_openrouter = bool(os.getenv("OPENROUTER_API_KEY", ""))
-        use_claude = primary_model.startswith("claude") and ANTHROPIC_AVAILABLE and not use_openrouter
 
         try:
-            # Generate response using the tier's model (Claude primary / GPT fallback)
             if use_openrouter:
                 from modules.openrouter.service import openrouter_client
                 from modules.openrouter.context import set_ai_context
@@ -355,41 +347,6 @@ Remember: It's better to say you don't have the information than to make somethi
                 prompt_tokens = usage.get("prompt_tokens", 0) or 0
                 completion_tokens = usage.get("completion_tokens", 0) or 0
                 usage_metadata = {"via": "openrouter"}
-            elif use_claude:
-                anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                # Convert format for Claude (system goes in its own param)
-                user_messages = [m for m in messages if m["role"] != "system"]
-                claude_messages = [{"role": m["role"], "content": m["content"]} for m in user_messages]
-
-                response = anthropic_client.messages.create(
-                    model=primary_model,
-                    system=[
-                        # Stable per store -> prompt-cached prefix (~90% cheaper on
-                        # cache hits; engages once prefix exceeds the model's
-                        # ~2048-token minimum, otherwise a harmless no-op)
-                        {
-                            "type": "text",
-                            "text": system_prompt,
-                            "cache_control": {"type": "ephemeral"},
-                        },
-                        # Volatile per message -> must stay after the cache breakpoint
-                        {"type": "text", "text": f"CONTEXT:\n{context}"},
-                    ],
-                    messages=claude_messages,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens
-                )
-                bot_response = response.content[0].text.strip()
-                usage = response.usage
-                cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-                cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-                prompt_tokens = usage.input_tokens + cache_read + cache_write
-                completion_tokens = usage.output_tokens
-                model_used = primary_model
-                usage_metadata = {
-                    "cache_read_tokens": cache_read,
-                    "cache_write_tokens": cache_write,
-                }
             else:
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
