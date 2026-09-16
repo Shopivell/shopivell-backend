@@ -332,7 +332,8 @@ async def _dispatch_ad_creator(action: str, d: dict) -> dict:
             # OpenRouter has no /images/generations — image models return the PNG
             # as a data URI in message.images on the chat endpoint.
             res = await _llm("/chat/completions", {
-                "model": os.getenv("AD_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
+                # ~$0.04/image measured; google/gemini-2.5-flash-image is far cheaper.
+                "model": os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
                 "modalities": ["image", "text"],
                 "messages": [{"role": "user", "content": prompt}],
             }, timeout=120.0)

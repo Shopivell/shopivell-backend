@@ -342,7 +342,7 @@ class AssetService:
                     headers={"Authorization": f"Bearer {or_key}",
                              "HTTP-Referer": "https://shopivell.com",
                              "X-Title": "Shopivell Ad Images", "Content-Type": "application/json"},
-                    json={"model": _os.getenv("AD_IMAGE_MODEL", "google/gemini-2.5-flash-image"),
+                    json={"model": _os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
                           "modalities": ["image", "text"],
                           "messages": [{"role": "user", "content": prompt}]},
                     timeout=180,
