@@ -11,7 +11,7 @@ Data sources:
   * Google autocomplete (no key)          — keyword suggestions (+ a-z expansion)
   * Keywords Everywhere (KEYWORDS_EVERYWHERE_API_KEY) — real search VOLUME/CPC by country
   * Tavily      (TAVILY_API_KEY)          — deep trend/content extraction
-  * Anthropic/OpenAI (optional)           — structured website extraction
+  * OpenRouter (OPENROUTER_API_KEY)       — structured website extraction (gpt-4o-mini)
 
 Every method is defensive: on error it returns an empty result so callers can
 degrade gracefully. Method names mirror the historical agent so existing callers
@@ -33,7 +33,6 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 KEYWORDS_EVERYWHERE_API_KEY = os.getenv("KEYWORDS_EVERYWHERE_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _SKIP_DOMAINS = {
@@ -285,7 +284,7 @@ class MarketResearchService:
     # ---------------- structured website extraction (LLM) --------------
 
     def _llm_ready(self) -> bool:
-        return bool(OPENROUTER_API_KEY) or ANTHROPIC_API_KEY.startswith("sk-ant") or OPENAI_API_KEY.startswith("sk-")
+        return bool(OPENROUTER_API_KEY) or OPENAI_API_KEY.startswith("sk-")
 
     def _llm_json(self, prompt: str) -> Dict[str, Any]:
         content = ""
@@ -304,17 +303,6 @@ class MarketResearchService:
                 )
                 r.raise_for_status()
                 content = r.json()["choices"][0]["message"]["content"]
-            elif ANTHROPIC_API_KEY.startswith("sk-ant"):
-                r = requests.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
-                             "Content-Type": "application/json"},
-                    json={"model": os.getenv("RESEARCH_LLM_MODEL_ANTHROPIC", "claude-sonnet-4-5"),
-                          "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]},
-                    timeout=40,
-                )
-                r.raise_for_status()
-                content = "".join(b.get("text", "") for b in r.json().get("content", []))
             elif OPENAI_API_KEY.startswith("sk-"):
                 r = requests.post(
                     "https://api.openai.com/v1/chat/completions",

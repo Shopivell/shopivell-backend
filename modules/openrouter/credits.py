@@ -34,11 +34,12 @@ TIER_MONTHLY_CREDITS = {
 
 # --- Tier-based model routing ------------------------------------------------
 
-# Free stores get the cheap/fast model; paid stores get Claude for quality.
+# Every tier uses gpt-4o-mini: Claude costs ~20x more per message for bot replies
+# that are short and high-volume. Override per deployment if that changes.
 TIER_PRIMARY_MODEL = {
     "free": "gpt-4o-mini",
-    "premium": "claude-sonnet-4-6",
-    "business": "claude-sonnet-4-6",
+    "premium": "gpt-4o-mini",
+    "business": "gpt-4o-mini",
 }
 FALLBACK_MODEL = "gpt-4o-mini"
 
