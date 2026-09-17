@@ -206,7 +206,10 @@ def _ctwa_payload(d: dict) -> dict:
 def _campaign_payload(d: dict) -> dict:
     # POST /ads/create. Requires accountId (Zernio account) + adAccountId (act_),
     # goal (not objective), linkUrl, imageUrl and callToAction.
-    return {
+    # status defaults to PAUSED: Zernio treats a missing status as ACTIVE, which would
+    # start spending the moment the ad passes Meta review.
+    payload = {
+        "status": str(_first(d, "status", default="PAUSED")).upper(),
         "accountId": _first(d, "account_id", "accountId"),
         "adAccountId": _first(d, "ad_account_id", "adAccountId"),
         "name": _first(d, "name", "product_name", default="Campaign"),
@@ -221,6 +224,15 @@ def _campaign_payload(d: dict) -> dict:
         "currency": _first(d, "currency", default="USD"),
         "countries": _iso_countries(_first(d, "countries")),
     }
+    # Meta needs the Facebook Page the ad is published as; without it the creative is
+    # rejected ("Failed to parse URL"). Zernio only auto-fills it for some goals.
+    page_id = _first(d, "page_id", "pageId")
+    if page_id:
+        payload["promotedObject"] = {**(_first(d, "promoted_object", "promotedObject", default={}) or {}),
+                                     "pageId": str(page_id)}
+    if _first(d, "validate_only", "validateOnly"):
+        payload["validateOnly"] = True
+    return payload
 
 
 async def _dispatch_zernio(action: str, d: dict) -> dict:
@@ -1776,3 +1788,47 @@ async def sync_whatsapp_inbox(
 
 # Export router
 openclaw_router = router
+
+
+async def resolve_meta_targets(store) -> Dict[str, Any]:
+    """The Zernio account, Meta ad account (act_...) and Facebook Page for a store.
+
+    The Page matters: Meta rejects a creative with no page ("Failed to parse URL"), and
+    Zernio only fills it in automatically for some goals.
+    """
+    profile_id = str(store.zernio_profile_id or "")
+
+    def _profile_of(account):
+        p = account.get("profileId") or account.get("profile")
+        return str(p.get("_id") if isinstance(p, dict) else (p or ""))
+
+    listing = await _zernio("GET", "/accounts")
+    accounts = listing.get("accounts", []) if isinstance(listing, dict) else (listing or [])
+    meta_accounts = [a for a in accounts if a.get("platform") in ("facebook", "metaads")]
+    account = next((a for a in meta_accounts if _profile_of(a) == profile_id), None) or \
+        (meta_accounts[0] if meta_accounts else None)
+    if not account:
+        raise HTTPException(status_code=400, detail="No Meta (Facebook) account is connected to this store.")
+    account_id = account.get("_id") or account.get("id")
+
+    ads = await _zernio("GET", "/ads/accounts", params={"accountId": account_id})
+    ad_accounts = ads.get("accounts", []) if isinstance(ads, dict) else (ads or [])
+    if not ad_accounts:
+        raise HTTPException(status_code=400, detail="No Meta ad account is available on the connected account.")
+
+    page_id = account.get("platformUserId")
+    try:  # a Page already used by an existing ad on this account is the safest choice
+        tree = await _zernio("GET", "/ads/tree", params={"accountId": account_id})
+        for campaign in (tree.get("campaigns") or []):
+            for ad_set in (campaign.get("adSets") or []):
+                for ad in (ad_set.get("ads") or []):
+                    existing = (ad.get("creative") or {}).get("pageId")
+                    if existing:
+                        page_id = existing
+                        break
+    except Exception as e:
+        logger.warning("could not read existing ads for a page id: %s", e)
+
+    return {"account_id": account_id,
+            "ad_account_id": ad_accounts[0].get("id") or ad_accounts[0].get("accountId"),
+            "page_id": page_id}
