@@ -320,12 +320,13 @@ class MarketResearchService:
                                 "url": place.get("website") or (f"https://www.google.com/maps?cid={cid}" if cid else ""),
                                 "description": place.get("address", ""),
                                 "rating": rating, "reviews": reviews, "source": "serper_maps"})
-        competitors = self._refine_competitors(competitors, business_type, location, company_name)
+        competitors = self._refine_competitors(competitors, business_type, location, company_name, top_products)
         logger.info("[MarketResearch] competitors: %d", len(competitors))
         return competitors
 
     def _refine_competitors(self, competitors: List[Dict[str, Any]], business_type: str,
-                            location: str, company_name: Optional[str]) -> List[Dict[str, Any]]:
+                            location: str, company_name: Optional[str],
+                            products: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Final LLM pass: keep only businesses that actually compete, name them by brand,
         and merge branches of one chain. The regex filters above cheaply remove obvious
         noise, but can't tell a craft shop from a hardware store or an app listing from a
@@ -339,12 +340,16 @@ class MarketResearchService:
             stars = f"{c['rating']}★ ({c.get('reviews') or 0} reviews) | " if c.get("rating") else ""
             rows.append(f"{i}. {c['name'][:60]} | {where} | {stars}{(c.get('description') or '')[:100]}")
         data = self._llm_json(
-            f"Business: {company_name or 'unknown'}, a {business_type} in {location or 'its market'}.\n"
+            f"Business: {company_name or 'unknown'}, a {business_type} in {location or 'its market'}"
+            f"{' that offers: ' + ', '.join(products) if products else ''}.\n"
             "Below are web and Google Maps search results. Return ONLY JSON: "
             '{"keep": [{"i": <index>, "name": "<competitor brand name only>"}]}\n'
             "Keep a result only if it is a business selling to the same customers in the same market. "
             "Google Maps listings are real local businesses — keep them whenever they are the right kind of "
-            "business. Drop articles, lists and directories, booking and travel aggregators (Expedia, "
+            "business. A company in a DIFFERENT industry that uses a similar service name is NOT a competitor "
+            "(a bank, insurer or mobile-money app offering 'cash management' or 'risk management' does not "
+            "compete with a security company's cash-in-transit or guarding). Drop articles, lists and "
+            "directories, booking and travel aggregators (Expedia, "
             "Booking.com), review and listing sites, tourist attractions and landmarks, app stores, software, "
             "regulators and associations, news, manufacturers or wholesalers that don't sell to these "
             "customers, businesses in a different industry, and the business itself. Order the list most "
@@ -608,9 +613,10 @@ class MarketResearchService:
             "Analyze the following website content and return ONLY a JSON object.\n\n"
             f"Website URL: {url}\nWebsite Content:\n{content[:8000]}\n\n"
             "JSON fields: company_name, tagline, industry, "
-            '"business_type" (specific, buyer-facing description of what kind of business '
-            'this is — e.g. "computer and IT equipment retailer", "wedding photographer", '
-            '"pharmacy" — NOT a broad sector like "Information Technology" or "Retail"), '
+            '"business_type" (the kind of company a customer would call it — its industry category, '
+            'specific and buyer-facing — e.g. "computer and IT equipment retailer", "private security '
+            'company", "wedding photographer", "pharmacy"; NOT a broad sector like "Information '
+            'Technology" and NOT just its service labels like "cash and risk management services"), '
             '"services_products" (array of {name, description, category}; each name must be '
             'a generic product/service CATEGORY a buyer would search for — "cookware", '
             '"laptops", "school uniforms" — and NEVER the company\'s own brand, sub-brand, '
