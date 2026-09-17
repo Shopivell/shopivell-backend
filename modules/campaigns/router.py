@@ -860,14 +860,16 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
                 return
 
-            # Ad images: one per ad set, generated in parallel from each angle's visual
-            # direction. Non-fatal — an ad without an image is still a usable draft.
+            # Ad images run in the background: generation takes ~60s per image and kept
+            # campaign creation at 3-5 minutes. The campaign is usable immediately and its
+            # images appear shortly after; the job worker retries a transient failure.
             if campaign.ad_sets:
-                yield f"data: {json.dumps({'event': 'progress', 'stage': 'images', 'message': 'Creating ad images...', 'percentage': 96})}\n\n"
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'images', 'message': 'Ad images are being created in the background...', 'percentage': 96})}\n\n"
                 try:
-                    await asyncio.to_thread(service.generate_campaign_images, campaign)
+                    from modules.jobs.queue import enqueue
+                    enqueue("generate_campaign_images", {"campaign_id": str(campaign.id)})
                 except Exception as image_err:
-                    logger.warning(f"Ad images failed (non-fatal): {image_err}")
+                    logger.warning(f"Queueing ad images failed (non-fatal): {image_err}")
 
             # Stream the saved ad sets (one per angle) so the creation screen shows every
             # ad set, not just a preview.

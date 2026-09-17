@@ -53,3 +53,32 @@ def sync_store_knowledge(payload: dict) -> dict:
         return {"store_id": str(store_id), "faqs_synced": faqs, "products_synced": products}
     finally:
         db.close()
+
+
+@handler("generate_campaign_images")
+def generate_campaign_images(payload: dict) -> dict:
+    """Generate the ad image(s) for a saved campaign off the creation path.
+
+    Image generation takes ~60s per image, which held campaign creation at ~3-5
+    minutes; the campaign now completes immediately and its images appear shortly
+    after. Retried by the worker if the image model is briefly unavailable.
+
+    payload: {"campaign_id": "<uuid>"}
+    """
+    campaign_id = payload.get("campaign_id")
+    if not campaign_id:
+        return {"error": "missing campaign_id"}
+
+    import all_models  # noqa: F401  (register every ORM mapper for this worker thread)
+    from modules.campaigns.models import UrlCampaign
+    from modules.campaigns.service import CampaignService
+
+    db = SessionLocal()
+    try:
+        campaign = db.query(UrlCampaign).filter(UrlCampaign.id == UUID(str(campaign_id))).first()
+        if not campaign:
+            return {"error": f"campaign {campaign_id} not found"}
+        created = CampaignService(db).generate_campaign_images(campaign)
+        return {"campaign_id": str(campaign_id), "images": created}
+    finally:
+        db.close()
