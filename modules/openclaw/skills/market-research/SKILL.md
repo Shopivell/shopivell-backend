@@ -43,7 +43,7 @@ returns `{"ok":true,"sources":{...}}` and needs no token.
 |---|---|---|
 | `/extract` | `content` (scraped page text), `url` | Business profile: `company_name`, `industry`, `services_products`, `value_propositions`, `target_audiences`, `geographic_coverage`, `keyword_seeds` |
 | `/competitors` | `business_type`, `location`, `products[]`, `domain`, `country_code`, `company_name` | `competitors[]` with `name`, `url`, `description`, `rating`, `reviews`, `source` |
-| `/keywords` | `seeds[]`, `country_code`, `expand_alphabet` | `keywords[]` with `keyword`, `source`, and `volume`/`cpc`/`competition` when Keywords Everywhere has credits |
+| `/keywords` | `seeds[]`, `country_code`, `expand_alphabet`, and `business_type`/`location` (used as the seed when `seeds` is empty) | `keywords[]` with `keyword`, `source`, and `volume`/`cpc`/`competition` when Keywords Everywhere has credits |
 | `/trends` | `industry`, `year` | `trends[]` with `title`, `source`, `insight` |
 
 ## How to run an analysis

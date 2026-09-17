@@ -772,7 +772,7 @@ async def scrape_url_stream(
                     ),
                     asyncio.to_thread(
                         research_agent._search_keywords_autocomplete,
-                        keyword_seeds[:8], country_code
+                        keyword_seeds[:8], country_code, True, business_type, location
                     ),
                     asyncio.to_thread(
                         research_agent._search_industry_trends,
