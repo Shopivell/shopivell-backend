@@ -32,6 +32,15 @@ load_dotenv()
 # Initialize clients
 tavily_api_key = os.getenv("TAVILY_API_KEY")
 openai_api_key = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+
+def _llm_client() -> OpenAI:
+    """OpenAI-compatible client: OpenRouter when configured (the OpenAI account has no
+    credits), else OpenAI direct. Model names like "gpt-4o-mini" resolve on both."""
+    if OPENROUTER_API_KEY:
+        return OpenAI(api_key=OPENROUTER_API_KEY, base_url="https://openrouter.ai/api/v1")
+    return OpenAI(api_key=openai_api_key)
 
 # Screenshot storage directory
 SCREENSHOT_DIR = Path("uploads/screenshots")
@@ -773,7 +782,7 @@ def extract_store_info_from_website(url: str, capture_screenshot: bool = True, a
     if not tavily_api_key or tavily_api_key == "your-tavily-api-key-here":
         raise ValueError("TAVILY_API_KEY not configured. Please add your Tavily API key to .env")
 
-    if not openai_api_key:
+    if not (openai_api_key or OPENROUTER_API_KEY):
         raise ValueError("OPENAI_API_KEY not configured")
 
     try:
@@ -1719,7 +1728,7 @@ def _analyze_images_with_vision(images_data: Dict[str, Any], domain: str) -> Dic
     Analyze multiple images using OpenAI Vision to extract comprehensive brand information.
     Identifies which images contain uniforms, vehicles, equipment for use as Gemini reference images.
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _llm_client()
 
     analysis_result = {
         "brand_colors": [],
@@ -1929,7 +1938,7 @@ def _extract_with_ai_agent(content: str, url: str, image_analysis: Optional[Dict
     Use OpenAI to extract structured store information from website content.
     Incorporates image analysis results if available.
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _llm_client()
 
     # Truncate content if too long
     if len(content) > 20000:
@@ -2336,7 +2345,7 @@ def _extract_faqs_with_ai(content: str, url: str) -> List[Dict[str, str]]:
     Returns a list of {question, answer, category} dicts.
     Enhanced to extract comprehensive business information.
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _llm_client()
 
     # Truncate content if too long
     if len(content) > 15000:
@@ -2467,7 +2476,7 @@ def _extract_products_services_with_prices(content: str, url: str) -> Dict[str, 
         - industry: Detected industry type
         - target_market: Who the business sells to
     """
-    client = OpenAI(api_key=openai_api_key)
+    client = _llm_client()
 
     # Use more content for product extraction
     if len(content) > 30000:
