@@ -199,14 +199,26 @@ async def startup_event():
         except Exception as e:
             logger.error(f"[Startup] Failed to start job worker: {e}")
 
-    # NOTE: 24/7 ads automation is now handled by OpenClaw optimizer plugin
-    # via Zernio API. The legacy agents scheduler has been removed.
-    logger.info("[Startup] Ads automation handled by OpenClaw optimizer plugin")
+    # 24/7 ad optimizer (rules over Zernio ad data; replaces the never-deployed
+    # OpenClaw optimizer plugin). Dry run unless OPTIMIZER_DRY_RUN=false; disable
+    # entirely with ENABLE_AD_OPTIMIZER=false.
+    if os.getenv("ENABLE_AD_OPTIMIZER", "true").strip().lower() in ("1", "true", "yes"):
+        try:
+            from modules.optimizer.service import start_optimizer
+            start_optimizer()
+            logger.info("[Startup] Ad optimizer started")
+        except Exception as e:
+            logger.error(f"[Startup] Failed to start ad optimizer: {e}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Gracefully stop background services."""
+    try:
+        from modules.optimizer.service import stop_optimizer
+        stop_optimizer()
+    except Exception as e:
+        logger.error(f"[Shutdown] Failed to stop ad optimizer: {e}")
     try:
         from modules.jobs.queue import stop_worker
         stop_worker()

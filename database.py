@@ -117,6 +117,7 @@ def init_db():
     from modules.feedback import models as feedback_models
     from modules.delivery import models as delivery_models
     from modules.procurement import models as procurement_models
+    from modules.optimizer import models as optimizer_models
 
     Base.metadata.create_all(bind=engine)
 
