@@ -35,6 +35,40 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 KEYWORDS_EVERYWHERE_API_KEY = os.getenv("KEYWORDS_EVERYWHERE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
+# Place names and country-only retailers that tie a keyword or report to one market.
+_COUNTRY_MARKERS = {
+    "zw": ["zimbabwe", "harare", "bulawayo"],
+    "za": ["south africa", "johannesburg", "cape town", "durban", "pretoria"],
+    "ke": ["kenya", "nairobi", "mombasa"],
+    "ng": ["nigeria", "lagos", "abuja"],
+    "gh": ["ghana", "accra"],
+    "zm": ["zambia", "lusaka"],
+    "bw": ["botswana", "gaborone"],
+    "us": ["usa", "united states", "america", "walmart"],
+    "gb": ["united kingdom", "uk", "england", "london", "asda", "tesco", "sainsbury"],
+    "in": ["india", "delhi", "mumbai", "bangalore", "bengaluru", "chennai", "flipkart"],
+    "pk": ["pakistan", "karachi", "lahore"],
+    "ph": ["philippines", "manila"],
+    "au": ["australia", "sydney", "melbourne"],
+    "ca": ["canada", "toronto"],
+    "ae": ["dubai", "uae"],
+}
+
+
+def _about_other_country(text: str, country: str) -> bool:
+    """True when text is about a market other than `country` — e.g. "building
+    materials online app india" or a "U.S. Online Grocery Market" report for a
+    Kenyan grocer. Unknown target countries are never filtered."""
+    country = "gb" if (country or "").lower() == "uk" else (country or "").lower()
+    if country not in _COUNTRY_MARKERS:
+        return False
+    low = (text or "").lower()
+    for code, terms in _COUNTRY_MARKERS.items():
+        if code != country and any(re.search(rf"\b{re.escape(t)}\b", low) for t in terms):
+            return True
+    return country != "us" and bool(re.search(r"\bU\.S\.|\bUS\b", text or ""))
+
+
 _SKIP_DOMAINS = {
     "researchgate.net", "medpages.info", "thedirectory.co.zw", "tripadvisor.com", "edurank.org",
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
@@ -336,7 +370,9 @@ class MarketResearchService:
         for seed in seeds:
             found.setdefault(seed.lower(), "seed")
 
-        keywords = [{"keyword": kw, "source": src} for kw, src in sorted(found.items())]
+        # Autocomplete is global: drop suggestions aimed at another market.
+        keywords = [{"keyword": kw, "source": src} for kw, src in sorted(found.items())
+                    if not _about_other_country(kw, country)]
 
         # Enrich with real search volume (Keywords Everywhere), when funded.
         volumes = self._keyword_volume([k["keyword"] for k in keywords], country)
@@ -352,11 +388,13 @@ class MarketResearchService:
 
     # ---------------- trends ----------------
 
-    def _search_industry_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
+    def _search_industry_trends(self, industry: str, year: str = "2024", location: str = "",
+                                country_code: str = "") -> List[Dict[str, Any]]:
         trends, seen = [], set()
+        where = f" {location}" if location else ""
         if self.tavily_available:
             res = self._tavily_search(
-                f"{industry} industry trends {year} market growth statistics", "advanced", 6)
+                f"{industry} industry trends{where} {year} market growth statistics", "advanced", 6)
             for r in res.get("results", []):
                 url = r.get("url", "")
                 if url and url not in seen:
@@ -364,14 +402,16 @@ class MarketResearchService:
                     trends.append({"title": r.get("title", ""), "source": url,
                                    "insight": (r.get("content", "") or "")[:400]})
         if self.serper_available:
-            res = self._serper_search(f"{industry} trends {year} forecast outlook", num=6)
+            res = self._serper_search(f"{industry} trends{where} {year} forecast outlook",
+                                      country=country_code or "us", num=6)
             for r in res.get("organic", []):
                 url = r.get("link", "")
                 if url and url not in seen:
                     seen.add(url)
                     trends.append({"title": r.get("title", ""), "source": url,
                                    "insight": (r.get("snippet", "") or "")[:400]})
-        return trends
+        # Global reports are fine; reports about a different country are not.
+        return [t for t in trends if not _about_other_country(t["title"], country_code)]
 
     # ---------------- structured website extraction (LLM) --------------
 
@@ -460,5 +500,6 @@ class MarketResearchService:
         return self._search_keywords_autocomplete(seeds, country_code, expand_alphabet,
                                                   business_type, location)
 
-    def find_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
-        return self._search_industry_trends(industry, year)
+    def find_trends(self, industry: str, year: str = "2024", location: str = "",
+                    country_code: str = "") -> List[Dict[str, Any]]:
+        return self._search_industry_trends(industry, year, location, country_code)

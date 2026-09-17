@@ -55,6 +55,9 @@ class KeywordsRequest(BaseModel):
 class TrendsRequest(BaseModel):
     industry: str
     year: str = "2026"
+    # Localise the search and drop reports about other countries.
+    location: str = ""
+    country_code: str = ""
 
 
 class ExtractRequest(BaseModel):
@@ -101,7 +104,7 @@ def trends(req: TrendsRequest,
            authorization: Optional[str] = Header(None)):
     _check_auth(x_research_token, authorization)
     svc = MarketResearchService()
-    items = svc.find_trends(req.industry, req.year)
+    items = svc.find_trends(req.industry, req.year, req.location, req.country_code)
     return {"trends": items, "count": len(items)}
 
 
