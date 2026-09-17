@@ -955,10 +955,29 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
     _CTA_CHOICES = ("Shop Now", "Learn More", "Contact Us", "Send Message", "Get Quote", "Book Now",
                     "Order Now", "Sign Up", "Call Now", "Get Offer")
 
+    @staticmethod
+    def _norm_claim_text(text: str) -> str:
+        """Compare claims on meaning, not punctuation: "Same-day" == "same day",
+        "2,000+" == "2000+" (a raw substring check deleted true claims)."""
+        t = (text or "").lower().replace("‑", "-").replace("–", "-").replace("—", "-")
+        t = re.sub(r"(?<=\d),(?=\d{3})", "", t)
+        t = re.sub(r"[-_]", " ", t)
+        return re.sub(r"\s+", " ", t)
+
     def _unsupported_claims(self, text: str, website_text: str) -> List[str]:
-        site = (website_text or "").lower()
-        found = {m.group(0) for pat in self._CLAIM_PATTERNS for m in re.finditer(pat, text or "", re.I)}
-        return sorted(c for c in found if c.lower() not in site)
+        site = self._norm_claim_text(website_text)
+        body = self._norm_claim_text(text)
+        found = {m.group(0) for pat in self._CLAIM_PATTERNS for m in re.finditer(pat, body, re.I)}
+        unsupported = []
+        for claim in found:
+            if claim in site:
+                continue
+            # "over 2000 customers" is backed by the site's "2000+ Happy Customers".
+            number = re.search(r"\d+", claim)
+            if number and re.match(r"(?:over|more than)\s", claim) and re.search(rf"\b{number.group(0)}\s?\+", site):
+                continue
+            unsupported.append(claim)
+        return sorted(unsupported)
 
     def _ground_ad_copy(self, data: Dict[str, Any], website_text: str) -> Dict[str, Any]:
         """Remove claims the website doesn't support: an LLM rewrite first, then drop any
