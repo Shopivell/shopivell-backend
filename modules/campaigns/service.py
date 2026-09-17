@@ -1163,6 +1163,11 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         from modules.assets.service import AssetService, generate_image_bytes
 
         jobs = self._ad_image_jobs(campaign)
+        # One image per campaign while the image step is being reviewed: each image costs
+        # ~$0.04 and ~60s. Raise AD_IMAGES_PER_CAMPAIGN (0 = one per ad set) once approved.
+        limit = int(os.getenv("AD_IMAGES_PER_CAMPAIGN", "1"))
+        if limit > 0:
+            jobs = jobs[:limit]
         if not jobs:
             return 0
 
