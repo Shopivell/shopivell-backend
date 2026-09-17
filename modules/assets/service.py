@@ -400,11 +400,22 @@ class AssetService:
     ) -> Tuple[Optional[Asset], Optional[str]]:
         """Upload generated image bytes to storage and record them as a generated asset."""
         try:
+            # Image models return ~1.6MB PNGs; a quality-88 JPEG is ~10x smaller and looks
+            # the same in a feed, so ads load fast in the UI and upload quickly to Meta.
+            ext, mime = "png", "image/png"
+            try:
+                import io
+                from PIL import Image
+                buf = io.BytesIO()
+                Image.open(io.BytesIO(image_data)).convert("RGB").save(buf, format="JPEG", quality=88, optimize=True)
+                image_data, ext, mime = buf.getvalue(), "jpg", "image/jpeg"
+            except Exception as e:
+                print(f"[Asset] JPEG conversion skipped: {e}")
             upload_result, error = self._upload_file(
                 file_data=image_data,
-                filename=f"generated_{uuid.uuid4().hex[:8]}.png",
+                filename=f"generated_{uuid.uuid4().hex[:8]}.{ext}",
                 store_id=store_id,
-                content_type="image/png",
+                content_type=mime,
                 resource_type="image"
             )
             if error:
@@ -413,9 +424,9 @@ class AssetService:
             asset = Asset(
                 store_id=store_id,
                 name=f"Generated: {(headline or '')[:50]}",
-                original_filename="ai-generated.png",
+                original_filename=f"ai-generated.{ext}",
                 file_type=AssetType.IMAGE,
-                mime_type="image/png",
+                mime_type=mime,
                 file_size=upload_result.get("bytes"),
                 cloudinary_public_id=upload_result.get("public_id"),
                 cloudinary_url=upload_result.get("url"),
