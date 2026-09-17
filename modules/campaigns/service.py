@@ -1063,6 +1063,51 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         self.db.flush()
         logger.info(f"[CampaignService] Saved {len(ad_sets_data)} ad sets with copy for campaign {campaign.id}")
 
+    def _ad_image_jobs(self, campaign: Campaign, include_existing: bool = False) -> List[Tuple[Any, str, List[str]]]:
+        """(ad content, image prompt, reference image URLs) for each primary ad lacking an image.
+
+        The website screenshot goes along as a visual reference so images match the brand's
+        colours and show the kind of products the site sells. The prompt pushes past the
+        first version's look (warm beige filter, unrecognisable products, no emotion)."""
+        sd = campaign.scraped_data if isinstance(campaign.scraped_data, dict) else {}
+        profile = (sd.get("market_research") or {}).get("profile") or {}
+        angles = sd.get("ad_angles") or []
+        business = profile.get("company_name") or campaign.name or "the business"
+        kind = profile.get("business_type") or ""
+        place = profile.get("location") or ""
+        products = ", ".join(str(p) for p in (profile.get("products") or [])[:5])
+        screenshot = sd.get("screenshot_url")
+        references = [screenshot] if screenshot else []
+
+        jobs = []
+        ordered_sets = sorted(campaign.ad_sets or [], key=lambda s: s.created_at or datetime.min)
+        for i, ad_set in enumerate(ordered_sets):
+            content = next((c for c in ad_set.ad_contents if c.is_primary), None)
+            if not content or (content.media_url and not include_existing):
+                continue
+            angle = angles[i] if i < len(angles) and isinstance(angles[i], dict) else {}
+            scene = angle.get("visual_direction") or f"a customer benefiting from: {content.headline or business}"
+            prompt = (
+                f"Create a scroll-stopping, photorealistic Facebook/Instagram ad image for {business}"
+                f"{', a ' + kind if kind else ''}{' in ' + place if place else ''}"
+                f"{' that sells ' + products if products else ''}.\n\n"
+                f"The ad headline is: \"{content.headline}\". The customer's situation: "
+                f"{angle.get('customer_pain') or content.headline}. The feeling it should create: "
+                f"{angle.get('emotion') or 'relief and confidence'}.\n"
+                f"Scene: {scene}.\n\n"
+                + ("The attached image is a screenshot of the business's website. Use it ONLY as a style and brand "
+                   "reference: match its brand colours and the kind of products it shows. Do not reproduce the "
+                   "screenshot, its layout, any of its text or its logo.\n\n" if references else "")
+                + f"Requirements: show the relevant product clearly and recognisably (e.g. a real laptop or printer, "
+                "not a blank box); real, relatable people from "
+                f"{place or 'the local market'} with a clear, genuine facial expression that matches the feeling; "
+                "a single strong focal point; bold, vibrant but natural colour and contrast that stands out in a "
+                "feed — no warm sepia or beige 'golden hour' filter; authentic, not staged stock photography; "
+                "square 1:1 with clear space at the top for a headline. No text, words, letters, numbers, logos or "
+                "watermarks anywhere in the image.")
+            jobs.append((content, prompt, references))
+        return jobs
+
     def generate_campaign_images(self, campaign: Campaign) -> int:
         """One image per saved ad set, from its angle's visual direction.
 
@@ -1072,45 +1117,26 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         from concurrent.futures import ThreadPoolExecutor
         from modules.assets.service import AssetService, generate_image_bytes
 
-        sd = campaign.scraped_data if isinstance(campaign.scraped_data, dict) else {}
-        profile = (sd.get("market_research") or {}).get("profile") or {}
-        angles = sd.get("ad_angles") or []
-        business = profile.get("company_name") or campaign.name or "the business"
-        kind = profile.get("business_type") or ""
-        place = profile.get("location") or ""
-
-        jobs = []
-        ordered_sets = sorted(campaign.ad_sets or [], key=lambda s: s.created_at or datetime.min)
-        for i, ad_set in enumerate(ordered_sets):
-            content = next((c for c in ad_set.ad_contents if c.is_primary), None)
-            if not content or content.media_url:
-                continue
-            angle = angles[i] if i < len(angles) and isinstance(angles[i], dict) else {}
-            scene = angle.get("visual_direction") or f"a customer benefiting from: {content.headline or business}"
-            prompt = (
-                f"Photorealistic Facebook/Instagram ad photo for {business}"
-                f"{', a ' + kind if kind else ''}{' in ' + place if place else ''}. "
-                f"Scene: {scene}. Show real, relatable people and settings from {place or 'the local market'}. "
-                "Natural light, authentic rather than staged stock-photo style, square 1:1 composition with clear "
-                "space at the top for a headline. No text, words, letters, logos or watermarks anywhere in the image.")
-            jobs.append((content, prompt))
+        jobs = self._ad_image_jobs(campaign)
         if not jobs:
             return 0
 
         def generate_with_retry(job):
-            # The image model occasionally returns no image; one retry fixed it in testing
-            # (1 of 3 failed on reliabletech.co.zw with "Image model returned no image").
-            image_data, error = generate_image_bytes(job[1])
+            _content, prompt, references = job
+            image_data, error = generate_image_bytes(prompt, references)
             if error or not image_data:
-                image_data, error = generate_image_bytes(job[1])
+                # The model occasionally returns nothing (1 of 3 on reliabletech.co.zw), and a
+                # reference URL it can't fetch fails the call: retry once without references.
+                image_data, error = generate_image_bytes(prompt)
             return image_data, error
 
         with ThreadPoolExecutor(max_workers=min(3, len(jobs))) as pool:
             results = list(pool.map(generate_with_retry, jobs))
 
+        business = campaign.name or "the business"
         assets = AssetService(self.db)
         done = 0
-        for (content, _prompt), (image_data, error) in zip(jobs, results):
+        for (content, _prompt, _refs), (image_data, error) in zip(jobs, results):
             if error or not image_data:
                 logger.warning(f"[CampaignService] Ad image failed for '{content.headline}': {error}")
                 continue
