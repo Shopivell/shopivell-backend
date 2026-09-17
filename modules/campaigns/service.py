@@ -1063,6 +1063,62 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         self.db.flush()
         logger.info(f"[CampaignService] Saved {len(ad_sets_data)} ad sets with copy for campaign {campaign.id}")
 
+    def generate_campaign_images(self, campaign: Campaign) -> int:
+        """One image per saved ad set, from its angle's visual direction.
+
+        Images are generated in parallel (HTTP only, off the DB session), then uploaded
+        and linked one at a time. Returns how many ads got an image; a failure leaves that
+        ad text-only instead of failing the campaign."""
+        from concurrent.futures import ThreadPoolExecutor
+        from modules.assets.service import AssetService, generate_image_bytes
+
+        sd = campaign.scraped_data if isinstance(campaign.scraped_data, dict) else {}
+        profile = (sd.get("market_research") or {}).get("profile") or {}
+        angles = sd.get("ad_angles") or []
+        business = profile.get("company_name") or campaign.name or "the business"
+        kind = profile.get("business_type") or ""
+        place = profile.get("location") or ""
+
+        jobs = []
+        ordered_sets = sorted(campaign.ad_sets or [], key=lambda s: s.created_at or datetime.min)
+        for i, ad_set in enumerate(ordered_sets):
+            content = next((c for c in ad_set.ad_contents if c.is_primary), None)
+            if not content or content.media_url:
+                continue
+            angle = angles[i] if i < len(angles) and isinstance(angles[i], dict) else {}
+            scene = angle.get("visual_direction") or f"a customer benefiting from: {content.headline or business}"
+            prompt = (
+                f"Photorealistic Facebook/Instagram ad photo for {business}"
+                f"{', a ' + kind if kind else ''}{' in ' + place if place else ''}. "
+                f"Scene: {scene}. Show real, relatable people and settings from {place or 'the local market'}. "
+                "Natural light, authentic rather than staged stock-photo style, square 1:1 composition with clear "
+                "space at the top for a headline. No text, words, letters, logos or watermarks anywhere in the image.")
+            jobs.append((content, prompt))
+        if not jobs:
+            return 0
+
+        with ThreadPoolExecutor(max_workers=min(3, len(jobs))) as pool:
+            results = list(pool.map(lambda job: generate_image_bytes(job[1]), jobs))
+
+        assets = AssetService(self.db)
+        done = 0
+        for (content, _prompt), (image_data, error) in zip(jobs, results):
+            if error or not image_data:
+                logger.warning(f"[CampaignService] Ad image failed for '{content.headline}': {error}")
+                continue
+            asset, error = assets.save_generated_image(
+                campaign.store_id, image_data, content.headline or business,
+                description=content.primary_text, call_to_action=content.call_to_action, campaign_id=campaign.id)
+            if error or not asset:
+                logger.warning(f"[CampaignService] Saving ad image failed for '{content.headline}': {error}")
+                continue
+            content.asset_id = asset.id
+            content.media_url = (asset.cloudinary_secure_url or asset.cloudinary_url or "")[:512] or None
+            done += 1
+        self.db.commit()
+        logger.info(f"[CampaignService] Generated {done}/{len(jobs)} ad images for campaign {campaign.id}")
+        return done
+
     def _generate_with_openrouter(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Generate content using OpenRouter API."""
         try:

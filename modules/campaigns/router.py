@@ -860,11 +860,20 @@ async def scrape_url_stream(
                 yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
                 return
 
+            # Ad images: one per ad set, generated in parallel from each angle's visual
+            # direction. Non-fatal — an ad without an image is still a usable draft.
+            if campaign.ad_sets:
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'images', 'message': 'Creating ad images...', 'percentage': 96})}\n\n"
+                try:
+                    await asyncio.to_thread(service.generate_campaign_images, campaign)
+                except Exception as image_err:
+                    logger.warning(f"Ad images failed (non-fatal): {image_err}")
+
             # Stream the saved ad sets (one per angle) so the creation screen shows every
             # ad set, not just a preview.
             for saved in (campaign.ad_sets or []):
                 content = next((c for c in saved.ad_contents if c.is_primary), None) or (saved.ad_contents[0] if saved.ad_contents else None)
-                yield f"data: {json.dumps({'event': 'ad_set', 'name': saved.name, 'title': saved.title or '', 'audience_tags': (saved.audience_tags or [])[:5], 'hashtags': (saved.hashtags or [])[:5], 'headline': (content.headline if content else '') or '', 'primary_text': ((content.primary_text or '')[:200]) if content else ''})}\n\n"
+                yield f"data: {json.dumps({'event': 'ad_set', 'name': saved.name, 'title': saved.title or '', 'audience_tags': (saved.audience_tags or [])[:5], 'hashtags': (saved.hashtags or [])[:5], 'headline': (content.headline if content else '') or '', 'primary_text': ((content.primary_text or '')[:200]) if content else '', 'media_url': (content.media_url if content else None)})}\n\n"
                 await asyncio.sleep(0.05)
 
             # Complete

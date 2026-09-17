@@ -107,6 +107,37 @@ def _get_minio_url(object_name: str) -> str:
     return f"{API_PUBLIC_URL}/api/assets/file/{object_name}"
 
 
+def generate_image_bytes(prompt: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """PNG bytes from the OpenRouter image model (AD_IMAGE_MODEL).
+
+    OpenRouter has no /images/generations: image models return the image as a data URI
+    in message.images on the chat endpoint. No DB access, so safe in worker threads."""
+    import base64
+    import requests
+    key = os.getenv("OPENROUTER_API_KEY", "")
+    if not key:
+        return None, "OPENROUTER_API_KEY not configured"
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "HTTP-Referer": "https://shopivell.com",
+                     "X-Title": "Shopivell Ad Images", "Content-Type": "application/json"},
+            json={"model": os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
+                  "modalities": ["image", "text"],
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=180,
+        )
+        if r.status_code >= 400:
+            return None, f"Image generation failed ({r.status_code}): {r.text[:150]}"
+        images = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("images") or []
+        data_url = ((images[0].get("image_url") or {}).get("url") or "") if images else ""
+        if not data_url:
+            return None, "Image model returned no image"
+        return base64.b64decode(data_url.split(",", 1)[-1]), None
+    except Exception as e:
+        return None, f"Image generation error: {e}"
+
+
 class AssetService:
     def __init__(self, db: Session):
         self.db = db
@@ -330,31 +361,12 @@ class AssetService:
 - Make it suitable for Facebook/Instagram ads
 - 1024x1024, high quality, visually striking"""
 
-            import os as _os
-            import requests as _requests
-            or_key = _os.getenv("OPENROUTER_API_KEY", "")
-            if or_key:
-                # OpenRouter has no /images/generations; image models return the PNG
-                # as a data URI in message.images on the chat endpoint.
-                import base64 as _b64
-                r = _requests.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {or_key}",
-                             "HTTP-Referer": "https://shopivell.com",
-                             "X-Title": "Shopivell Ad Images", "Content-Type": "application/json"},
-                    json={"model": _os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
-                          "modalities": ["image", "text"],
-                          "messages": [{"role": "user", "content": prompt}]},
-                    timeout=180,
-                )
-                if r.status_code >= 400:
-                    return None, f"Image generation failed ({r.status_code})"
-                images = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("images") or []
-                data_url = ((images[0].get("image_url") or {}).get("url") or "") if images else ""
-                if not data_url:
-                    return None, "Image model returned no image"
-                image_data = _b64.b64decode(data_url.split(",", 1)[-1])
+            if _os.getenv("OPENROUTER_API_KEY", ""):
+                image_data, error = generate_image_bytes(prompt)
+                if error:
+                    return None, error
             else:
+                import requests as _requests
                 response = self.openai.images.generate(
                     model="dall-e-3",
                     prompt=prompt,
@@ -367,22 +379,41 @@ class AssetService:
                     return None, "Failed to download generated image"
                 image_data = img_response.content
 
-            filename = f"generated_{uuid.uuid4().hex[:8]}.png"
+            return self.save_generated_image(store_id, image_data, headline, description=description,
+                                             features=features, call_to_action=call_to_action,
+                                             campaign_id=campaign_id)
+
+        except Exception as e:
+            self.db.rollback()
+            print(f"[Asset] Generation error: {e}")
+            return None, str(e)
+
+    def save_generated_image(
+        self,
+        store_id: uuid.UUID,
+        image_data: bytes,
+        headline: str,
+        description: Optional[str] = None,
+        features: Optional[List[str]] = None,
+        call_to_action: Optional[str] = None,
+        campaign_id: Optional[uuid.UUID] = None
+    ) -> Tuple[Optional[Asset], Optional[str]]:
+        """Upload generated image bytes to storage and record them as a generated asset."""
+        try:
             upload_result, error = self._upload_file(
                 file_data=image_data,
-                filename=filename,
+                filename=f"generated_{uuid.uuid4().hex[:8]}.png",
                 store_id=store_id,
                 content_type="image/png",
                 resource_type="image"
             )
-
             if error:
                 return None, error
 
             asset = Asset(
                 store_id=store_id,
-                name=f"Generated: {headline[:50]}",
-                original_filename="dall-e-generated.png",
+                name=f"Generated: {(headline or '')[:50]}",
+                original_filename="ai-generated.png",
                 file_type=AssetType.IMAGE,
                 mime_type="image/png",
                 file_size=upload_result.get("bytes"),
@@ -394,22 +425,19 @@ class AssetService:
                 height=upload_result.get("height"),
                 headline=headline,
                 description=description,
-                features=features,
+                features=features or [],
                 call_to_action=call_to_action,
                 source="generated",
                 source_campaign_id=campaign_id,
                 is_generated=True
             )
-
             self.db.add(asset)
             self.db.commit()
             self.db.refresh(asset)
-
             return asset, None
-
         except Exception as e:
             self.db.rollback()
-            print(f"[Asset] Generation error: {e}")
+            print(f"[Asset] Save generated image error: {e}")
             return None, str(e)
 
     def delete_asset(self, asset_id: uuid.UUID) -> Tuple[bool, Optional[str]]:
