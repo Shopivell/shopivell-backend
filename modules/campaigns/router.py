@@ -776,7 +776,7 @@ async def scrape_url_stream(
                     ),
                     asyncio.to_thread(
                         research_agent._search_industry_trends,
-                        business_type, current_year
+                        business_type, current_year, location, country_code
                     ),
                     asyncio.to_thread(_fetch_ad_library),
                 )
