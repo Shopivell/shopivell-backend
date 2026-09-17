@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional, AsyncGenerator
 import uuid
+from datetime import datetime
 import logging
 import json
 import asyncio
@@ -2218,3 +2219,78 @@ async def check_ad_fatigue(
         status_code=status.HTTP_410_GONE,
         detail="Ad fatigue detection and creative refresh have moved to OpenClaw.",
     )
+
+
+class PublishMetaRequest(BaseModel):
+    ad_set_id: Optional[uuid.UUID] = None          # defaults to the first ad set with an image
+    daily_budget: Optional[float] = None           # defaults to the ad set's share of the campaign budget
+    goal: Optional[str] = None                     # traffic | conversions | leads | engagement ...
+    countries: Optional[List[str]] = None          # ISO-2; defaults to the store's country
+    status: str = "PAUSED"                         # PAUSED so nothing spends until it's reviewed
+    validate_only: bool = False                    # dry-run validation with Zernio, creates nothing
+
+
+@campaign_router.post("/{campaign_id}/publish-meta")
+async def publish_campaign_to_meta(
+    campaign_id: uuid.UUID,
+    request: PublishMetaRequest,
+    db: Session = Depends(get_db)
+):
+    """Publish a saved campaign's ad set to Meta through Zernio.
+
+    Paused by default: the ad is created, goes through Meta review, and spends nothing
+    until it is activated. Pass validate_only to check the payload without creating.
+    """
+    from modules.openclaw.router import _dispatch_zernio, resolve_meta_targets
+    from modules.stores.models import Store
+
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    store = db.query(Store).filter(Store.id == campaign.store_id).first()
+    if not store or not store.zernio_profile_id:
+        raise HTTPException(status_code=400, detail="Store is not connected to Zernio")
+
+    ad_sets = sorted(campaign.ad_sets or [], key=lambda s: s.created_at or datetime.min)
+    if request.ad_set_id:
+        ad_sets = [s for s in ad_sets if s.id == request.ad_set_id]
+    ad_set = next((s for s in ad_sets if any(c.media_url for c in s.ad_contents)), None) or \
+        (ad_sets[0] if ad_sets else None)
+    if not ad_set:
+        raise HTTPException(status_code=400, detail="Campaign has no ad set to publish")
+    content = next((c for c in ad_set.ad_contents if c.is_primary), None) or \
+        (ad_set.ad_contents[0] if ad_set.ad_contents else None)
+    if not content or not content.media_url:
+        raise HTTPException(status_code=400, detail="This ad set has no image yet — Meta requires one")
+
+    targets = await resolve_meta_targets(store)
+    data = {
+        **targets,
+        "name": f"{campaign.name} - {ad_set.name}"[:80],
+        "goal": request.goal or campaign.goal or "traffic",
+        "headline": (content.headline or "")[:40],
+        "body": content.primary_text or "",
+        "link_url": content.destination_url or campaign.source_url or store.store_link,
+        "image_url": content.media_url,
+        "call_to_action": content.call_to_action or "Learn More",
+        "budget": request.daily_budget or ad_set.daily_budget or 5,
+        "budget_type": "daily",
+        "currency": store.currency or "USD",
+        "countries": request.countries or ([store.country_code] if store.country_code else ["ZW"]),
+        "status": request.status,
+        "validate_only": request.validate_only,
+    }
+    result = await _dispatch_zernio("create_campaign", data)
+    if request.validate_only:
+        return {"validated": True, "payload": {k: v for k, v in data.items() if k != "body"}, "result": result}
+
+    meta_campaign_id = result.get("id") or result.get("campaignId") or result.get("campaign_id")
+    if meta_campaign_id:
+        campaign.platform_campaign_ids = {**(campaign.platform_campaign_ids or {}), "meta": str(meta_campaign_id)}
+    ad_id = result.get("adId") or result.get("ad_id")
+    if ad_id:
+        content.meta_ad_id = str(ad_id)
+    db.commit()
+    logger.info(f"[Publish] campaign {campaign.id} ad set '{ad_set.name}' -> Meta ({request.status})")
+    return {"published": True, "status": request.status, "ad_set": ad_set.name,
+            "meta_campaign_id": meta_campaign_id, "result": result}
