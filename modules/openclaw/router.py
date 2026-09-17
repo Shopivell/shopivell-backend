@@ -414,6 +414,14 @@ class GenerateCopyRequest(BaseModel):
 class OptimizerConfigUpdate(BaseModel):
     scale_winner: Optional[Dict[str, Any]] = None
     kill_loser: Optional[Dict[str, Any]] = None
+    pause_no_spend: Optional[Dict[str, Any]] = None
+    creative_fatigue: Optional[Dict[str, Any]] = None
+    # Targets the rules compare against; without them scale/kill stay off.
+    target_roas: Optional[float] = None
+    target_cpa: Optional[float] = None
+    # False lets the optimizer actually change budgets (with ads_enabled and
+    # OPTIMIZER_DRY_RUN=false); it defaults to dry run.
+    dry_run: Optional[bool] = None
 
 
 # ============ Store Ad Settings ============
@@ -941,11 +949,9 @@ async def get_optimizer_status(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get optimizer status for a store"""
-    result = await call_openclaw("GET", "/api/plugins/optimizer/status", {
-        "store_id": store_id
-    })
-    return result
+    """Get optimizer status for a store (modules.optimizer, not the OpenClaw plugin)."""
+    from modules.optimizer import service as optimizer
+    return optimizer.get_status(db, _owned_store(db, store_id, current_user))
 
 
 @router.get("/stores/{store_id}/optimizer/history")
@@ -955,12 +961,9 @@ async def get_optimizer_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get optimizer action history"""
-    result = await call_openclaw("GET", "/api/plugins/optimizer/history", {
-        "store_id": store_id,
-        "limit": limit
-    })
-    return result
+    """Get optimizer decision history (dry-run, applied and failed)."""
+    from modules.optimizer import service as optimizer
+    return optimizer.get_history(db, _owned_store(db, store_id, current_user), limit)
 
 
 @router.post("/stores/{store_id}/optimizer/config")
@@ -970,12 +973,17 @@ async def update_optimizer_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Update optimizer configuration"""
-    result = await call_openclaw("POST", "/api/plugins/optimizer/config", {
-        "store_id": store_id,
-        "rules": config.dict(exclude_none=True)
-    })
-    return result
+    """Update optimizer targets, rule overrides and the per-store dry-run switch."""
+    from modules.optimizer import service as optimizer
+    return optimizer.update_config(db, _owned_store(db, store_id, current_user), config.dict(exclude_none=True))
+
+
+def _owned_store(db: Session, store_id: str, user: User) -> Store:
+    """The store if this user owns it; 404 otherwise (don't leak another store's ads)."""
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or str(store.owner_id) != str(user.id):
+        raise HTTPException(status_code=404, detail="Store not found")
+    return store
 
 
 # ============ Lead & Conversion Stats ============
