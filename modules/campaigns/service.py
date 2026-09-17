@@ -411,7 +411,8 @@ Return as JSON:
             "hashtags": ["hashtag1", "hashtag2", "...8-10 tags"],
             "value_proposition": "Value statement",
             "emotion": "Primary emotion",
-            "visual_direction": "Scene description"
+            "visual_direction": "Scene description",
+            "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
         }}
     ]
 }}
@@ -893,7 +894,8 @@ Return as JSON:
             "hashtags": ["business", "technology", "innovation", "security", "professional", "enterprise", "solutions", "industry"],
             "value_proposition": "Clear value statement",
             "emotion": "Primary emotion",
-            "visual_direction": "Scene description"
+            "visual_direction": "Scene description",
+            "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
         }}
     ]
 }}
@@ -918,6 +920,54 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         logger.warning("[CampaignService] No AI client available, using mock data")
         return self._mock_ad_content(url, store_context)
 
+    # Specific promises ad copy tends to invent ("Same-Day Delivery", "100% genuine",
+    # "full manufacturer warranty"); kept only when the website itself says them.
+    _CLAIM_PATTERNS = (
+        r"same[- ]day", r"next[- ]day", r"\b24/7\b", r"\b24 hours?\b", r"\b\d+\s?%", r"\b(?:over|more than)\s+\d+",
+        r"\b\d+\+", r"\bwarrant(?:y|ies)\b", r"\bguarantee[ds]?\b", r"\bfree (?:delivery|shipping)\b",
+        r"\bcheapest\b", r"\blowest prices?\b", r"#1\b", r"\bnumber one\b", r"\baward[- ]winning\b", r"\bbest\b",
+    )
+    # Meta call-to-action buttons the copy may choose from.
+    _CTA_CHOICES = ("Shop Now", "Learn More", "Contact Us", "Send Message", "Get Quote", "Book Now",
+                    "Order Now", "Sign Up", "Call Now", "Get Offer")
+
+    def _unsupported_claims(self, text: str, website_text: str) -> List[str]:
+        site = (website_text or "").lower()
+        found = {m.group(0) for pat in self._CLAIM_PATTERNS for m in re.finditer(pat, text or "", re.I)}
+        return sorted(c for c in found if c.lower() not in site)
+
+    def _ground_ad_copy(self, data: Dict[str, Any], website_text: str) -> Dict[str, Any]:
+        """Remove claims the website doesn't support: an LLM rewrite first, then drop any
+        sentence that still carries one. Without website text there is nothing to check."""
+        if not website_text:
+            return data
+        fields = ("title", "primary_text", "value_proposition")
+        claims = self._unsupported_claims(" ".join(str(data.get(f) or "") for f in fields), website_text)
+        if not claims:
+            return data
+        logger.info(f"[CampaignService] Unsupported claims in '{data.get('name')}': {claims}")
+        if self.openrouter:
+            try:
+                res = self.openrouter.chat_completion_sync(
+                    model=os.getenv("AD_CONTENT_MODEL", "openai/gpt-4o-mini"),
+                    messages=[{"role": "user", "content": (
+                        "Rewrite this Facebook ad so it makes no claim the business's website does not support. "
+                        f"Remove these unsupported claims: {', '.join(claims)}. Keep the audience, tone and roughly "
+                        "the same length; no emojis; add no new facts, numbers or promises. "
+                        'Return ONLY JSON {"title": "", "primary_text": "", "value_proposition": ""}.\n\n'
+                        + json.dumps({f: data.get(f) for f in fields}))}],
+                    temperature=0.3, max_tokens=1200, response_format={"type": "json_object"})
+                fixed = json.loads(res["choices"][0]["message"]["content"])
+                data = {**data, **{f: fixed[f] for f in fields if isinstance(fixed.get(f), str) and fixed[f]}}
+            except Exception as e:
+                logger.warning(f"[CampaignService] Ad copy rewrite failed: {e}")
+        for f in fields:
+            text = str(data.get(f) or "")
+            if self._unsupported_claims(text, website_text):
+                data[f] = " ".join(s for s in re.split(r"(?<=[.!?])\s+", text)
+                                   if not self._unsupported_claims(s, website_text))
+        return data
+
     def _save_generated_ad_sets(self, campaign: Campaign, ad_content: Dict[str, Any]) -> None:
         """Persist every generated ad set (one per ad angle) with its ad copy.
 
@@ -932,9 +982,19 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         headlines = ad_content.get("headlines") or []
         descriptions = ad_content.get("descriptions") or []
         budget = (campaign.daily_budget or 0) / len(ad_sets_data) if campaign.daily_budget else None
-        cta = campaign.conversion_button or "Learn More"
+        website_text = (campaign.scraped_data or {}).get("content", "") if isinstance(campaign.scraped_data, dict) else ""
 
         for i, data in enumerate(ad_sets_data):
+            data = self._ground_ad_copy(data, website_text)
+            # The copy's own CTA wins over the "Learn More" default; a merchant-chosen button wins over both.
+            chosen = next((c for c in self._CTA_CHOICES if c.lower() == str(data.get("call_to_action") or "").strip().lower()), None)
+            cta = (campaign.conversion_button if campaign.conversion_button not in (None, "", "Learn More") else chosen) or "Learn More"
+            description = (descriptions[i] if i < len(descriptions) else "") or data.get("value_proposition") or ""
+            if self._unsupported_claims(description, website_text):
+                description = data.get("value_proposition") or ""
+            headline = str(data.get("title") or (headlines[i] if i < len(headlines) else "") or campaign.name)
+            if self._unsupported_claims(headline, website_text):
+                headline = campaign.name or ""
             ad_set = AdSet(
                 campaign_id=campaign.id,
                 name=str(data.get("name") or f"Ad Set {i + 1}")[:255],
@@ -948,9 +1008,9 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             self.db.flush()
             self.db.add(AdContent(
                 ad_set_id=ad_set.id,
-                headline=str(data.get("title") or (headlines[i] if i < len(headlines) else "") or campaign.name)[:255],
+                headline=headline[:255],
                 primary_text=data.get("primary_text") or "",
-                description=(descriptions[i] if i < len(descriptions) else "") or data.get("value_proposition") or "",
+                description=description,
                 call_to_action=str(cta)[:100],
                 destination_url=(campaign.source_url or "")[:512] or None,
                 media_type="image",
