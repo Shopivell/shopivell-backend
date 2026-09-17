@@ -132,6 +132,21 @@ class MarketResearchService:
                             r"online (shop|store)|zimbabwe|harare)$", re.I)
 
     @staticmethod
+    def _own_keys(company_name: str) -> List[str]:
+        """Tokens identifying the business itself, so its own pages and sibling brands
+        ("Bulawayo Carousel - Edgars Stores Ltd") aren't returned as competitors."""
+        name = (company_name or "").lower()
+        keys = {re.sub(r"[^a-z0-9]", "", name)}
+        if name.split():
+            keys.add(re.sub(r"[^a-z0-9]", "", name.split()[0]))
+        return [k for k in keys if len(k) >= 5]
+
+    @staticmethod
+    def _is_own_business(title: str, domain: str, own_keys: List[str]) -> bool:
+        hay = re.sub(r"[^a-z0-9]", "", f"{title} {domain}".lower())
+        return any(k in hay for k in own_keys)
+
+    @staticmethod
     def _brand_from_domain(domain: str) -> str:
         return (domain or "").split(".")[0].replace("-", " ").strip().title()
 
@@ -176,6 +191,7 @@ class MarketResearchService:
                                      country_code: str = "US", company_name: str = None) -> List[Dict[str, Any]]:
         country = (country_code or "us").lower()
         own_domain = (domain or "").replace("www.", "").lower()
+        own_keys = self._own_keys(company_name)
         seen, competitors = set(), []
 
         # Buyer-intent queries first: "top <x> companies in <y>" pulls directory pages,
@@ -200,6 +216,8 @@ class MarketResearchService:
                     continue
                 if own_domain and own_domain in d:
                     continue
+                if self._is_own_business(item.get("title", ""), d, own_keys):
+                    continue
                 if d in seen:
                     continue
                 seen.add(d)
@@ -213,7 +231,7 @@ class MarketResearchService:
                                    country=country, search_type="places")
         for place in maps.get("places", []):
             title = place.get("title", "")
-            if not title or (company_name and company_name.lower() in title.lower()):
+            if not title or self._is_own_business(title, "", own_keys):
                 continue
             # Serper places use `ratingCount` (not `reviews`) and carry no website.
             rating, reviews = place.get("rating"), place.get("ratingCount")
@@ -236,7 +254,9 @@ class MarketResearchService:
 
     def _search_keywords_autocomplete(self, seed_keywords: List[str],
                                       country_code: str = "us",
-                                      expand_alphabet: bool = True) -> List[Dict[str, Any]]:
+                                      expand_alphabet: bool = True,
+                                      business_type: str = "",
+                                      location: str = "") -> List[Dict[str, Any]]:
         country = (country_code or "us").lower()
         found: Dict[str, str] = {}
 
@@ -255,6 +275,10 @@ class MarketResearchService:
             return []
 
         seeds = [s for s in (seed_keywords or []) if s]
+        if not seeds and business_type:
+            # Extraction found no products/seeds: search the business type itself so the
+            # caller still gets demand signal instead of an empty list.
+            seeds = [business_type] + ([f"{business_type} {location}".strip()] if location else [])
         for seed in seeds[:10]:
             for s in _ac(seed):
                 found.setdefault(str(s).lower(), "google_autocomplete")
@@ -371,11 +395,15 @@ class MarketResearchService:
             '"business_type" (specific, buyer-facing description of what kind of business '
             'this is — e.g. "computer and IT equipment retailer", "wedding photographer", '
             '"pharmacy" — NOT a broad sector like "Information Technology" or "Retail"), '
-            '"services_products" (array of {name, description, category}), '
+            '"services_products" (array of {name, description, category}; each name must be '
+            'a generic product/service CATEGORY a buyer would search for — "cookware", '
+            '"laptops", "school uniforms" — and NEVER the company\'s own brand, sub-brand, '
+            "store or loyalty-programme names), "
             "value_propositions (array), target_audiences (array), "
             "geographic_coverage (countries/regions served), "
-            '"keyword_seeds" (5-10 short 2-4 word buyer search queries incl. city/country, '
-            "generic categories not model names). Only include fields you find. Return ONLY JSON."
+            '"keyword_seeds" (ALWAYS return 5-10 short 2-4 word buyer search queries incl. '
+            "city/country, generic categories, never model or own-brand names). "
+            "Return ONLY JSON."
         )
         data = self._llm_json(prompt)
         if isinstance(data, dict):
@@ -396,8 +424,10 @@ class MarketResearchService:
         return self._search_competitors_enhanced(**kw)
 
     def find_keywords(self, seeds: List[str], country_code: str = "us",
-                      expand_alphabet: bool = True) -> List[Dict[str, Any]]:
-        return self._search_keywords_autocomplete(seeds, country_code, expand_alphabet)
+                      expand_alphabet: bool = True, business_type: str = "",
+                      location: str = "") -> List[Dict[str, Any]]:
+        return self._search_keywords_autocomplete(seeds, country_code, expand_alphabet,
+                                                  business_type, location)
 
     def find_trends(self, industry: str, year: str = "2024") -> List[Dict[str, Any]]:
         return self._search_industry_trends(industry, year)

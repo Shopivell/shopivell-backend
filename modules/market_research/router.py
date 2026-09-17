@@ -44,9 +44,12 @@ class CompetitorsRequest(BaseModel):
 
 
 class KeywordsRequest(BaseModel):
-    seeds: List[str]
+    seeds: List[str] = []
     country_code: str = "US"
     expand_alphabet: bool = True
+    # Used as the seed when `seeds` is empty (extraction found no products).
+    business_type: str = ""
+    location: str = ""
 
 
 class TrendsRequest(BaseModel):
@@ -87,7 +90,8 @@ def keywords(req: KeywordsRequest,
              authorization: Optional[str] = Header(None)):
     _check_auth(x_research_token, authorization)
     svc = MarketResearchService()
-    items = svc.find_keywords(req.seeds, req.country_code, req.expand_alphabet)
+    items = svc.find_keywords(req.seeds, req.country_code, req.expand_alphabet,
+                              req.business_type, req.location)
     return {"keywords": items, "count": len(items)}
 
 
