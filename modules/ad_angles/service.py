@@ -12,8 +12,11 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-ANGLE_FIELDS = ("angle_name", "hook", "value_proposition", "competitor_gap",
+ANGLE_FIELDS = ("angle_name", "hook", "value_proposition", "website_basis", "competitor_gap",
                 "target_audience", "emotion", "keywords", "visual_direction")
+
+# Promises a model reaches for that a business may not be able to back up.
+_UNSUPPORTED_CLAIMS = ("guarantee", "best", "#1", "number one", "cheapest", "fastest", "lowest price")
 
 
 def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]],
@@ -50,19 +53,38 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
         f"Create exactly {count} DISTINCT ad angles — each a different reason to choose this business "
         "(e.g. value, trust/expertise, convenience, range, local presence). Return ONLY JSON:\n"
         '{"angles": [{"angle_name": "", "hook": "<=40 char headline", "value_proposition": "", '
-        '"competitor_gap": "what competitors leave open that this angle exploits", '
-        '"target_audience": "specific buyer persona", "emotion": "", '
+        '"website_basis": "the exact value proposition or product from the website this angle rests on", '
+        '"competitor_gap": "names competitors from the list and the evidence, e.g. Laptops Direct is rated 3.9 stars", '
+        '"target_audience": "one specific buyer persona", "emotion": "", '
         '"keywords": ["3-6 of the customer searches above"], "visual_direction": "scene for the ad image"}]}\n\n'
-        "Rules: base every claim ONLY on the business's own products, value propositions and audiences "
-        "above — never invent prices, discounts, delivery times, awards or statistics. Name competitors in "
-        "competitor_gap only where the research supports it. Pick keywords only from the searches listed.")
+        "Rules: every hook and value proposition must restate something in the business's own value "
+        "propositions or products above — never invent prices, discounts, delivery times, warranties, awards "
+        "or statistics, and do not use 'guarantee', 'best', '#1', 'cheapest' or 'fastest' unless the website "
+        "says so. competitor_gap must name competitors from the COMPETITORS list and cite what the research "
+        "shows about them (rating, reviews, description); if the research shows no real gap, return an empty "
+        "string rather than guessing. target_audience is one persona, not a list. Pick keywords only from "
+        "the searches listed.")
 
     angles = data.get("angles") if isinstance(data, dict) else None
     if not isinstance(angles, list):
         logger.warning("[AdAngles] no angles returned")
         return []
-    clean = [{k: a.get(k) for k in ANGLE_FIELDS}
-             for a in angles[:count]
-             if isinstance(a, dict) and a.get("angle_name") and a.get("value_proposition")]
+    names = [str(c.get("name") or "").lower() for c in competitors if c.get("name")]
+    site_text = f"{as_list(profile.get('value_propositions'))} {as_list(profile.get('products'))}".lower()
+    clean = []
+    for a in angles[:count]:
+        if not (isinstance(a, dict) and a.get("angle_name") and a.get("value_proposition")):
+            continue
+        angle = {k: a.get(k) for k in ANGLE_FIELDS}
+        # A gap naming no researched competitor is filler ("many competitors don't ...").
+        gap = str(angle.get("competitor_gap") or "").lower()
+        if not any(n.split()[0] in gap for n in names if n.split()):
+            angle["competitor_gap"] = ""
+        # Replace promises the website itself doesn't make with what it does say.
+        for field in ("hook", "value_proposition"):
+            text = str(angle.get(field) or "")
+            if any(w in text.lower() and w not in site_text for w in _UNSUPPORTED_CLAIMS):
+                angle[field] = str(angle.get("website_basis") or text)
+        clean.append(angle)
     logger.info("[AdAngles] generated %d angles for %s", len(clean), profile.get("company_name"))
     return clean
