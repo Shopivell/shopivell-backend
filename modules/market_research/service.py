@@ -52,6 +52,8 @@ _COUNTRY_MARKERS = {
     "au": ["australia", "sydney", "melbourne"],
     "ca": ["canada", "toronto"],
     "ae": ["dubai", "uae"],
+    "de": ["germany", "berlin", "munich"],
+    "ie": ["ireland", "dublin"],
 }
 
 
@@ -312,8 +314,73 @@ class MarketResearchService:
                                 "url": place.get("website") or (f"https://www.google.com/maps?cid={cid}" if cid else ""),
                                 "description": place.get("address", ""),
                                 "rating": rating, "reviews": reviews, "source": "serper_maps"})
+        competitors = self._refine_competitors(competitors, business_type, location, company_name)
         logger.info("[MarketResearch] competitors: %d", len(competitors))
         return competitors
+
+    def _refine_competitors(self, competitors: List[Dict[str, Any]], business_type: str,
+                            location: str, company_name: Optional[str]) -> List[Dict[str, Any]]:
+        """Final LLM pass: keep only businesses that actually compete, name them by brand,
+        and merge branches of one chain. The regex filters above cheaply remove obvious
+        noise, but can't tell a craft shop from a hardware store or an app listing from a
+        grocer — each new domain found another case, so judgement lives here."""
+        if len(competitors) < 3 or not business_type or not self._llm_ready():
+            return competitors
+        rows = []
+        for i, c in enumerate(competitors[:60]):
+            where = ("Google Maps listing" if c.get("source") == "serper_maps"
+                     else urlparse(c.get("url") or "").netloc)
+            stars = f"{c['rating']}★ ({c.get('reviews') or 0} reviews) | " if c.get("rating") else ""
+            rows.append(f"{i}. {c['name'][:60]} | {where} | {stars}{(c.get('description') or '')[:100]}")
+        data = self._llm_json(
+            f"Business: {company_name or 'unknown'}, a {business_type} in {location or 'its market'}.\n"
+            "Below are web and Google Maps search results. Return ONLY JSON: "
+            '{"keep": [{"i": <index>, "name": "<competitor brand name>", "group": "<same text for branches of one business>"}]}\n'
+            "Keep a result only if it is a business selling to the same customers in the same market. "
+            "Google Maps listings are real local businesses — keep them whenever they are the right kind of "
+            "business. Drop articles, lists and directories, app stores, software, regulators and "
+            "associations, news, manufacturers or wholesalers that don't sell to these customers, businesses "
+            "in a different industry, and the business itself. Use the brand name (from the title or domain), "
+            "not the page title. Branches of one chain get the same group.\n\n" + "\n".join(rows))
+        keep = data.get("keep") if isinstance(data, dict) else None
+        if not isinstance(keep, list) or not keep:
+            return competitors
+        merged: Dict[str, Dict[str, Any]] = {}
+        for k in keep:
+            try:
+                c = competitors[int(k.get("i"))]
+            except (AttributeError, TypeError, ValueError, IndexError):
+                continue
+            name = str(k.get("name") or c["name"]).strip()
+            group = str(k.get("group") or name).strip().lower()
+            if group in merged:
+                m = merged[group]
+                m["branches"] = m.get("branches", 1) + 1
+                if (c.get("reviews") or 0) > (m.get("reviews") or 0):
+                    m["rating"], m["reviews"] = c.get("rating"), c.get("reviews")
+                if not m.get("url") and c.get("url"):
+                    m["url"] = c["url"]
+            else:
+                merged[group] = {**c, "name": name}
+        return list(merged.values()) or competitors
+
+    def _refine_keywords(self, keywords: List[Dict[str, Any]], business_type: str,
+                         location: str) -> List[Dict[str, Any]]:
+        """LLM pass over autocomplete output: keep what this business's customers in this
+        market would search (drops other countries, unrelated products, jobs/news)."""
+        if len(keywords) < 5 or not business_type or not self._llm_ready():
+            return keywords
+        lines = "\n".join(f"{i}. {k['keyword']}" for i, k in enumerate(keywords[:120]))
+        data = self._llm_json(
+            f"A {business_type} in {location or 'its market'} wants the search keywords its customers use. "
+            'Return ONLY JSON {"keep": [<indices>]} for keywords a customer of THIS business in THIS '
+            "market would search when looking to buy what it sells. Drop other countries or cities, "
+            "different meanings of a word (e.g. printing services or book printers for a shop selling "
+            "printers), unrelated products, and job, news or how-to queries.\n\n" + lines)
+        idx = data.get("keep") if isinstance(data, dict) else None
+        if not isinstance(idx, list) or not idx:
+            return keywords
+        return [keywords[i] for i in idx if isinstance(i, int) and 0 <= i < len(keywords)] or keywords
 
     # ---------------- keywords (+ real volume) ----------------
 
@@ -373,6 +440,8 @@ class MarketResearchService:
         # Autocomplete is global: drop suggestions aimed at another market.
         keywords = [{"keyword": kw, "source": src} for kw, src in sorted(found.items())
                     if not _about_other_country(kw, country)]
+
+        keywords = self._refine_keywords(keywords, business_type, location)
 
         # Enrich with real search volume (Keywords Everywhere), when funded.
         volumes = self._keyword_volume([k["keyword"] for k in keywords], country)
@@ -456,8 +525,45 @@ class MarketResearchService:
             logger.warning("[MarketResearch] LLM extraction failed: %s", e)
             return {}
 
+    _BLOCK_MARKERS = ("attention required", "just a moment", "checking your browser",
+                      "enable javascript and cookies", "cf-browser-verification",
+                      "verify you are human", "access denied")
+
+    def _is_blocked_page(self, content: str) -> bool:
+        """A bot-check / challenge page (Cloudflare etc.) or nearly empty text."""
+        low = (content or "")[:3000].lower()
+        return len(low.strip()) < 200 or any(m in low for m in self._BLOCK_MARKERS)
+
+    def _fetch_text_fallback(self, url: str) -> str:
+        """Page text when our own fetch hits a bot check: Tavily extract (its fetcher
+        usually passes), else Google snippets for the site. Empty if both fail."""
+        if self.tavily_available:
+            try:
+                r = requests.post("https://api.tavily.com/extract",
+                                  json={"api_key": TAVILY_API_KEY, "urls": [url]}, timeout=30)
+                r.raise_for_status()
+                text = ((r.json().get("results") or [{}])[0].get("raw_content") or "")
+                if not self._is_blocked_page(text):
+                    return text
+            except Exception as e:
+                logger.warning("[MarketResearch] Tavily extract failed: %s", e)
+        domain = urlparse(url).netloc.replace("www.", "")
+        if domain and self.serper_available:
+            res = self._serper_search(f"site:{domain}", num=10)
+            text = " ".join(f"{o.get('title', '')}. {o.get('snippet', '')}" for o in res.get("organic", []))
+            if len(text) > 200:
+                return text
+        return ""
+
     async def _extract_structured_website_data(self, content: str, url: str) -> Dict[str, Any]:
-        if not content or not self._llm_ready():
+        if not self._llm_ready():
+            return {}
+        if self._is_blocked_page(content):
+            # Never profile a challenge page — that's how naivas.online became an
+            # "online retail store" selling electronics.
+            logger.info("[MarketResearch] %s returned a bot-check page; using fallback text", url)
+            content = self._fetch_text_fallback(url) if url else ""
+        if not content:
             return {}
         prompt = (
             "Analyze the following website content and return ONLY a JSON object.\n\n"
