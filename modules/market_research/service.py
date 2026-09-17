@@ -335,13 +335,14 @@ class MarketResearchService:
         data = self._llm_json(
             f"Business: {company_name or 'unknown'}, a {business_type} in {location or 'its market'}.\n"
             "Below are web and Google Maps search results. Return ONLY JSON: "
-            '{"keep": [{"i": <index>, "name": "<competitor brand name>", "group": "<same text for branches of one business>"}]}\n'
+            '{"keep": [{"i": <index>, "name": "<competitor brand name only>"}]}\n'
             "Keep a result only if it is a business selling to the same customers in the same market. "
             "Google Maps listings are real local businesses — keep them whenever they are the right kind of "
             "business. Drop articles, lists and directories, app stores, software, regulators and "
             "associations, news, manufacturers or wholesalers that don't sell to these customers, businesses "
             "in a different industry, and the business itself. Use the brand name (from the title or domain), "
-            "not the page title. Branches of one chain get the same group.\n\n" + "\n".join(rows))
+            "not the page title. Branches of one chain get exactly the same brand name "
+            '(e.g. "DIY Depot" for "DIY Depot Savoy").\n\n' + "\n".join(rows))
         keep = data.get("keep") if isinstance(data, dict) else None
         if not isinstance(keep, list) or not keep:
             return competitors
@@ -352,7 +353,9 @@ class MarketResearchService:
             except (AttributeError, TypeError, ValueError, IndexError):
                 continue
             name = str(k.get("name") or c["name"]).strip()
-            group = str(k.get("group") or name).strip().lower()
+            # Merge on the brand name itself, never on a model-chosen "group": given one,
+            # gpt-4o-mini grouped eight different banks together for fbc.co.zw.
+            group = re.sub(r"[^a-z0-9]", "", name.lower()) or str(len(merged))
             if group in merged:
                 m = merged[group]
                 m["branches"] = m.get("branches", 1) + 1
