@@ -421,6 +421,8 @@ async def scrape_url_stream(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         service = CampaignService(db)
+        # Filled by the research stage; saved on the campaign, and the angles drive its ad sets.
+        market_research, ad_angles = None, []
 
         try:
             # Stage 1: Start scraping
@@ -824,6 +826,25 @@ async def scrape_url_stream(
 
                 logger.info(f"Market research complete: {len(clean_competitors)} competitors, {len(keywords)} keywords, {len(trends)} trends")
 
+                # Stage 6b: ad angles — distinct reasons to choose this business, built from
+                # the research. Each becomes its own ad set when the campaign is saved.
+                market_research = {
+                    "profile": {**structured_data, "business_type": business_type,
+                                "company_name": business_name, "products": products, "location": location},
+                    "competitors": clean_competitors, "keywords": keywords, "trends": trends,
+                }
+                try:
+                    yield f"data: {json.dumps({'event': 'progress', 'stage': 'angles', 'message': 'Finding ad angles...', 'percentage': 90})}\n\n"
+                    from modules.ad_angles.service import generate_ad_angles
+                    ad_angles = await asyncio.to_thread(
+                        generate_ad_angles, market_research["profile"], clean_competitors, keywords, trends)
+                    for angle in ad_angles:
+                        yield f"data: {json.dumps({'event': 'ad_angle', **angle})}\n\n"
+                        await asyncio.sleep(0.05)
+                except Exception as angle_err:
+                    logger.warning(f"Ad angles failed (non-fatal): {angle_err}")
+                    ad_angles = []
+
             except Exception as research_err:
                 logger.warning(f"Market research failed (non-fatal): {research_err}")
                 # Roll back so a failed query in this non-fatal block doesn't
@@ -839,7 +860,9 @@ async def scrape_url_stream(
             campaign, error = service.scrape_url_for_campaign(
                 url=url,
                 store_id=store_id,
-                campaign_name=campaign_name
+                campaign_name=campaign_name,
+                market_research=market_research,
+                ad_angles=ad_angles,
             )
 
             if error and not campaign:
