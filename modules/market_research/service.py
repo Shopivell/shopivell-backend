@@ -22,7 +22,7 @@ import os
 import re
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -36,6 +36,7 @@ KEYWORDS_EVERYWHERE_API_KEY = os.getenv("KEYWORDS_EVERYWHERE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 _SKIP_DOMAINS = {
+    "researchgate.net", "medpages.info", "thedirectory.co.zw", "tripadvisor.com", "edurank.org",
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
     "youtube.com", "reddit.com", "wikipedia.org", "tiktok.com", "pinterest.com",
     "lusha.com", "zoominfo.com", "crunchbase.com", "glassdoor.com", "ensun.io",
@@ -150,13 +151,36 @@ class MarketResearchService:
     def _brand_from_domain(domain: str) -> str:
         return (domain or "").split(".")[0].replace("-", " ").strip().title()
 
+    # Commerce filler that says what a page sells, not who sells it.
+    _GENERIC_WORDS = {"shop", "shops", "store", "stores", "online", "buy", "best", "top", "product",
+                      "products", "directory", "list", "category", "categories", "sale", "deals",
+                      "price", "prices", "near", "official", "website", "over", "counter", "range",
+                      "collection", "page", "home", "new", "and", "the", "for", "with"}
+    # Directory / listicle results are never a competitor themselves.
+    # ...nor are regulators, professional bodies or journals.
+    _LISTING_TITLE = re.compile(r"\bdirector(y|ies)\b|^(top|best)\s+\d+|\blist of\b|"
+                                r"\b(council|society|association|journal|medical aid)\b", re.I)
+
     @classmethod
-    def _display_name(cls, title: str, domain: str) -> str:
+    def _looks_generic(cls, title: str, vocab: List[str]) -> bool:
+        """A title made of category words ("OTC Medication", "Shop Pharmacy Products")
+        describes stock, not a business — matched loosely on 5-char stems."""
+        first = re.split(r"\s[-|–—:]\s", title or "")[0]
+        words = [w for w in re.findall(r"[a-z]+", first.lower()) if len(w) > 2]
+        if not words:
+            return True
+
+        def generic(w):
+            return w in cls._GENERIC_WORDS or any(w[:5] == v[:5] for v in vocab if len(v) >= 3)
+        return sum(generic(w) for w in words) / len(words) >= 0.7
+
+    @classmethod
+    def _display_name(cls, title: str, domain: str, vocab: Optional[List[str]] = None) -> str:
         """The business behind a result. Product pages ("HP ProBook 450 G10 8GB/512GB")
         name a product, not a competitor, so use the trailing site name when the title
         carries one ("hp probook 450 g10 - Laptop World") else the domain's brand."""
         t = (title or "").strip()
-        if not t:
+        if not t or (vocab and cls._looks_generic(t, vocab)):
             return cls._brand_from_domain(domain)
         if len(t) > 45 or cls._PRODUCT_TITLE.search(t):
             tail = re.split(r"\s[-|–—]\s", t)[-1].strip()
@@ -197,17 +221,22 @@ class MarketResearchService:
         # Buyer-intent queries first: "top <x> companies in <y>" pulls directory pages,
         # listicles and agencies rather than the businesses a shop competes with.
         top_products = [p for p in (products or []) if p][:3]
+        vocab = re.findall(r"[a-z]+", f"{business_type} {' '.join(top_products)} {location}".lower())
         queries = []
         if top_products:
             # "shop"/"store" keeps Google on businesses; "buy <product>" or a bare
             # product name returns individual product listing pages instead.
             queries.append(f"{top_products[0]} shop {location}".strip())
-            queries.append(f"{', '.join(top_products)} store {location}".strip())
         queries.append(f"best {business_type} in {location}".strip())
         if company_name:
             queries.append(f"{company_name} competitors alternatives {location}".strip())
+        # National chains (Clicks, Edgars) compete with other chains, which product
+        # queries miss — they return category pages instead.
+        queries.append(f"{business_type} chains {location}".strip())
+        if top_products:
+            queries.append(f"{', '.join(top_products)} store {location}".strip())
 
-        for query in queries[:4]:
+        for query in queries[:5]:
             result = self._serper_search(query, country=country)
             for item in result.get("organic", []):
                 url = item.get("link", "")
@@ -218,10 +247,12 @@ class MarketResearchService:
                     continue
                 if self._is_own_business(item.get("title", ""), d, own_keys):
                     continue
+                if ".gov" in d or self._LISTING_TITLE.search(item.get("title", "")):
+                    continue
                 if d in seen:
                     continue
                 seen.add(d)
-                competitors.append({"name": self._display_name(item.get("title", ""), d), "url": url,
+                competitors.append({"name": self._display_name(item.get("title", ""), d, vocab), "url": url,
                                     "description": (item.get("snippet", "") or "")[:500],
                                     "rating": None, "reviews": None, "source": "serper"})
 
