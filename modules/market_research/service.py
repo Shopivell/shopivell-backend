@@ -50,7 +50,7 @@ _COUNTRY_MARKERS = {
     "pk": ["pakistan", "karachi", "lahore"],
     "ph": ["philippines", "manila"],
     "au": ["australia", "sydney", "melbourne"],
-    "ca": ["canada", "toronto"],
+    "ca": ["canada", "toronto", "vancouver", "edmonton", "calgary", "montreal"],
     "ae": ["dubai", "uae"],
     "de": ["germany", "berlin", "munich"],
     "ie": ["ireland", "dublin"],
@@ -480,7 +480,34 @@ class MarketResearchService:
                     trends.append({"title": r.get("title", ""), "source": url,
                                    "insight": (r.get("snippet", "") or "")[:400]})
         # Global reports are fine; reports about a different country are not.
-        return [t for t in trends if not _about_other_country(t["title"], country_code)]
+        trends = [t for t in trends if not _about_other_country(t["title"], country_code)]
+        return self._refine_trends(trends, industry, location)
+
+    def _refine_trends(self, trends: List[Dict[str, Any]], business_type: str,
+                       location: str) -> List[Dict[str, Any]]:
+        """LLM pass: keep market reports, statistics and trend articles about this kind of
+        business (in its country, or global industry-wide) — not company websites,
+        "Related Companies" pages, directories or unrelated sectors."""
+        if len(trends) < 3 or not business_type or not self._llm_ready():
+            return trends
+        rows = "\n".join(f"{i}. {t['title'][:90]} | {urlparse(t.get('source') or '').netloc} | "
+                         f"{(t.get('insight') or '')[:120]}" for i, t in enumerate(trends[:30]))
+        data = self._llm_json(
+            f"A {business_type} in {location or 'its market'} wants market trends and statistics for its "
+            'industry. Return ONLY JSON {"keep": [<indices>]} for results that are market reports, '
+            "statistics, forecasts or trend articles about this industry in this country, or global reports "
+            "for this industry. Drop company or restaurant websites, 'related companies' and directory pages, "
+            "job posts, and anything about a different industry or country.\n\n" + rows)
+        idx = data.get("keep") if isinstance(data, dict) else None
+        if not isinstance(idx, list):
+            return trends
+        kept, titles = [], set()
+        for i in idx:
+            if isinstance(i, int) and 0 <= i < len(trends) and trends[i]["title"] not in titles:
+                titles.add(trends[i]["title"])
+                kept.append(trends[i])
+        # An over-strict pass must not wipe the section: fall back to the unrefined list.
+        return kept or trends
 
     # ---------------- structured website extraction (LLM) --------------
 
