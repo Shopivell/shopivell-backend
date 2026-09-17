@@ -137,7 +137,8 @@ class CampaignService:
             except Exception as e:
                 logger.warning(f"[CampaignService] Failed to initialize OpenAI: {e}")
 
-    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None, num_copies: int = 1, num_images: int = 1) -> Tuple[Campaign, Optional[str]]:
+    def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None, num_copies: int = 1, num_images: int = 1,
+                                market_research: Optional[Dict[str, Any]] = None, ad_angles: Optional[List[Dict[str, Any]]] = None) -> Tuple[Campaign, Optional[str]]:
         """
         Scrape a URL and create a campaign with the extracted data.
         Returns (campaign, error_message)
@@ -171,6 +172,12 @@ class CampaignService:
                 return campaign, "Failed to scrape website"
 
             # Update campaign with scraped data
+            # Research and angles from the scrape-stream are kept on the campaign, and the
+            # angles drive the ad sets generated below (one ad set per angle).
+            if market_research:
+                scraped_data["market_research"] = market_research
+            if ad_angles:
+                scraped_data["ad_angles"] = ad_angles
             campaign.scraped_data = scraped_data
             campaign.scraped_at = datetime.utcnow()
 
@@ -187,7 +194,7 @@ class CampaignService:
             logger.info(f"[CampaignService] Using NO store context - all data will be derived from scraped URL content")
 
             # Generate ad content with store context
-            ad_content = self._generate_ad_content(scraped_data, url, store_context)
+            ad_content = self._generate_ad_content(scraped_data, url, store_context, ad_angles=ad_angles)
             if ad_content:
                 campaign.generated_headlines = ad_content.get("headlines", [])
                 campaign.generated_descriptions = ad_content.get("descriptions", [])
@@ -742,7 +749,8 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
             print(f"[Scraping] Error: {e}")
             return self._mock_scrape_data(url)
 
-    def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str, store_context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str, store_context: Optional[Dict[str, Any]] = None,
+                             ad_angles: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
         """Generate ad content using OpenRouter (preferred) or OpenAI.
 
         Args:
@@ -759,6 +767,42 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
         # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
         # for completely different businesses (e.g., Edgars clothing store)
         store_info_section = ""  # Empty - AI derives everything from scraped content
+
+        if ad_angles:
+            # One ad set per research-backed angle instead of a single generic persona.
+            angle_lines = "\n".join(
+                f"{i + 1}. {a.get('angle_name')}: {a.get('value_proposition')} | hook: {a.get('hook')} | "
+                f"competitor gap: {a.get('competitor_gap')} | audience: {a.get('target_audience')} | "
+                f"emotion: {a.get('emotion')} | keywords: {', '.join(a.get('keywords') or [])} | "
+                f"visual: {a.get('visual_direction')}"
+                for i, a in enumerate(ad_angles))
+            persona_block = (
+                f"STEP 2 - ONE AD SET PER AD ANGLE:\n\n"
+                f"Market research produced these {len(ad_angles)} ad angles:\n{angle_lines}\n\n"
+                f"Generate exactly {len(ad_angles)} ad sets, one per angle, in the same order. For each: name = the "
+                "angle's target audience; title and primary_text lead with the angle's hook and value "
+                "proposition and use its keywords naturally; emotion and visual_direction follow the angle. "
+                "Only use facts from the website content — do not invent offers, prices or statistics.\n\n"
+                f"CRITICAL: You MUST output exactly {len(ad_angles)} ad sets in the ad_sets array, one per angle."
+            )
+        else:
+            persona_block = """STEP 2 - GENERATE 1 BUYER PERSONA:
+
+You MUST generate exactly 1 ad set targeting the PRIMARY buyer persona for this business.
+
+FOR B2B BUSINESSES (technology, services, enterprise solutions):
+Generate 1 ad set targeting the MOST LIKELY BUYER - choose the most relevant:
+- The primary industry vertical that uses this product
+- OR the key decision-maker role
+- OR the main company type
+
+FOR B2C BUSINESSES (retail, fashion, consumer products):
+Generate 1 ad set targeting the PRIMARY CUSTOMER - choose the most relevant:
+- The main demographic (e.g., young professionals, parents, fashion-forward consumers)
+- OR a specific shopping occasion
+- OR the core product category
+
+CRITICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set."""
 
         prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
 
@@ -779,23 +823,7 @@ Analyze the scraped content to identify:
    - What PROBLEMS does each buyer type have that this product solves?
 3. Extract any METRICS or STATISTICS mentioned (accuracy %, speed improvements, cost savings)
 
-STEP 2 - GENERATE 1 BUYER PERSONA:
-
-You MUST generate exactly 1 ad set targeting the PRIMARY buyer persona for this business.
-
-FOR B2B BUSINESSES (technology, services, enterprise solutions):
-Generate 1 ad set targeting the MOST LIKELY BUYER - choose the most relevant:
-- The primary industry vertical that uses this product
-- OR the key decision-maker role
-- OR the main company type
-
-FOR B2C BUSINESSES (retail, fashion, consumer products):
-Generate 1 ad set targeting the PRIMARY CUSTOMER - choose the most relevant:
-- The main demographic (e.g., young professionals, parents, fashion-forward consumers)
-- OR a specific shopping occasion
-- OR the core product category
-
-CRITICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set.
+{persona_block}
 
 STEP 3 - GENERATE AD CONTENT:
 
