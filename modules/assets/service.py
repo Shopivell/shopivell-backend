@@ -107,11 +107,13 @@ def _get_minio_url(object_name: str) -> str:
     return f"{API_PUBLIC_URL}/api/assets/file/{object_name}"
 
 
-def generate_image_bytes(prompt: str) -> Tuple[Optional[bytes], Optional[str]]:
-    """PNG bytes from the OpenRouter image model (AD_IMAGE_MODEL).
+def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] = None) -> Tuple[Optional[bytes], Optional[str]]:
+    """Image bytes from the OpenRouter image model (AD_IMAGE_MODEL).
 
-    OpenRouter has no /images/generations: image models return the image as a data URI
-    in message.images on the chat endpoint. No DB access, so safe in worker threads."""
+    reference_image_urls (e.g. the website screenshot) are sent alongside the prompt as
+    visual references. OpenRouter has no /images/generations: image models return the
+    image as a data URI in message.images on the chat endpoint. No DB access, so safe in
+    worker threads."""
     import base64
     import requests
     key = os.getenv("OPENROUTER_API_KEY", "")
@@ -124,7 +126,8 @@ def generate_image_bytes(prompt: str) -> Tuple[Optional[bytes], Optional[str]]:
                      "X-Title": "Shopivell Ad Images", "Content-Type": "application/json"},
             json={"model": os.getenv("AD_IMAGE_MODEL", "openai/gpt-5-image-mini"),
                   "modalities": ["image", "text"],
-                  "messages": [{"role": "user", "content": prompt}]},
+                  "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}] + [
+                      {"type": "image_url", "image_url": {"url": u}} for u in (reference_image_urls or []) if u]}]},
             timeout=180,
         )
         if r.status_code >= 400:
