@@ -1097,8 +1097,16 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         if not jobs:
             return 0
 
+        def generate_with_retry(job):
+            # The image model occasionally returns no image; one retry fixed it in testing
+            # (1 of 3 failed on reliabletech.co.zw with "Image model returned no image").
+            image_data, error = generate_image_bytes(job[1])
+            if error or not image_data:
+                image_data, error = generate_image_bytes(job[1])
+            return image_data, error
+
         with ThreadPoolExecutor(max_workers=min(3, len(jobs))) as pool:
-            results = list(pool.map(lambda job: generate_image_bytes(job[1]), jobs))
+            results = list(pool.map(generate_with_retry, jobs))
 
         assets = AssetService(self.db)
         done = 0
