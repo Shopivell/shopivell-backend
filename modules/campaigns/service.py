@@ -1095,18 +1095,63 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
                 f"{angle.get('customer_pain') or content.headline}. The feeling it should create: "
                 f"{angle.get('emotion') or 'relief and confidence'}.\n"
                 f"Scene: {scene}.\n\n"
-                + ("The attached image is a screenshot of the business's website. Use it ONLY as a style and brand "
-                   "reference: match its brand colours and the kind of products it shows. Do not reproduce the "
-                   "screenshot, its layout, any of its text or its logo.\n\n" if references else "")
+                + ("The attached screenshot of the business's website is there for brand information only: take "
+                   "its theme and brand colours and any details about the business and its products (brands, "
+                   "product types) not described above. Do not copy the website's layout or its text, and do not "
+                   "draw the business logo — the real logo file is placed on the image afterwards, so keep the "
+                   "bottom-right corner uncluttered.\n\n" if screenshot else "")
                 + f"Requirements: show the relevant product clearly and recognisably (e.g. a real laptop or printer, "
                 "not a blank box); real, relatable people from "
                 f"{place or 'the local market'} with a clear, genuine facial expression that matches the feeling; "
                 "a single strong focal point; bold, vibrant but natural colour and contrast that stands out in a "
                 "feed — no warm sepia or beige 'golden hour' filter; authentic, not staged stock photography; "
-                "square 1:1 with clear space at the top for a headline. No text, words, letters, numbers, logos or "
-                "watermarks anywhere in the image.")
+                "square 1:1 with clear space at the top for a headline. No text, words, numbers, logos or "
+                "watermarks, other than real brand names printed on the products themselves.")
             jobs.append((content, prompt, references))
         return jobs
+
+    @staticmethod
+    def _fetch_logo(campaign: Campaign) -> Optional[bytes]:
+        """The business's real logo file (found by the scraper), or None if it can't be used."""
+        sd = campaign.scraped_data if isinstance(campaign.scraped_data, dict) else {}
+        url = str(sd.get("logo_url") or "")
+        if not url.startswith("http") or url.lower().endswith(".svg"):
+            return None
+        try:
+            import requests as _requests
+            r = _requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            return r.content if r.status_code == 200 and r.content else None
+        except Exception as e:
+            logger.warning(f"[CampaignService] Logo fetch failed ({url}): {e}")
+            return None
+
+    @staticmethod
+    def _overlay_logo(image_data: bytes, logo_data: Optional[bytes]) -> bytes:
+        """Place the real logo bottom-right on a white plate. Image models garble logos
+        (a test put an unreadable sticker on the box), so the logo is composited in code."""
+        if not logo_data:
+            return image_data
+        try:
+            import io
+            from PIL import Image, ImageDraw
+            image = Image.open(io.BytesIO(image_data)).convert("RGBA")
+            logo = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+            w, h = image.size
+            scale = min(w * 0.20 / logo.width, h * 0.10 / logo.height)
+            logo = logo.resize((max(1, int(logo.width * scale)), max(1, int(logo.height * scale))), Image.LANCZOS)
+            pad, margin = int(w * 0.015), int(w * 0.03)
+            x1, y1 = w - margin - logo.width - 2 * pad, h - margin - logo.height - 2 * pad
+            plate = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            ImageDraw.Draw(plate).rounded_rectangle(
+                (x1, y1, w - margin, h - margin), radius=pad, fill=(255, 255, 255, 235))
+            image = Image.alpha_composite(image, plate)
+            image.alpha_composite(logo, (x1 + pad, y1 + pad))
+            out = io.BytesIO()
+            image.convert("RGB").save(out, format="PNG")
+            return out.getvalue()
+        except Exception as e:
+            logger.warning(f"[CampaignService] Logo overlay skipped: {e}")
+            return image_data
 
     def generate_campaign_images(self, campaign: Campaign) -> int:
         """One image per saved ad set, from its angle's visual direction.
@@ -1134,12 +1179,14 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
             results = list(pool.map(generate_with_retry, jobs))
 
         business = campaign.name or "the business"
+        logo_data = self._fetch_logo(campaign)
         assets = AssetService(self.db)
         done = 0
         for (content, _prompt, _refs), (image_data, error) in zip(jobs, results):
             if error or not image_data:
                 logger.warning(f"[CampaignService] Ad image failed for '{content.headline}': {error}")
                 continue
+            image_data = self._overlay_logo(image_data, logo_data)
             asset, error = assets.save_generated_image(
                 campaign.store_id, image_data, content.headline or business,
                 description=content.primary_text, call_to_action=content.call_to_action, campaign_id=campaign.id)
