@@ -73,6 +73,9 @@ def _about_other_country(text: str, country: str) -> bool:
 
 _SKIP_DOMAINS = {
     "researchgate.net", "medpages.info", "thedirectory.co.zw", "tripadvisor.com", "edurank.org",
+    # Booking / travel aggregators list hotels; they aren't a hotel's competitor.
+    "expedia.com", "booking.com", "hotels.com", "agoda.com", "trivago.com", "kayak.com",
+    "airbnb.com", "fivestaralliance.com", "lonelyplanet.com", "tripadvisor.co.za",
     "facebook.com", "instagram.com", "linkedin.com", "twitter.com", "x.com",
     "youtube.com", "reddit.com", "wikipedia.org", "tiktok.com", "pinterest.com",
     "lusha.com", "zoominfo.com", "crunchbase.com", "glassdoor.com", "ensun.io",
@@ -264,6 +267,9 @@ class MarketResearchService:
             # product name returns individual product listing pages instead.
             queries.append(f"{top_products[0]} shop {location}".strip())
         queries.append(f"best {business_type} in {location}".strip())
+        # Chains and groups (hotel groups, supermarket chains) compete with peers of
+        # their size, which "best <x>" and Maps bury under small independents.
+        queries.append(f"largest {business_type} companies in {location}".strip())
         if company_name:
             queries.append(f"{company_name} competitors alternatives {location}".strip())
         # National chains (Clicks, Edgars) compete with other chains, which product
@@ -272,7 +278,7 @@ class MarketResearchService:
         if top_products:
             queries.append(f"{', '.join(top_products)} store {location}".strip())
 
-        for query in queries[:5]:
+        for query in queries[:6]:
             result = self._serper_search(query, country=country)
             for item in result.get("organic", []):
                 url = item.get("link", "")
@@ -338,9 +344,12 @@ class MarketResearchService:
             '{"keep": [{"i": <index>, "name": "<competitor brand name only>"}]}\n'
             "Keep a result only if it is a business selling to the same customers in the same market. "
             "Google Maps listings are real local businesses — keep them whenever they are the right kind of "
-            "business. Drop articles, lists and directories, app stores, software, regulators and "
-            "associations, news, manufacturers or wholesalers that don't sell to these customers, businesses "
-            "in a different industry, and the business itself. Use the brand name (from the title or domain), "
+            "business. Drop articles, lists and directories, booking and travel aggregators (Expedia, "
+            "Booking.com), review and listing sites, tourist attractions and landmarks, app stores, software, "
+            "regulators and associations, news, manufacturers or wholesalers that don't sell to these "
+            "customers, businesses in a different industry, and the business itself. Order the list most "
+            "direct competitor first: businesses of similar type and scale (for a chain or group, other "
+            "chains and groups) before small independents. Use the brand name (from the title or domain), "
             "not the page title. Branches of one chain get exactly the same brand name "
             '(e.g. "DIY Depot" for "DIY Depot Savoy").\n\n' + "\n".join(rows))
         keep = data.get("keep") if isinstance(data, dict) else None
