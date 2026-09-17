@@ -526,7 +526,7 @@ class MarketResearchService:
     def _llm_ready(self) -> bool:
         return bool(OPENROUTER_API_KEY) or OPENAI_API_KEY.startswith("sk-")
 
-    def _llm_json(self, prompt: str) -> Dict[str, Any]:
+    def _llm_json(self, prompt: str, model: Optional[str] = None) -> Dict[str, Any]:
         content = ""
         try:
             if OPENROUTER_API_KEY:
@@ -537,9 +537,9 @@ class MarketResearchService:
                              "HTTP-Referer": "https://shopivell.com",
                              "X-Title": "Shopivell Market Research",
                              "Content-Type": "application/json"},
-                    json={"model": os.getenv("RESEARCH_LLM_MODEL", "openai/gpt-4o-mini"),
-                          "max_tokens": 2000, "messages": [{"role": "user", "content": prompt}]},
-                    timeout=60,
+                    json={"model": model or os.getenv("RESEARCH_LLM_MODEL", "openai/gpt-4o-mini"),
+                          "max_tokens": 3000, "messages": [{"role": "user", "content": prompt}]},
+                    timeout=120,
                 )
                 r.raise_for_status()
                 content = r.json()["choices"][0]["message"]["content"]

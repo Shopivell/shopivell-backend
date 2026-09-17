@@ -569,18 +569,8 @@ async def scrape_url_stream(
                         yield f"data: {json.dumps({'event': 'info_found', 'type': 'hashtag', 'label': 'Hashtag', 'value': f'#{hashtag}'})}\n\n"
                         await asyncio.sleep(0.1)
 
-                # Send complete ad_set event for the preview card
-                ad_set_complete = {
-                    'event': 'ad_set',
-                    'name': ad_set_name,
-                    'title': ad_set_data.get("title", ""),
-                    'audience_tags': audience_tags,
-                    'hashtags': hashtags,
-                    'headline': headline,
-                    'primary_text': ad_set_data.get("primary_text", "")[:200] if ad_set_data.get("primary_text") else "",
-                }
-                yield f"data: {json.dumps(ad_set_complete)}\n\n"
-                await asyncio.sleep(0.1)
+                # No ad_set card here: this pre-research preview is a single generic persona.
+                # The real ad sets (one per angle) are streamed after the campaign is saved.
 
             # Stage 6: Market Research (competitors, keywords, trends) — runs in parallel
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Researching competitors & keywords...', 'percentage': 85})}\n\n"
@@ -837,7 +827,8 @@ async def scrape_url_stream(
                     yield f"data: {json.dumps({'event': 'progress', 'stage': 'angles', 'message': 'Finding ad angles...', 'percentage': 90})}\n\n"
                     from modules.ad_angles.service import generate_ad_angles
                     ad_angles = await asyncio.to_thread(
-                        generate_ad_angles, market_research["profile"], clean_competitors, keywords, trends)
+                        generate_ad_angles, market_research["profile"], clean_competitors, keywords, trends,
+                        3, raw_content)
                     for angle in ad_angles:
                         yield f"data: {json.dumps({'event': 'ad_angle', **angle})}\n\n"
                         await asyncio.sleep(0.05)
@@ -868,6 +859,13 @@ async def scrape_url_stream(
             if error and not campaign:
                 yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
                 return
+
+            # Stream the saved ad sets (one per angle) so the creation screen shows every
+            # ad set, not just a preview.
+            for saved in (campaign.ad_sets or []):
+                content = next((c for c in saved.ad_contents if c.is_primary), None) or (saved.ad_contents[0] if saved.ad_contents else None)
+                yield f"data: {json.dumps({'event': 'ad_set', 'name': saved.name, 'title': saved.title or '', 'audience_tags': (saved.audience_tags or [])[:5], 'hashtags': (saved.hashtags or [])[:5], 'headline': (content.headline if content else '') or '', 'primary_text': ((content.primary_text or '')[:200]) if content else ''})}\n\n"
+                await asyncio.sleep(0.05)
 
             # Complete
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'complete', 'message': 'Campaign created successfully!', 'percentage': 100})}\n\n"

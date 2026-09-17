@@ -83,6 +83,20 @@ Campaign = UrlCampaign
 AdSet = UrlAdSet
 AdContent = UrlAdContent
 
+# How ad copy should read. Left alone, the model writes corporate filler ("As a
+# professional, you deserve only the best", "experience the difference"); merchants
+# need copy that sounds like someone who understands the customer's situation.
+AD_COPYWRITING_RULES = """COPYWRITING RULES (these override any tone guidance above):
+- Start from the customer, not the business. Open primary_text by naming a real, specific situation this buyer is in, in second person, with empathy (e.g. "Your laptop gives up the week before exams, and the repair shop wants two weeks.").
+- Then the consequence that situation causes - briefly and honestly, no fear-mongering.
+- Then how this business resolves it, using concrete proof from the website (customer numbers, delivery areas, warranty, years in business) - facts only.
+- End with one clear, low-friction next step that matches the call_to_action.
+- title speaks to the buyer's problem or desired outcome, never just a feature name ("Laptop died before your deadline?", not "Genuine Products Here!").
+- Write like a helpful local person talking to one customer: short sentences, plain words, a line break between ideas. primary_text 60-120 words.
+- Never use: "you deserve the best", "say goodbye to", "experience the difference", "look no further", "one-stop shop", "take it to the next level", "elevate", "unlock", "seamless", "cutting-edge", "Enjoy ... today".
+- name is a specific persona in a situation (e.g. "Students buying a first laptop"), not a generic group ("Individuals", "Professionals").
+- emotion is the feeling the buyer wants (relief, confidence, pride, peace of mind), not a corporate value."""
+
 load_dotenv()
 
 # Initialize clients
@@ -374,6 +388,8 @@ STEP 2 - GENERATE 1 BUYER PERSONA:
 Generate exactly 1 ad set targeting the PRIMARY buyer persona.
 
 STEP 3 - GENERATE AD CONTENT:
+
+{AD_COPYWRITING_RULES}
 
 IMPORTANT: Do NOT include any emojis. Keep all text clean and professional.
 
@@ -772,18 +788,22 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
         if ad_angles:
             # One ad set per research-backed angle instead of a single generic persona.
             angle_lines = "\n".join(
-                f"{i + 1}. {a.get('angle_name')}: {a.get('value_proposition')} | hook: {a.get('hook')} | "
-                f"competitor gap: {a.get('competitor_gap')} | audience: {a.get('target_audience')} | "
-                f"emotion: {a.get('emotion')} | keywords: {', '.join(a.get('keywords') or [])} | "
+                f"{i + 1}. {a.get('angle_name')} — audience: {a.get('target_audience')}\n"
+                f"   customer pain: {a.get('customer_pain')}\n"
+                f"   desired outcome: {a.get('desired_outcome')}\n"
+                f"   hook: {a.get('hook')} | how we solve it: {a.get('value_proposition')} | proof: {a.get('proof')}\n"
+                f"   emotion: {a.get('emotion')} | keywords: {', '.join(a.get('keywords') or [])} | "
                 f"visual: {a.get('visual_direction')}"
                 for i, a in enumerate(ad_angles))
             persona_block = (
                 f"STEP 2 - ONE AD SET PER AD ANGLE:\n\n"
-                f"Market research produced these {len(ad_angles)} ad angles:\n{angle_lines}\n\n"
+                f"Market research produced these {len(ad_angles)} customer-first ad angles:\n{angle_lines}\n\n"
                 f"Generate exactly {len(ad_angles)} ad sets, one per angle, in the same order. For each: name = the "
-                "angle's target audience; title and primary_text lead with the angle's hook and value "
-                "proposition and use its keywords naturally; emotion and visual_direction follow the angle. "
-                "Only use facts from the website content — do not invent offers, prices or statistics.\n\n"
+                "angle's audience; title = the angle's hook; primary_text opens with the customer pain in their "
+                "words, acknowledges it with empathy, then shows the desired outcome and how this business "
+                "delivers it, backed by the proof, and ends with one clear next step; use the keywords naturally; "
+                "emotion and visual_direction follow the angle. Only use facts from the website content — do not "
+                "invent offers, prices or statistics.\n\n"
                 f"CRITICAL: You MUST output exactly {len(ad_angles)} ad sets in the ad_sets array, one per angle."
             )
         else:
@@ -827,6 +847,8 @@ Analyze the scraped content to identify:
 {persona_block}
 
 STEP 3 - GENERATE AD CONTENT:
+
+{AD_COPYWRITING_RULES}
 
 IMPORTANT: Do NOT include any emojis in any of the generated content. Keep all text clean and professional.
 
@@ -926,6 +948,8 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         r"same[- ]day", r"next[- ]day", r"\b24/7\b", r"\b24 hours?\b", r"\b\d+\s?%", r"\b(?:over|more than)\s+\d+",
         r"\b\d+\+", r"\bwarrant(?:y|ies)\b", r"\bguarantee[ds]?\b", r"\bfree (?:delivery|shipping)\b",
         r"\bcheapest\b", r"\blowest prices?\b", r"#1\b", r"\bnumber one\b", r"\baward[- ]winning\b", r"\bbest\b",
+        # Operational promises (Claude wrote "order before midday", "all in stock").
+        r"\bbefore (?:midday|noon|\d{1,2}\s?(?:am|pm))\b", r"\bin stock\b", r"\bwithin \d+ (?:hours?|minutes?|days?)\b",
     )
     # Meta call-to-action buttons the copy may choose from.
     _CTA_CHOICES = ("Shop Now", "Learn More", "Contact Us", "Send Message", "Get Quote", "Book Now",
@@ -949,7 +973,7 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
         if self.openrouter:
             try:
                 res = self.openrouter.chat_completion_sync(
-                    model=os.getenv("AD_CONTENT_MODEL", "openai/gpt-4o-mini"),
+                    model=os.getenv("AD_REWRITE_MODEL", "openai/gpt-4o-mini"),
                     messages=[{"role": "user", "content": (
                         "Rewrite this Facebook ad so it makes no claim the business's website does not support. "
                         f"Remove these unsupported claims: {', '.join(claims)}. Keep the audience, tone and roughly "
@@ -1027,7 +1051,9 @@ Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
 
             # Use synchronous version for compatibility
             result = self.openrouter.chat_completion_sync(
-                model=os.getenv("AD_CONTENT_MODEL", "openai/gpt-4o-mini"),
+                # Ad copy is what customers read, once per campaign: Claude Sonnet writes far more
+                # persuasive, specific copy than gpt-4o-mini (~$0.09 per campaign).
+                model=os.getenv("AD_CONTENT_MODEL", "anthropic/claude-sonnet-4.6"),
                 messages=[
                     {"role": "system", "content": "You are a digital marketing expert. Return only valid JSON."},
                     {"role": "user", "content": prompt}
