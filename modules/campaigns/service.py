@@ -86,7 +86,36 @@ AdContent = UrlAdContent
 # How ad copy should read. Left alone, the model writes corporate filler ("As a
 # professional, you deserve only the best", "experience the difference"); merchants
 # need copy that sounds like someone who understands the customer's situation.
+# Hook tactics that dominate high-spend Meta accounts (Motion's 2026 creative
+# benchmarks). Each ad set gets a different one, so a campaign tests different ways of
+# stopping the scroll rather than three versions of the same opener.
+HOOK_TACTICS = [
+    ("Confession",
+     "admit a mistake, failure or wrong belief the customer has held, then resolve it; honest and "
+     "vulnerable, like talking to a friend, never salesy",
+     ['"I tried everything — [failed attempts] — then I found [product]."',
+      '"I have never tried [product] before, believe it or not..."']),
+    ("Bold claim",
+     "open with a big, hard-to-ignore promise that makes the reader think 'prove it', then prove it "
+     "immediately with a fact from the website — never a promise the site does not support",
+     ['"What if I told you [bold promise]? Well, you are looking at it right now."']),
+    ("Relatability",
+     "describe one specific moment from the customer's life in their own words so they think "
+     "'that is literally me'; specific beats general",
+     ['"My [problem] was [bad situation]. [Product] literally saved me."']),
+    ("Contrast",
+     "set two things against each other: the old way vs the new way, before vs after, or how everyone "
+     "else does it vs how this business does it",
+     ['"[Old way] vs [new way] — the difference is [proof]."']),
+    ("Curiosity",
+     "open a loop: give the known (who and what this is about, so the right person self-selects) and "
+     "hold back the unknown, then resolve it later in the copy",
+     ['"My [person] has only been using it for [timeframe]..."']),
+]
+
 AD_COPYWRITING_RULES = """COPYWRITING RULES (these override any tone guidance above):
+- The FIRST line of primary_text is the hook, and it has three jobs: stop the scroll, make the right person feel seen (and the wrong person scroll past), and give a reason to read the next line. Keep it short and specific.
+- The headline carries the same idea as the hook, in under 40 characters.
 - Start from the customer, not the business. Open primary_text by naming a real, specific situation this buyer is in, in second person, with empathy (e.g. "Your laptop gives up the week before exams, and the repair shop wants two weeks.").
 - Then the consequence that situation causes - briefly and honestly, no fear-mongering.
 - Then how this business resolves it, using concrete proof from the website (customer numbers, delivery areas, warranty, years in business) - facts only.
@@ -787,8 +816,13 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
 
         if ad_angles:
             # One ad set per research-backed angle instead of a single generic persona.
+            def hook_brief(index):
+                name, how, examples = HOOK_TACTICS[index % len(HOOK_TACTICS)]
+                return f"   HOOK TACTIC — {name}: {how}. Patterns: {' '.join(examples)}"
+
             angle_lines = "\n".join(
                 f"{i + 1}. {a.get('angle_name')} — audience: {a.get('target_audience')}\n"
+                f"{hook_brief(i)}\n"
                 f"   customer pain: {a.get('customer_pain')}\n"
                 f"   desired outcome: {a.get('desired_outcome')}\n"
                 f"   hook: {a.get('hook')} | how we solve it: {a.get('value_proposition')} | proof: {a.get('proof')}\n"
@@ -799,9 +833,10 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
                 f"STEP 2 - ONE AD SET PER AD ANGLE:\n\n"
                 f"Market research produced these {len(ad_angles)} customer-first ad angles:\n{angle_lines}\n\n"
                 f"Generate exactly {len(ad_angles)} ad sets, one per angle, in the same order. For each: name = the "
-                "angle's audience; title = the angle's hook; primary_text opens with the customer pain in their "
-                "words, acknowledges it with empathy, then shows the desired outcome and how this business "
-                "delivers it, backed by the proof, and ends with one clear next step; use the keywords naturally; "
+                "angle's audience; title and the first line of primary_text use that angle's HOOK TACTIC (each ad "
+                "set uses a different tactic — do not repeat one); primary_text then acknowledges the customer's "
+                "situation with empathy, shows the desired outcome and how this business delivers it, backed by "
+                "the proof, and ends with one clear next step; use the keywords naturally; "
                 "emotion and visual_direction follow the angle. Only use facts from the website content — do not "
                 "invent offers, prices or statistics.\n\n"
                 f"CRITICAL: You MUST output exactly {len(ad_angles)} ad sets in the ad_sets array, one per angle."
