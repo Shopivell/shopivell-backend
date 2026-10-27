@@ -2080,6 +2080,29 @@ async def run():
     check("22", "...the model saves the name at the name step", bool(fake.payloads),
           f"{len(fake.payloads)} model call(s)")
 
+    # ---------------------------------------------------------------- 23
+    print("\n[23] A NULL collection method cannot break the payment summary")
+    _ORDER_STATES.clear()
+    bot.history.clear()
+    bot.phone = "26377100009"
+    # Exactly what production held when the customer sent their EcoCash number:
+    # the key is present with a NULL value, which .get(key, "delivery") does not
+    # cover - the summary then crashed and the customer got "temporary problem".
+    _ORDER_STATES[(STORE_ID, bot.phone)] = {
+        "cart_items": [{"product_name": "NIVEA CREAM 100ML", "price": 6,
+                        "quantity": 2, "branch": "Angwa"}],
+        "selected_branch": "Angwa", "current_state": "payment",
+        "collection_method": None, "customer_name": "farai rato",
+    }
+    result = await router._execute_pharmacy_tool(
+        db, STORE, bot.phone, "set_payment_method",
+        {"method": "ecocash", "mobile_number": "0781276999"})
+    transcript("EcoCash number arrives with no stored collection method",
+               "0781276999", result)
+    check("23", "the payment summary is returned", "ORDER SUMMARY" in result.upper(), result[:200])
+    check("23", "...with a collection line, not a crash",
+          "Collection:" in result and "None" not in result.split("Collection:")[-1][:20], result)
+
     print("\n" + "=" * 70)
     if FAILURES:
         print(f"SCENARIOS: {len(FAILURES)} CHECK(S) FAILED")

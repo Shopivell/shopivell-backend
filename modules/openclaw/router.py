@@ -5478,7 +5478,12 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         summary += f"\nSubtotal: {format_price(subtotal)}\n"
         summary += f"Delivery: {'FREE' if delivery_fee == 0 else format_price(delivery_fee)}\n"
         summary += f"*TOTAL: {format_price(total)}*\n\n"
-        summary += f"Collection: {state.get('collection_method', 'delivery').replace('_', ' ').title()}\n"
+        # A stored NULL defeats the "delivery" default: .get(key, default) only
+        # applies when the key is missing, and this crashed the whole turn (the
+        # customer saw "temporary problem" right after giving their EcoCash
+        # number) even though the tool had already saved it.
+        collection_label = (state.get('collection_method') or 'delivery').replace('_', ' ').title()
+        summary += f"Collection: {collection_label}\n"
         summary += f"Payment: {(payment_provider or method).title()}\n\n"
         summary += "Reply YES to confirm your order."
 
@@ -5498,7 +5503,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
 
         # A delivery order without a usable address cannot be dispatched, so it
         # must never be confirmed (this used to be silently allowed).
-        if state.get("collection_method", "delivery") == "delivery":
+        if (state.get("collection_method") or "delivery") == "delivery":
             address = (state.get("customer_address") or "").strip()
             if not address:
                 return ("DELIVERY ADDRESS MISSING: ask the customer for their delivery "
@@ -5542,7 +5547,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
             "subtotal": subtotal,
             "delivery_fee": delivery_fee,
             "total_amount": total,
-            "collection_method": state.get("collection_method", "delivery"),
+            "collection_method": state.get("collection_method") or "delivery",
             "payment_method": "cod" if state.get("payment_method") == "cash" else "mobile_money",
             "payment_provider": state.get("payment_provider")
         }
@@ -8344,10 +8349,19 @@ async def _generate_bot_reply(
 
                     logger.info("Executing tool: %s with args: %s", tool_name, tool_args)
 
-                    # Execute the tool
-                    tool_result = await _execute_pharmacy_tool(
-                        db, store, customer_phone, tool_name, tool_args, user_text
-                    )
+                    # Execute the tool. One tool that raises must not cost the
+                    # customer the whole reply: the model gets the failure as
+                    # the tool result and answers from what did work.
+                    try:
+                        tool_result = await _execute_pharmacy_tool(
+                            db, store, customer_phone, tool_name, tool_args, user_text
+                        )
+                    except Exception as tool_error:  # noqa: BLE001
+                        logger.error("pharmacy tool %s failed: %s", tool_name, tool_error)
+                        tool_result = (f"TOOL ERROR in {tool_name}: the action did not "
+                                       f"complete. Do not say it happened - tell the "
+                                       f"customer something went wrong and, where it "
+                                       f"makes sense, try the step again.")
 
                     # Add tool result to messages
                     messages.append({
