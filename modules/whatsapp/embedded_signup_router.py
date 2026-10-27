@@ -1,0 +1,552 @@
+"""
+WhatsApp Embedded Signup API Router
+
+Endpoints for connecting store owner's WhatsApp phone numbers.
+"""
+
+import os
+import logging
+from typing import Optional
+from uuid import UUID
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+from database import get_db
+from dependencies import get_current_user
+from modules.users.models import User
+
+from .embedded_signup import EmbeddedSignupService
+from .models import WhatsAppAccount
+
+logger = logging.getLogger(__name__)
+
+# Router
+embedded_signup_router = APIRouter(
+    prefix="/whatsapp/connect",
+    tags=["WhatsApp Connection"]
+)
+
+# Environment
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+META_APP_ID = os.getenv("META_APP_ID", "") or os.getenv("FACEBOOK_APP_ID", "")
+META_CONFIG_ID = os.getenv("META_WHATSAPP_CONFIG_ID", "")
+
+
+# ============================================================================
+# Schemas
+# ============================================================================
+
+class WhatsAppAccountResponse(BaseModel):
+    id: UUID
+    phone_number: str
+    display_name: Optional[str] = None
+    verified_name: Optional[str] = None
+    quality_rating: Optional[str] = None
+    is_enabled: bool
+    is_default: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WhatsAppAccountList(BaseModel):
+    accounts: list[WhatsAppAccountResponse]
+    total: int
+
+
+class ConnectInitResponse(BaseModel):
+    oauth_url: str
+    state: str
+    config_id: str
+    app_id: str
+
+
+class CompleteSignupRequest(BaseModel):
+    code: str
+    waba_id: str
+    phone_number_id: str
+
+
+class SetDefaultRequest(BaseModel):
+    account_id: UUID
+
+
+# ============================================================================
+# OAuth Flow Endpoints
+# ============================================================================
+
+@embedded_signup_router.get("/init", response_model=ConnectInitResponse)
+async def init_whatsapp_connection(
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Initialize WhatsApp connection flow.
+    Returns OAuth URL and state for the frontend to open.
+    """
+    # Verify user owns this store
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    service = EmbeddedSignupService(store_id, db)
+    state = service.generate_oauth_state()
+
+    redirect_uri = f"{BACKEND_URL}/v1/api/whatsapp/connect/callback"
+    oauth_url = service.get_oauth_url(redirect_uri, state)
+
+    return ConnectInitResponse(
+        oauth_url=oauth_url,
+        state=state,
+        config_id=META_CONFIG_ID,
+        app_id=META_APP_ID
+    )
+
+
+@embedded_signup_router.get("/callback")
+async def oauth_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    error_reason: Optional[str] = None,
+    error_description: Optional[str] = None,
+):
+    """
+    OAuth callback from Meta.
+    This endpoint receives the authorization code after user completes signup.
+    Redirects to frontend with status.
+    """
+    if error:
+        logger.error(f"OAuth error: {error} - {error_description}")
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}/settings/whatsapp?error={error}&message={error_description}"
+        )
+
+    if not code or not state:
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}/settings/whatsapp?error=missing_params"
+        )
+
+    # Extract store_id from state
+    try:
+        store_id = state.split(":")[0]
+    except:
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}/settings/whatsapp?error=invalid_state"
+        )
+
+    # Redirect to frontend with code and state for completion
+    # The frontend will call /complete with additional WABA details
+    return RedirectResponse(
+        url=f"{FRONTEND_URL}/settings/whatsapp/complete?code={code}&state={state}"
+    )
+
+
+@embedded_signup_router.post("/complete", response_model=WhatsAppAccountResponse)
+async def complete_whatsapp_connection(
+    request: CompleteSignupRequest,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Complete WhatsApp connection after OAuth.
+    Frontend calls this with the code and selected WABA/phone details.
+    """
+    # Verify user owns this store
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    service = EmbeddedSignupService(store_id, db)
+    redirect_uri = f"{BACKEND_URL}/v1/api/whatsapp/connect/callback"
+
+    account, error = await service.complete_signup(
+        code=request.code,
+        redirect_uri=redirect_uri,
+        waba_id=request.waba_id,
+        phone_number_id=request.phone_number_id
+    )
+
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    return WhatsAppAccountResponse(
+        id=account.id,
+        phone_number=account.phone_number,
+        display_name=account.display_name,
+        verified_name=account.verified_name,
+        quality_rating=account.quality_rating,
+        is_enabled=account.is_enabled,
+        is_default=account.is_default,
+        created_at=account.created_at
+    )
+
+
+# ============================================================================
+# Account Management Endpoints
+# ============================================================================
+
+@embedded_signup_router.get("/accounts", response_model=WhatsAppAccountList)
+async def list_whatsapp_accounts(
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all WhatsApp accounts connected to this store."""
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    service = EmbeddedSignupService(store_id, db)
+    accounts = service.get_store_whatsapp_accounts()
+
+    return WhatsAppAccountList(
+        accounts=[
+            WhatsAppAccountResponse(
+                id=a.id,
+                phone_number=a.phone_number,
+                display_name=a.display_name,
+                verified_name=a.verified_name,
+                quality_rating=a.quality_rating,
+                is_enabled=a.is_enabled,
+                is_default=a.is_default,
+                created_at=a.created_at
+            )
+            for a in accounts
+        ],
+        total=len(accounts)
+    )
+
+
+@embedded_signup_router.post("/accounts/set-default")
+async def set_default_account(
+    request: SetDefaultRequest,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set a WhatsApp account as the default for this store."""
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    service = EmbeddedSignupService(store_id, db)
+    account = service.set_default_account(request.account_id)
+
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return {"message": "Default account updated", "account_id": str(account.id)}
+
+
+@embedded_signup_router.delete("/accounts/{account_id}")
+async def disconnect_whatsapp_account(
+    account_id: UUID,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Disconnect a WhatsApp account from this store."""
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    service = EmbeddedSignupService(store_id, db)
+    success = service.disconnect_account(account_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return {"message": "Account disconnected"}
+
+
+# ============================================================================
+# SDK Integration Endpoint (for Facebook JS SDK)
+# ============================================================================
+
+@embedded_signup_router.post("/sdk-callback")
+async def sdk_callback(
+    request: Request,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Callback for Facebook JS SDK Embedded Signup.
+
+    The frontend sends the code from FB.login() here (response_type: 'code').
+    The backend exchanges the code for a System User access token, then
+    uses the session info (waba_id, phone_number_id) from the Embedded Signup
+    MessageEvent to complete the connection.
+
+    Expected body: {
+        code: string (authorization code from FB.login),
+        waba_id: string (optional, from MessageEvent),
+        phone_number_id: string (optional, from MessageEvent)
+    }
+    """
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    body = await request.json()
+    code = body.get("code")
+    access_token = body.get("accessToken")  # Legacy support
+    waba_id = body.get("waba_id")
+    phone_number_id = body.get("phone_number_id")
+
+    service = EmbeddedSignupService(store_id, db)
+
+    # If we got a code, exchange it for a token (new Embedded Signup v3 flow)
+    if code and not access_token:
+        exchanged_token, error = await service.exchange_code_for_token(
+            code=code,
+            redirect_uri=""  # Not needed for JS SDK code exchange
+        )
+        if error:
+            # If code was already used, check if the account was already connected
+            if "has been used" in str(error) and phone_number_id:
+                existing = db.query(WhatsAppAccount).filter(
+                    WhatsAppAccount.phone_number_id == phone_number_id,
+                    WhatsAppAccount.store_id == store_id
+                ).first()
+                if existing:
+                    logger.info(f"Code already used but account {phone_number_id} already connected")
+                    return {
+                        "message": f"Successfully connected {existing.phone_number}",
+                        "account": WhatsAppAccountResponse(
+                            id=existing.id,
+                            phone_number=existing.phone_number,
+                            display_name=existing.display_name,
+                            verified_name=existing.verified_name,
+                            quality_rating=existing.quality_rating,
+                            is_enabled=existing.is_enabled,
+                            is_default=existing.is_default,
+                            created_at=existing.created_at
+                        )
+                    }
+            raise HTTPException(status_code=400, detail=f"Token exchange failed: {error}")
+        access_token = exchanged_token
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Missing code or accessToken")
+
+    # If WABA and phone number provided (from Embedded Signup MessageEvent), complete directly
+    if waba_id and phone_number_id:
+        # Register the phone number first
+        reg_success, reg_error = await service.register_phone_number(access_token, phone_number_id)
+        if reg_error:
+            logger.warning(f"Phone registration failed (may already be registered): {reg_error}")
+
+        # Get phone number details
+        phone_numbers, error = await service.get_waba_phone_numbers(access_token, waba_id)
+        if error:
+            raise HTTPException(status_code=400, detail=f"Failed to get phone numbers: {error}")
+
+        phone_data = None
+        for pn in phone_numbers:
+            if pn.get("id") == phone_number_id:
+                phone_data = pn
+                break
+
+        if not phone_data:
+            raise HTTPException(status_code=404, detail="Phone number not found")
+
+        # Subscribe to webhooks
+        await service.subscribe_to_webhooks(access_token, waba_id)
+
+        # Check existing account
+        existing = db.query(WhatsAppAccount).filter(
+            WhatsAppAccount.phone_number_id == phone_number_id
+        ).first()
+
+        if existing:
+            existing.store_id = store_id
+            existing.permanent_access_token = access_token
+            existing.display_name = phone_data.get("verified_name")
+            existing.verified_name = phone_data.get("verified_name")
+            existing.quality_rating = phone_data.get("quality_rating")
+            db.commit()
+            db.refresh(existing)
+            account = existing
+        else:
+            from modules.business.models import FacebookBusinessAccount
+            from modules.stores.models import Store
+            import secrets
+
+            fb_account = db.query(FacebookBusinessAccount).filter(
+                FacebookBusinessAccount.business_id == waba_id
+            ).first()
+
+            if not fb_account:
+                fb_account = FacebookBusinessAccount(
+                    business_id=waba_id,
+                    name=f"WABA-{waba_id}",
+                    access_token=access_token,
+                )
+                db.add(fb_account)
+                db.commit()
+                db.refresh(fb_account)
+
+            account = WhatsAppAccount(
+                business_account_id=fb_account.id,
+                store_id=store_id,
+                waba_id=waba_id,
+                phone_number_id=phone_number_id,
+                phone_number=phone_data.get("display_phone_number", ""),
+                display_name=phone_data.get("verified_name"),
+                verified_name=phone_data.get("verified_name"),
+                quality_rating=phone_data.get("quality_rating"),
+                permanent_access_token=access_token,
+                is_enabled=True,
+                is_default=True,
+                webhook_verify_token=secrets.token_urlsafe(32),
+            )
+            db.add(account)
+            db.commit()
+            db.refresh(account)
+
+        # Auto-fill WhatsApp Business Profile from store data
+        from modules.stores.models import Store
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if store:
+            profile_success, profile_error = await service.update_business_profile(
+                access_token, phone_number_id, store
+            )
+            if profile_error:
+                logger.warning(f"Business profile update failed (non-fatal): {profile_error}")
+
+        return {
+            "message": f"Successfully connected {account.phone_number}",
+            "account": WhatsAppAccountResponse(
+                id=account.id,
+                phone_number=account.phone_number,
+                display_name=account.display_name,
+                verified_name=account.verified_name,
+                quality_rating=account.quality_rating,
+                is_enabled=account.is_enabled,
+                is_default=account.is_default,
+                created_at=account.created_at
+            )
+        }
+
+    # If no WABA/phone, return available WABAs for user to select
+    wabas, error = await service.get_user_whatsapp_business_accounts(access_token)
+    if error:
+        raise HTTPException(status_code=400, detail=f"Failed to get WABAs: {error}")
+
+    result = []
+    for waba in wabas:
+        phone_numbers, _ = await service.get_waba_phone_numbers(access_token, waba["id"])
+        result.append({
+            "waba_id": waba["id"],
+            "waba_name": waba.get("name"),
+            "business_id": waba.get("business_id"),
+            "business_name": waba.get("business_name"),
+            "phone_numbers": phone_numbers or []
+        })
+
+    return {"wabas": result}
+
+
+# ============================================================================
+# Info Endpoint
+# ============================================================================
+
+@embedded_signup_router.get("/info")
+async def get_connection_info():
+    """
+    Get info needed for frontend to initialize Facebook SDK.
+    Public endpoint - no auth required.
+    """
+    return {
+        "app_id": META_APP_ID,
+        "config_id": META_CONFIG_ID,
+        "api_version": "v25.0",
+        "scopes": [
+            "whatsapp_business_management",
+            "whatsapp_business_messaging",
+            "business_management"
+        ]
+    }
+
+
+# ============================================================================
+# Admin: Manually add a WhatsApp test number
+# ============================================================================
+
+class ManualAddRequest(BaseModel):
+    waba_id: str
+    phone_number_id: str
+    phone_number: str
+    display_name: str = "Test Number"
+    access_token: str = ""
+
+
+@embedded_signup_router.post("/admin/add-number")
+async def admin_add_whatsapp_number(
+    request: ManualAddRequest,
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Manually add a WhatsApp number (e.g. Meta test numbers).
+    Skips the OAuth flow entirely.
+    """
+    if not current_user.store_id or str(current_user.store_id) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+
+    from modules.business.models import FacebookBusinessAccount
+
+    # Get or create a business account record for this WABA
+    fb_account = db.query(FacebookBusinessAccount).filter(
+        FacebookBusinessAccount.business_account_id == request.waba_id
+    ).first()
+
+    if not fb_account:
+        # Use the existing business account if available
+        fb_account = db.query(FacebookBusinessAccount).filter(
+            FacebookBusinessAccount.is_active == True
+        ).first()
+
+    if not fb_account:
+        raise HTTPException(status_code=400, detail="No Facebook Business Account found. Connect your Facebook account first.")
+
+    # Check if already exists
+    existing = db.query(WhatsAppAccount).filter(
+        WhatsAppAccount.phone_number_id == request.phone_number_id
+    ).first()
+
+    if existing:
+        existing.store_id = store_id
+        existing.display_name = request.display_name
+        existing.is_enabled = True
+        if request.access_token:
+            existing.permanent_access_token = request.access_token
+        db.commit()
+        db.refresh(existing)
+        return {"message": "Number updated", "id": str(existing.id)}
+
+    account = WhatsAppAccount(
+        business_account_id=fb_account.id,
+        waba_id=request.waba_id,
+        phone_number_id=request.phone_number_id,
+        phone_number=request.phone_number,
+        display_name=request.display_name,
+        verified_name=request.display_name,
+        quality_rating="GREEN",
+        is_enabled=True,
+        is_default=True,
+        store_id=store_id,
+        permanent_access_token=request.access_token or None,
+    )
+
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    return {"message": "Number added successfully", "id": str(account.id)}

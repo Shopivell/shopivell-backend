@@ -1,0 +1,2440 @@
+# modules/campaigns/router.py
+import os
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from typing import List, Optional, AsyncGenerator
+import uuid
+from datetime import datetime
+import logging
+import json
+import asyncio
+import re
+
+from database import get_db
+from .models import UrlCampaign, CampaignStatus, UrlAdSet, UrlAdContent, CampaignGoal
+
+# Aliases for readability
+Campaign = UrlCampaign
+AdSet = UrlAdSet
+AdContent = UrlAdContent
+from .schemas import (
+    CampaignCreate, CampaignUpdate, CampaignResponse, CampaignListResponse,
+    ScrapeUrlRequest, ScrapeUrlResponse, AdSetResponse, AdContentResponse,
+    GenerateAdsRequest, CreateCampaignFromStoreRequest, CreateCampaignFromStoreResponse,
+    QuickLaunchRequest, QuickLaunchResponse
+)
+from .service import CampaignService
+
+# Import Facebook posting functionality
+try:
+    from modules.business.router import post_to_facebook_page
+    from modules.business.schemas import FacebookPostCreate
+    from modules.business.models import FacebookPage
+    FACEBOOK_AVAILABLE = True
+except ImportError:
+    FACEBOOK_AVAILABLE = False
+
+# Import Meta Ads functionality
+try:
+    from modules.marketing.router import (
+        create_meta_campaign, create_meta_adset, create_meta_ad
+    )
+    from modules.marketing.models import MetaAdAccount, MetaCampaign, MetaAdSet, MetaAd
+    from datetime import datetime
+    import json
+    META_ADS_AVAILABLE = True
+except ImportError:
+    META_ADS_AVAILABLE = False
+
+# Import Notification functionality
+try:
+    from modules.notifications.models import Notification
+    from modules.notifications.schemas import NotificationType, NotificationPriority
+    NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    NOTIFICATIONS_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+class EditAdImageRequest(BaseModel):
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None  # for generated images (data-URI base64)
+    prompt: str
+    store_id: Optional[uuid.UUID] = None
+    aspect_ratio: str = "1:1"
+
+
+# Meta-accepted Special Ad Category values. Declaring the wrong one (e.g. NONE for a
+# housing/employment/credit ad) is a policy violation, so we validate against this set.
+META_SPECIAL_AD_CATEGORIES = {
+    "NONE", "HOUSING", "EMPLOYMENT", "CREDIT",
+    "ISSUES_ELECTIONS_POLITICS", "FINANCIAL_PRODUCTS_SERVICES",
+    "ONLINE_GAMBLING_AND_GAMING",
+}
+
+
+def resolve_special_ad_categories(campaign) -> list:
+    """Return the campaign's declared Special Ad Category as a validated list.
+
+    Reads campaign.special_ad_category (set by the store); falls back to NONE and
+    coerces any unknown value to NONE so we never send Meta an invalid category.
+    """
+    raw = getattr(campaign, "special_ad_category", None) or "NONE"
+    val = str(raw).strip().upper()
+    if val not in META_SPECIAL_AD_CATEGORIES:
+        val = "NONE"
+    return [val]
+
+
+# Keyword signals for the Meta Special Ad Category (deterministic, high-recall first pass).
+_SPECIAL_CATEGORY_KEYWORDS = {
+    "FINANCIAL_PRODUCTS_SERVICES": [r"\bloan", r"\bcredit\b", r"mortgage", r"insurance",
+        r"microfinance", r"\bforex\b", r"crypto", r"\bdebt\b", r"savings account",
+        r"financial service", r"invest(ment|ing)", r"\bbanking\b", r"cash advance"],
+    "EMPLOYMENT": [r"\bjob\b", r"\bjobs\b", r"hiring", r"\bvacan", r"recruit",
+        r"employment", r"we\W?re hiring", r"we are hiring",
+        r"apply .{0,20}(job|position|role|vacancy)", r"career opportunit"],
+    "HOUSING": [r"for rent\b", r"\brental\b", r"apartment", r"real estate",
+        r"property for (sale|rent)", r"house for (sale|rent)", r"flat to let",
+        r"stand for sale", r"\bto let\b"],
+    "ISSUES_ELECTIONS_POLITICS": [r"\bvote\b", r"\belection", r"political",
+        r"\bcandidate\b", r"referendum", r"manifesto"],
+    "ONLINE_GAMBLING_AND_GAMING": [r"\bcasino\b", r"\bbetting\b", r"\bbet now\b",
+        r"gambling", r"\bpoker\b", r"sports bet", r"\blottery\b", r"\bwager"],
+}
+
+
+def keyword_classify_ad_category(text: str):
+    """Deterministic keyword pass. Returns a category token, or None to defer to the LLM."""
+    t = (text or "").lower()
+    for cat, patterns in _SPECIAL_CATEGORY_KEYWORDS.items():
+        if any(re.search(p, t) for p in patterns):
+            return cat
+    return None
+
+
+def _check_copy_compliance(text: str):
+    """Fail-closed Meta ad-copy compliance gate used before publishing to Meta.
+
+    Regex-only (free, no LLM). Returns (is_compliant: bool, verdict: dict). A
+    checker infra error is treated as compliant (and logged) so a checker bug
+    cannot block all publishing, but any real policy violation blocks that ad."""
+    if not text or not text.strip():
+        return True, {}
+    try:
+        from modules.agents.compliance_agent import ComplianceAgent
+        verdict = ComplianceAgent().check_ad_copy(primary_text=text) or {}
+        return bool(verdict.get("compliant", True)), verdict
+    except Exception as e:
+        logger.warning(f"[publish] ad-copy compliance check skipped: {e}")
+        return True, {}
+
+
+campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
+
+
+class ClassifyAdCategoryRequest(BaseModel):
+    text: str = ""
+
+
+@campaign_router.post("/classify-ad-category")
+async def classify_ad_category(req: ClassifyAdCategoryRequest):
+    """AI-flag the Meta Special Ad Category from the ad's product/description text.
+
+    Keyword pass first (deterministic, high-recall), then the LLM for nuance. Returns
+    NONE by default, so a regular product ad is never wrongly restricted.
+    """
+    kw = keyword_classify_ad_category(req.text)
+    if kw:
+        return {"category": kw, "source": "keywords"}
+    try:
+        from modules.openrouter.service import openrouter_client
+        valid = ["NONE", "FINANCIAL_PRODUCTS_SERVICES", "EMPLOYMENT", "HOUSING",
+                 "ISSUES_ELECTIONS_POLITICS", "ONLINE_GAMBLING_AND_GAMING"]
+        prompt = (
+            "Classify this advertisement into exactly one Meta Special Ad Category token. "
+            "NONE = regular products/services. FINANCIAL_PRODUCTS_SERVICES = credit, loans, "
+            "insurance, investments, banking. EMPLOYMENT = jobs/hiring. HOUSING = real estate/"
+            "rentals. ISSUES_ELECTIONS_POLITICS = social issues, elections, politics. "
+            "ONLINE_GAMBLING_AND_GAMING = betting/casino/lottery. Pick a special category only if "
+            "the ad clearly belongs to it; otherwise NONE.\n\n"
+            f'Ad text: "{(req.text or "")[:1500]}"\n\nReply with ONLY the token.'
+        )
+        resp = await openrouter_client.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0, max_tokens=16,
+        )
+        content = ((resp.get("choices") or [{}])[0].get("message", {}).get("content", "") or "").strip().upper()
+        cat = next((v for v in valid if v in content), "NONE")
+        return {"category": cat, "source": "ai"}
+    except Exception as e:
+        logger.warning(f"[classify-ad-category] LLM classify failed: {e}")
+        return {"category": "NONE", "source": "fallback"}
+
+
+@campaign_router.post("/edit-image")
+async def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
+    """Edit an existing adset image with an AI prompt (campaign review step).
+
+    Feeds the current image + the owner's instruction to OpenAI gpt-image-2's image
+    edit API, saves the result with a proper branded filename, and returns the new
+    image URL. The owner sees the result and chooses whether to use it (the review
+    step), so it publishes nothing on its own.
+    """
+    # AI ad-image generation/editing was removed in the OpenClaw migration and now
+    # lives in OpenClaw. This endpoint is retired.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Ad image editing has moved to OpenClaw.",
+    )
+    import httpx as _httpx
+    import base64 as _b64
+    from modules.agents.media_generator_agent import MediaGeneratorAgent
+
+    # Prefer inline base64 (generated images are data-URIs); else fetch the URL.
+    image_bytes = None
+    if req.image_base64:
+        try:
+            raw = req.image_base64.split(",", 1)[-1]  # strip any data-URI prefix
+            image_bytes = _b64.b64decode(raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid image data.")
+    elif req.image_url:
+        try:
+            async with _httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.get(req.image_url)
+                r.raise_for_status()
+                image_bytes = r.content
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not load the current image.")
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="No image provided to edit.")
+
+    base_name = None
+    if req.store_id:
+        from modules.stores.models import Store
+        store = db.query(Store).filter(Store.id == req.store_id).first()
+        base_name = store.store_name if store else None
+
+    edit_prompt = (
+        f"Edit this advertising image: {req.prompt}. Keep the main product/subject and "
+        f"the overall layout; apply only the requested change. Keep it appropriate for ads."
+    )
+    agent = MediaGeneratorAgent()
+    try:
+        result = await agent.edit_image_gpt(image_bytes, edit_prompt, req.aspect_ratio)
+    except Exception as e:
+        logger.error(f"[edit-image] gpt-image edit failed: {e}")
+        raise HTTPException(status_code=400, detail="Could not edit the image. Try a simpler instruction.")
+
+    if not result.get("image_base64"):
+        raise HTTPException(status_code=400, detail="No edited image was produced.")
+
+    upload = agent.upload_to_cloudinary(result["image_base64"], base_name=base_name)
+    if not upload.get("uploaded"):
+        raise HTTPException(status_code=400, detail="Edited image could not be saved.")
+    return {"success": True, "image_url": upload.get("secure_url")}
+
+
+@campaign_router.post("/scrape", response_model=ScrapeUrlResponse)
+def scrape_url_and_create_campaign(
+    request: ScrapeUrlRequest,
+    db: Session = Depends(get_db)
+):
+    """Scrape a URL and create a campaign with generated ad content."""
+    service = CampaignService(db)
+    campaign, error = service.scrape_url_for_campaign(
+        url=request.url,
+        store_id=request.store_id,
+        campaign_name=request.campaign_name,
+        asset_ids=request.asset_ids
+    )
+
+    if error and not campaign:
+        raise HTTPException(status_code=500, detail=error)
+
+    # Debug: Log screenshot URL
+    screenshot_url = campaign.scraped_data.get("screenshot_url") if campaign.scraped_data else None
+    print(f"[Router] Returning campaign with screenshot_url: {screenshot_url}")
+
+    return ScrapeUrlResponse(
+        campaign_id=campaign.id,
+        status=campaign.status.value,
+        message="Campaign created successfully" if not error else error,
+        scraped_data=campaign.scraped_data
+    )
+
+
+@campaign_router.post("/from-store", response_model=CreateCampaignFromStoreResponse, tags=["campaigns"])
+def create_campaign_from_store(
+    request: CreateCampaignFromStoreRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a campaign directly from existing store data.
+
+    This endpoint uses the store's saved information (name, business_type,
+    store_voice, products_or_services, logo_url, color_theme) to generate
+    ad content WITHOUT scraping the website again.
+
+    This is more reliable and faster than scraping, especially when:
+    - The store already has complete data
+    - Web scraping is rate-limited or failing
+    - You want to create campaigns based on curated store information
+    """
+    # Import Store model here to avoid circular imports
+    from modules.stores.models import Store
+
+    # Get the store
+    store = db.query(Store).filter(Store.id == request.store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    if not store.is_setup_completed:
+        raise HTTPException(status_code=400, detail="Store setup is not completed")
+
+    service = CampaignService(db)
+    campaign, error = service.create_campaign_from_store(
+        store=store,
+        campaign_name=request.campaign_name,
+        asset_ids=request.asset_ids
+    )
+
+    if error and not campaign:
+        raise HTTPException(status_code=500, detail=error)
+
+    # Prepare store data summary for response
+    store_data_used = {
+        "store_name": store.store_name,
+        "business_type": store.business_type,
+        "store_voice": store.store_voice[:200] + "..." if store.store_voice and len(store.store_voice) > 200 else store.store_voice,
+        "products_or_services": store.products_or_services[:10] if store.products_or_services else [],
+        "logo_url": store.logo_url,
+        "color_theme": store.color_theme,
+        "store_link": store.store_link
+    }
+
+    return CreateCampaignFromStoreResponse(
+        campaign_id=campaign.id,
+        status=campaign.status.value,
+        message="Campaign created successfully from store data",
+        store_data_used=store_data_used
+    )
+
+
+@campaign_router.post("/manual")
+def create_manual_campaign(
+    request: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a campaign manually without AI scraping.
+    Returns a draft campaign with one empty ad set and ad content.
+    """
+    store_id = request.get("store_id")
+    name = request.get("name", "My Campaign")
+    goal = request.get("goal", "sales")
+    daily_budget = request.get("daily_budget", 50.0)
+
+    if not store_id:
+        raise HTTPException(status_code=400, detail="store_id is required")
+
+    campaign = Campaign(
+        id=uuid.uuid4(),
+        store_id=store_id,
+        name=name,
+        source_type="manual",
+        goal=goal,
+        daily_budget=daily_budget,
+        status=CampaignStatus.READY,
+        countries=[],
+        cities=[],
+        age_range={"min": 18, "max": 65},
+        gender="all",
+        interests=[],
+        platforms=["facebook"],
+        generated_headlines=[],
+        generated_descriptions=[],
+        platform_campaign_ids={},
+        special_ad_category=request.get("special_ad_category", "NONE"),
+    )
+    db.add(campaign)
+    db.flush()
+
+    ad_set = AdSet(
+        id=uuid.uuid4(),
+        campaign_id=campaign.id,
+        name="Ad Set 1",
+        title="Ad Set 1",
+        audience_tags=[],
+        hashtags=[],
+        is_selected=True,
+        is_active=True,
+    )
+    db.add(ad_set)
+    db.flush()
+
+    ad_content = AdContent(
+        id=uuid.uuid4(),
+        ad_set_id=ad_set.id,
+        headline="",
+        primary_text="",
+        description="",
+        call_to_action="LEARN_MORE",
+        is_primary=True,
+        is_active=True,
+    )
+    db.add(ad_content)
+    db.commit()
+    db.refresh(campaign)
+
+    return {
+        "campaign_id": str(campaign.id),
+        "status": campaign.status.value,
+        "message": "Manual campaign created successfully"
+    }
+
+
+@campaign_router.get("/scrape-stream")
+async def scrape_url_stream(
+    url: str,
+    store_id: uuid.UUID,
+    campaign_name: Optional[str] = None,
+    target: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Stream scraping progress via Server-Sent Events (SSE).
+
+    Events sent:
+    - progress: {stage, message, percentage}
+    - scraped_data: {business_name, business_type, products, brand_color, etc.}
+    - ad_set: {name, title, audience_tags, hashtags, headline, primary_text}
+    - competitor: {name, url, description, rating, reviews, source}
+    - keyword: {keyword, source}
+    - trend: {title, source, insight}
+    - market_research_summary: {competitors_found, keywords_found, trends_found}
+    - complete: {campaign_id, status}
+    - error: {message}
+    """
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        service = CampaignService(db)
+        # Filled by the research stage; saved on the campaign, and the angles drive its ad sets.
+        market_research, ad_angles = None, []
+
+        try:
+            # Stage 1: Start scraping
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'scraping', 'message': 'Connecting to website...', 'percentage': 5})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Scrape the URL
+            scraped_data = service._scrape_website(url)
+
+            if not scraped_data:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to scrape URL - no data returned'})}\n\n"
+                return
+
+            if scraped_data.get("error"):
+                yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
+                return
+
+            scraped_data = service._apply_store_profile(scraped_data, store_id)
+
+            # Stage 2: Stream the scraped content word by word
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'reading', 'message': 'Reading website content...', 'percentage': 10})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Get the scraped content text
+            content = scraped_data.get("content", "")
+            if content:
+                # Split into chunks (groups of words) for streaming
+                words = content.split()
+                total_words = len(words)
+                chunk_size = 15  # Send 15 words at a time
+
+                for i in range(0, min(total_words, 300), chunk_size):  # Limit to first 300 words
+                    chunk = " ".join(words[i:i + chunk_size])
+                    progress = 10 + int((i / min(total_words, 300)) * 20)  # Progress from 10% to 30%
+                    yield f"data: {json.dumps({'event': 'content_chunk', 'text': chunk, 'percentage': progress})}\n\n"
+                    await asyncio.sleep(0.05)  # Small delay for typewriter effect
+
+            # Stage 3: Extract and stream business info
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Analyzing business information...', 'percentage': 35})}\n\n"
+            await asyncio.sleep(0.2)
+
+            brand_dna = scraped_data.get("brand_dna") or {}
+
+            # Note: We'll get the actual business name from AI later, for now just show "Analyzing..."
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'analyzing', 'message': 'Identifying business information...', 'percentage': 35})}\n\n"
+            await asyncio.sleep(0.2)
+
+            # Stream brand color if found
+            brand_color = scraped_data.get("brand_color")
+            if brand_color:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'brand_color', 'label': 'Brand Color', 'value': brand_color})}\n\n"
+                await asyncio.sleep(0.1)
+
+            # Stream logo URL if found
+            logo_url = scraped_data.get("logo_url")
+            if logo_url:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'logo', 'label': 'Logo Found', 'value': logo_url})}\n\n"
+                await asyncio.sleep(0.1)
+
+            # Stream screenshot URL
+            # Priority: MinIO URL > ScreenshotOne direct URL > nothing
+            screenshot_url = scraped_data.get("screenshot_url")
+            if not screenshot_url:
+                # Generate a direct ScreenshotOne URL as fallback (no download needed)
+                screenshotone_key = os.environ.get("SCREENSHOTONE_ACCESS_KEY")
+                if screenshotone_key:
+                    from urllib.parse import quote
+                    screenshot_url = (
+                        f"https://api.screenshotone.com/take?"
+                        f"access_key={screenshotone_key}"
+                        f"&url={quote(url, safe='')}"
+                        f"&viewport_width=1280"
+                        f"&viewport_height=800"
+                        f"&format=webp"
+                        f"&block_ads=true"
+                        f"&block_trackers=true"
+                        f"&delay=2"
+                        f"&timeout=20"
+                        f"&cache=true"
+                        f"&cache_ttl=86400"
+                    )
+            if screenshot_url:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'screenshot', 'label': 'Screenshot Captured', 'value': screenshot_url})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stage 4: Generate ad content
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'generating', 'message': 'Generating ad content with AI...', 'percentage': 55})}\n\n"
+            await asyncio.sleep(0.1)
+
+            ad_content = service._generate_ad_content(scraped_data, url)
+
+            if not ad_content:
+                yield f"data: {json.dumps({'event': 'error', 'message': 'Failed to generate ad content'})}\n\n"
+                return
+
+            # Stream AI-generated business name (this is the accurate one)
+            ai_business_name = ad_content.get("business_name")
+            if ai_business_name:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'business_name', 'label': 'Business Name', 'value': ai_business_name})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream AI-generated business type
+            ai_business_type = ad_content.get("business_type")
+            if ai_business_type:
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'industry', 'label': 'Business Type', 'value': ai_business_type})}\n\n"
+                await asyncio.sleep(0.2)
+
+            # Stream AI-generated products/services
+            ai_products = ad_content.get("products_services", [])[:6]
+            if ai_products:
+                for product in ai_products:
+                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'product', 'label': 'Product/Service', 'value': product})}\n\n"
+                    await asyncio.sleep(0.1)
+
+            # Stage 5: Stream ad set creation
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'ad_sets', 'message': 'Creating ad sets...', 'percentage': 70})}\n\n"
+            await asyncio.sleep(0.2)
+
+            ad_sets_data = ad_content.get("ad_sets", [])[:1]
+            headlines = ad_content.get("headlines", [])
+
+            for i, ad_set_data in enumerate(ad_sets_data):
+                # Stream ad set name
+                ad_set_name = ad_set_data.get("name", f"Ad Set {i+1}")
+                yield f"data: {json.dumps({'event': 'info_found', 'type': 'ad_set_name', 'label': 'Ad Set', 'value': ad_set_name})}\n\n"
+                await asyncio.sleep(0.2)
+
+                # Stream headline
+                headline = headlines[0] if headlines else ad_set_data.get("title", "")
+                if headline:
+                    yield f"data: {json.dumps({'event': 'info_found', 'type': 'headline', 'label': 'Headline', 'value': headline})}\n\n"
+                    await asyncio.sleep(0.2)
+
+                # Stream audience tags one by one
+                audience_tags = ad_set_data.get("audience_tags", [])[:8]
+                if audience_tags:
+                    yield f"data: {json.dumps({'event': 'progress', 'stage': 'targeting', 'message': 'Setting up audience targeting...', 'percentage': 80})}\n\n"
+                    for tag in audience_tags:
+                        yield f"data: {json.dumps({'event': 'info_found', 'type': 'audience_tag', 'label': 'Target', 'value': tag})}\n\n"
+                        await asyncio.sleep(0.1)
+
+                # Stream hashtags
+                hashtags = ad_set_data.get("hashtags", [])[:5]
+                if hashtags:
+                    for hashtag in hashtags:
+                        yield f"data: {json.dumps({'event': 'info_found', 'type': 'hashtag', 'label': 'Hashtag', 'value': f'#{hashtag}'})}\n\n"
+                        await asyncio.sleep(0.1)
+
+                # No ad_set card here: this pre-research preview is a single generic persona.
+                # The real ad sets (one per angle) are streamed after the campaign is saved.
+
+            # Stage 6: Market Research (competitors, keywords, trends) — runs in parallel
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Researching competitors & keywords...', 'percentage': 85})}\n\n"
+            await asyncio.sleep(0.1)
+
+            try:
+                from modules.market_research.service import MarketResearchService
+                from urllib.parse import urlparse
+
+                research_agent = MarketResearchService()
+                parsed_url = urlparse(url)
+                research_domain = parsed_url.netloc.replace("www.", "")
+
+                # Detect country from TLD
+                tld_country_map = {
+                    "zw": "ZW", "za": "ZA", "bw": "BW", "zm": "ZM",
+                    "mz": "MZ", "na": "NA", "ke": "KE", "ng": "NG",
+                    "gh": "GH", "tz": "TZ", "ug": "UG", "uk": "GB",
+                    "au": "AU", "ca": "CA", "de": "DE", "fr": "FR", "in": "IN"
+                }
+                country_name_map = {
+                    "ZW": "Zimbabwe", "ZA": "South Africa", "BW": "Botswana", "ZM": "Zambia",
+                    "MZ": "Mozambique", "NA": "Namibia", "KE": "Kenya", "NG": "Nigeria",
+                    "GH": "Ghana", "TZ": "Tanzania", "UG": "Uganda", "GB": "United Kingdom",
+                    "AU": "Australia", "CA": "Canada", "DE": "Germany", "FR": "France",
+                    "IN": "India", "US": "United States"
+                }
+                last_tld = research_domain.split(".")[-1].lower()
+                country_code = tld_country_map.get(last_tld, "US")
+                location = country_name_map.get(country_code, "")
+                # The store's own country beats the TLD guess (.com is not "United States").
+                _sp = scraped_data.get("store_profile") or {}
+                if _sp.get("country_code"):
+                    country_code = str(_sp["country_code"]).upper()
+                    location = _sp.get("country") or country_name_map.get(country_code, location)
+
+                # Extract structured data from scraped content using AI (much better than ad_content)
+                import re as _re
+                raw_content = scraped_data.get("content", "")
+
+                # First try AI extraction for business info
+                structured_data = {}
+                try:
+                    structured_data = await research_agent._extract_structured_website_data(
+                        raw_content[:8000], url
+                    )
+                except Exception as extract_err:
+                    logger.warning(f"Structured extraction failed: {extract_err}")
+
+                # Use structured data first, fall back to ad_content
+                # business_type first: `industry` is a broad sector ("Information
+                # Technology") which sends competitor/trend search to consultancies and
+                # listicles instead of the shops this business competes with.
+                business_type = (
+                    structured_data.get("business_type")
+                    or structured_data.get("industry")
+                    or ad_content.get("business_type", "")
+                )
+                business_name = (
+                    structured_data.get("company_name")
+                    or ad_content.get("business_name", "")
+                )
+
+                # Extract products from structured data or ad content
+                products = []
+                if structured_data.get("services_products"):
+                    products = [sp.get("name", "") for sp in structured_data["services_products"][:6]]
+                if not products:
+                    products = ad_content.get("products_services", [])[:5]
+
+                # Fallback: extract headings from raw content if still empty
+                if not products and raw_content:
+                    headings = _re.findall(r'#{2,3}\s+(.+)', raw_content)
+                    skip = ['navigation', 'menu', 'footer', 'faq', 'contact', 'about',
+                            'testimonial', 'working process', 'our story', 'our mission']
+                    for h in headings:
+                        clean = _re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', h).strip().strip('#] ')
+                        if clean and 3 < len(clean) < 50 and not any(s in clean.lower() for s in skip):
+                            products.append(clean)
+                        if len(products) >= 6:
+                            break
+
+                # Override location from structured data if available
+                if structured_data.get("geographic_coverage") and structured_data["geographic_coverage"] != "Global":
+                    location = structured_data["geographic_coverage"]
+
+                logger.info(f"[Research] business_type={business_type}, business_name={business_name}, products={products[:3]}, location={location}")
+
+                # Run competitors, keywords, and trends in parallel
+                from datetime import datetime as dt
+                current_year = str(dt.now().year)
+
+                # Fold the user's targeting description into the research so it
+                # actually shapes competitor/keyword/ad-library results. Split on
+                # common separators, keep concise phrases, and prepend to products
+                # so every downstream search (competitors, keyword seeds, ad
+                # library) reflects what the user wants to target.
+                if target and target.strip():
+                    target_seeds = []
+                    for phrase in _re.split(r'[,\n;/|]+', target.strip()):
+                        phrase = phrase.strip()
+                        if 2 < len(phrase) < 60 and phrase.lower() not in [p.lower() for p in target_seeds]:
+                            target_seeds.append(phrase)
+                    if target_seeds:
+                        existing_lower = {t.lower() for t in target_seeds}
+                        products = target_seeds[:4] + [p for p in products if p and p.lower() not in existing_lower]
+                        logger.info(f"[Research] Targeting description folded in: {target_seeds[:4]}")
+
+                # Build keyword seeds from products/services
+                loc_suffix = f" {location.split(',')[0].strip()}" if location else ""
+
+                keyword_seeds = []
+                seen_seeds = set()
+                for name in products[:6]:
+                    if not name:
+                        continue
+                    # Add full name with location
+                    seed = f"{name}{loc_suffix}"
+                    if seed.lower() not in seen_seeds:
+                        seen_seeds.add(seed.lower())
+                        keyword_seeds.append(seed)
+                    # Split on & and add parts
+                    if "&" in name or " and " in name.lower():
+                        parts = _re.split(r'\s*[&]\s*|\s+and\s+', name, flags=_re.IGNORECASE)
+                        for part in parts:
+                            part = part.strip()
+                            if len(part) > 3:
+                                seed = f"{part}{loc_suffix}"
+                                if seed.lower() not in seen_seeds:
+                                    seen_seeds.add(seed.lower())
+                                    keyword_seeds.append(seed)
+
+                if business_name:
+                    seed = f"{business_name}{loc_suffix}"
+                    if seed.lower() not in seen_seeds:
+                        keyword_seeds.append(seed)
+                if not keyword_seeds:
+                    keyword_seeds = [f"{business_type}{loc_suffix}"]
+
+                # Get Meta access token for Ad Library (any connected account works)
+                meta_access_token = None
+                try:
+                    from modules.marketing.models import MetaAdAccount
+                    meta_account = db.query(MetaAdAccount).filter(
+                        MetaAdAccount.is_connected == True,
+                        MetaAdAccount.is_active == True,
+                    ).first()
+                    if meta_account:
+                        meta_access_token = meta_account.access_token
+                        logger.info(f"[Research] Using Meta token from account: {meta_account.account_name}")
+                except Exception as token_err:
+                    logger.debug(f"[Research] No Meta token available: {token_err}")
+                    # Clear any aborted-transaction state so the later campaign
+                    # INSERT doesn't fail with InFailedSqlTransaction.
+                    db.rollback()
+
+                # Build Ad Library search function
+                def _fetch_ad_library():
+                    if not meta_access_token:
+                        return []
+                    try:
+                        from modules.marketing.router import fetch_ads_library
+                        # Build search term from products/services
+                        search_parts = []
+                        if products:
+                            search_parts.extend(products[:2])
+                        elif business_type and business_type.lower() != "business":
+                            search_parts.append(business_type)
+                        if not search_parts and business_name:
+                            search_parts.append(business_name)
+                        search_term = " ".join(search_parts[:2]) if search_parts else business_type
+
+                        # Map country
+                        ad_countries = [country_code] if country_code != "US" else ["US"]
+
+                        logger.info(f"[Research] Ad Library search: '{search_term}' in {ad_countries}")
+                        result = fetch_ads_library(
+                            access_token=meta_access_token,
+                            search_term=search_term,
+                            ad_type="ALL",
+                            limit=10,
+                            ad_reached_countries=ad_countries
+                        )
+                        ads = result.get("data", []) if isinstance(result, dict) else []
+                        logger.info(f"[Research] Ad Library found {len(ads)} competitor ads")
+                        return ads
+                    except Exception as ad_err:
+                        logger.warning(f"[Research] Ad Library failed: {ad_err}")
+                        return []
+
+                competitors, keywords, trends, ad_library_ads = await asyncio.gather(
+                    asyncio.to_thread(
+                        research_agent._search_competitors_enhanced,
+                        business_type, location, products,
+                        research_domain, country_code, business_name
+                    ),
+                    asyncio.to_thread(
+                        research_agent._search_keywords_autocomplete,
+                        keyword_seeds[:8], country_code, True, business_type, location
+                    ),
+                    asyncio.to_thread(
+                        research_agent._search_industry_trends,
+                        business_type, current_year, location, country_code
+                    ),
+                    asyncio.to_thread(_fetch_ad_library),
+                )
+
+                # Stream competitors
+                clean_competitors = [
+                    c for c in competitors
+                    if not c.get("name", "").startswith("__") and c.get("name")
+                ]
+                for comp in clean_competitors[:12]:
+                    yield f"data: {json.dumps({'event': 'competitor', 'name': comp.get('name', ''), 'url': comp.get('url', ''), 'description': (comp.get('description', '') or '')[:200], 'rating': comp.get('rating'), 'reviews': comp.get('reviews'), 'source': comp.get('source', '')})}\n\n"
+                    await asyncio.sleep(0.05)
+
+                # Stream keywords
+                for kw in keywords[:20]:
+                    yield f"data: {json.dumps({'event': 'keyword', 'keyword': kw.get('keyword', ''), 'source': kw.get('source', 'google_autocomplete')})}\n\n"
+                    await asyncio.sleep(0.03)
+
+                # Stream trends
+                for trend in trends[:5]:
+                    yield f"data: {json.dumps({'event': 'trend', 'title': trend.get('title', ''), 'source': trend.get('source', ''), 'insight': (trend.get('insight', '') or '')[:200]})}\n\n"
+                    await asyncio.sleep(0.05)
+
+                # Stream Ad Library competitor ads
+                for ad in ad_library_ads[:8]:
+                    ad_creative = ad.get("ad_creative_bodies", [])
+                    ad_title = ad.get("ad_creative_link_titles", [])
+                    page_name = ad.get("page_name", "")
+                    ad_event = {
+                        'event': 'ad_library_ad',
+                        'page_name': page_name,
+                        'page_id': ad.get("page_id", ""),
+                        'ad_text': ad_creative[0][:200] if ad_creative else "",
+                        'ad_title': ad_title[0] if ad_title else "",
+                        'ad_start': ad.get("ad_delivery_start_time", ""),
+                        'is_active': ad.get("ad_delivery_stop_time") is None,
+                        'platforms': ad.get("publisher_platforms", []),
+                    }
+                    yield f"data: {json.dumps(ad_event)}\n\n"
+                    await asyncio.sleep(0.05)
+
+                # Send summary
+                yield f"data: {json.dumps({'event': 'market_research_summary', 'competitors_found': len(clean_competitors), 'keywords_found': len(keywords), 'trends_found': len(trends), 'ad_library_ads_found': len(ad_library_ads)})}\n\n"
+                await asyncio.sleep(0.1)
+
+                logger.info(f"Market research complete: {len(clean_competitors)} competitors, {len(keywords)} keywords, {len(trends)} trends")
+
+                # Stage 6b: ad angles — distinct reasons to choose this business, built from
+                # the research. Each becomes its own ad set when the campaign is saved.
+                # The store's Brand DNA (voice, buyer profiles) rides along so angles speak
+                # in the buyers' own words; auto-generating it here on first use keeps
+                # every store covered without a separate onboarding step.
+                store_brand_dna = None
+                try:
+                    from modules.stores.models import Store as _DnaStore
+                    _dna_store = db.query(_DnaStore).filter(_DnaStore.id == store_id).first()
+                    if _dna_store is not None:
+                        store_brand_dna = _dna_store.brand_dna
+                        if not store_brand_dna:
+                            from modules.brand_intelligence.brand_dna import generate_brand_dna as _gen_dna
+                            store_brand_dna = await asyncio.to_thread(_gen_dna, _dna_store)
+                            _dna_store.brand_dna = store_brand_dna
+                            db.commit()
+                except Exception as dna_err:
+                    logger.warning(f"Brand DNA unavailable (non-fatal): {dna_err}")
+
+                # System-wide AI metering: this pipeline (research + angles + DNA)
+                # draws on the same token wallet as the agent.
+                try:
+                    _owner = db.query(_DnaStore).filter(_DnaStore.id == store_id).first() if '_DnaStore' in dir() else None
+                    if _owner is None:
+                        from modules.stores.models import Store as _OwnerStore
+                        _owner = db.query(_OwnerStore).filter(_OwnerStore.id == store_id).first()
+                    if _owner is not None:
+                        from modules.agent.credits import charge_system
+                        from modules.agent.credit_costs import cost_of
+                        charge_system(db, _owner.owner_id, cost_of("ad_pipeline"), "system:campaign_pipeline",
+                                      detail=f"Campaign pipeline for store {store_id}", store_id=store_id)
+                except Exception as meter_err:
+                    logger.warning(f"AI metering skipped (non-fatal): {meter_err}")
+
+                market_research = {
+                    "profile": {**structured_data, "business_type": business_type,
+                                "company_name": business_name, "products": products, "location": location,
+                                "brand_dna": store_brand_dna},
+                    "competitors": clean_competitors, "keywords": keywords, "trends": trends,
+                }
+                try:
+                    yield f"data: {json.dumps({'event': 'progress', 'stage': 'angles', 'message': 'Finding ad angles...', 'percentage': 90})}\n\n"
+                    from modules.ad_angles.service import generate_ad_angles
+                    ad_angles = await asyncio.to_thread(
+                        generate_ad_angles, market_research["profile"], clean_competitors, keywords, trends,
+                        3, raw_content)
+                    for angle in ad_angles:
+                        yield f"data: {json.dumps({'event': 'ad_angle', **angle})}\n\n"
+                        await asyncio.sleep(0.05)
+                except Exception as angle_err:
+                    logger.warning(f"Ad angles failed (non-fatal): {angle_err}")
+                    ad_angles = []
+
+            except Exception as research_err:
+                logger.warning(f"Market research failed (non-fatal): {research_err}")
+                # Roll back so a failed query in this non-fatal block doesn't
+                # leave the shared session in an aborted state, which would
+                # break the campaign INSERT in Stage 7 below.
+                db.rollback()
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'research', 'message': 'Market research skipped', 'percentage': 88})}\n\n"
+
+            # Stage 7: Save campaign
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'saving', 'message': 'Saving campaign...', 'percentage': 92})}\n\n"
+            await asyncio.sleep(0.1)
+
+            campaign, error = service.scrape_url_for_campaign(
+                url=url,
+                store_id=store_id,
+                campaign_name=campaign_name,
+                market_research=market_research,
+                ad_angles=ad_angles,
+            )
+
+            if error and not campaign:
+                yield f"data: {json.dumps({'event': 'error', 'message': error})}\n\n"
+                return
+
+            # Ad images run in the background: generation takes ~60s per image and kept
+            # campaign creation at 3-5 minutes. The campaign is usable immediately and its
+            # images appear shortly after; the job worker retries a transient failure.
+            if campaign.ad_sets:
+                yield f"data: {json.dumps({'event': 'progress', 'stage': 'images', 'message': 'Ad images are being created in the background...', 'percentage': 96})}\n\n"
+                try:
+                    from modules.jobs.queue import enqueue
+                    enqueue("generate_campaign_images", {"campaign_id": str(campaign.id)})
+                except Exception as image_err:
+                    logger.warning(f"Queueing ad images failed (non-fatal): {image_err}")
+
+            # Stream the saved ad sets (one per angle) so the creation screen shows every
+            # ad set, not just a preview. copy_variations carries the secondary Copy-B/C rows
+            # so the UI can show the A/B test material, not just the primary copy.
+            for saved in (campaign.ad_sets or []):
+                content = next((c for c in saved.ad_contents if c.is_primary), None) or (saved.ad_contents[0] if saved.ad_contents else None)
+                variations = [
+                    {'variation_label': c.variation_label, 'headline': c.headline or '',
+                     'primary_text': (c.primary_text or '')[:200], 'description': (c.description or '')[:60],
+                     'call_to_action': c.call_to_action or '', 'placement': c.placement or 'automatic',
+                     'format': c.media_type or 'image', 'optimization': c.optimization_goal or 'conversions',
+                     'creative_metadata': c.creative_metadata or {}}
+                    for c in saved.ad_contents if not c.is_primary
+                ]
+                yield f"data: {json.dumps({'event': 'ad_set', 'name': saved.name, 'title': saved.title or '', 'audience_tags': (saved.audience_tags or [])[:5], 'hashtags': (saved.hashtags or [])[:5], 'headline': (content.headline if content else '') or '', 'primary_text': ((content.primary_text or '')[:200]) if content else '', 'media_url': (content.media_url if content else None), 'copy_variations': variations})}\n\n"
+                await asyncio.sleep(0.05)
+
+            # Complete
+            yield f"data: {json.dumps({'event': 'progress', 'stage': 'complete', 'message': 'Campaign created successfully!', 'percentage': 100})}\n\n"
+            await asyncio.sleep(0.1)
+
+            yield f"data: {json.dumps({'event': 'complete', 'campaign_id': str(campaign.id), 'status': campaign.status.value})}\n\n"
+
+        except Exception as e:
+            logger.error(f"SSE stream error: {e}")
+            yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@campaign_router.get("/store/{store_id}", response_model=CampaignListResponse)
+def get_store_campaigns(
+    store_id: uuid.UUID,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    status: Optional[CampaignStatus] = None,
+    summary: bool = Query(False, description="Omit heavy fields (scraped_data) for list views"),
+    db: Session = Depends(get_db)
+):
+    """Get all campaigns for a store.
+
+    `summary=true` drops the heavy fields — `scraped_data` (raw scraped page
+    content) and `ad_sets` (whose `ad_contents` hold base64 ad images) — so list
+    views like the Drafts page don't pull multi-MB payloads (14MB -> ~50KB here).
+    The full object is still available via the detail endpoint.
+    """
+    query = db.query(Campaign).filter(Campaign.store_id == store_id)
+
+    if status:
+        query = query.filter(Campaign.status == status)
+
+    total = query.count()
+    campaigns = query.order_by(Campaign.created_at.desc()).offset((page - 1) * size).limit(size).all()
+
+    items = []
+    for c in campaigns:
+        resp = CampaignResponse.model_validate(c)
+        if summary:
+            resp.scraped_data = None
+            resp.ad_sets = []
+        items.append(resp)
+
+    return CampaignListResponse(
+        campaigns=items,
+        total=total,
+        page=page,
+        size=size
+    )
+
+
+@campaign_router.get("/{campaign_id}", response_model=CampaignResponse)
+def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get a specific campaign with all its ad sets and content."""
+    from sqlalchemy.orm import joinedload
+
+    campaign = db.query(Campaign).options(
+        joinedload(Campaign.ad_sets).joinedload(AdSet.ad_contents)
+    ).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    # Opening a draft should show real data: fill a missing region from the store and tidy
+    # machine-looking names (pipes, em dashes) on drafts created before that was cleaned up.
+    from utils.text_clean import clean_ad_name
+    changed = False
+    cleaned = clean_ad_name(campaign.name)
+    if cleaned and cleaned != campaign.name:
+        campaign.name, changed = cleaned, True
+    if not campaign.countries:
+        from modules.stores.models import Store
+        _store = db.query(Store).filter(Store.id == campaign.store_id).first()
+        if _store and _store.country_code:
+            campaign.countries, changed = [str(_store.country_code).upper()], True
+    # A $100 daily budget with no total budget is the old model placeholder (nobody chose it):
+    # show the real test budget instead.
+    if campaign.total_budget is None and campaign.daily_budget == 100.0:
+        campaign.daily_budget = float(os.getenv("AD_DEFAULT_DAILY_BUDGET", "2"))
+        campaign.total_budget = float(os.getenv("AD_DEFAULT_TOTAL_BUDGET", "20"))
+        changed = True
+    if changed:
+        db.commit()
+        db.refresh(campaign)
+    return CampaignResponse.model_validate(campaign)
+
+
+@campaign_router.put("/{campaign_id}", response_model=CampaignResponse)
+def update_campaign(
+    campaign_id: uuid.UUID,
+    update_data: CampaignUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update campaign settings."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+    for field, value in update_dict.items():
+        setattr(campaign, field, value)
+
+    db.commit()
+    db.refresh(campaign)
+    return CampaignResponse.model_validate(campaign)
+
+
+@campaign_router.delete("/{campaign_id}")
+def delete_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Delete a campaign."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    db.delete(campaign)
+    db.commit()
+    return {"message": "Campaign deleted successfully"}
+
+
+@campaign_router.put("/ad-content/{ad_content_id}")
+def update_ad_content(
+    ad_content_id: uuid.UUID,
+    data: dict,
+    db: Session = Depends(get_db)
+):
+    """Update ad content (headline, primary_text, description, media_url, asset_id, generated_image_base64)."""
+    ad_content = db.query(AdContent).filter(AdContent.id == ad_content_id).first()
+    if not ad_content:
+        raise HTTPException(status_code=404, detail="Ad content not found")
+
+    # Update text fields if provided
+    if "headline" in data:
+        ad_content.headline = data["headline"]
+    if "primary_text" in data:
+        ad_content.primary_text = data["primary_text"]
+    if "description" in data:
+        ad_content.description = data["description"]
+
+    # Update media fields if provided
+    if "media_url" in data:
+        ad_content.media_url = data["media_url"]
+    if "asset_id" in data:
+        ad_content.asset_id = uuid.UUID(data["asset_id"]) if data["asset_id"] else None
+    if "generated_image_base64" in data:
+        ad_content.generated_image_base64 = data["generated_image_base64"]
+
+    db.commit()
+    db.refresh(ad_content)
+    return {"message": "Ad content updated successfully", "id": str(ad_content.id)}
+
+
+@campaign_router.post("/{campaign_id}/publish", response_model=CampaignResponse)
+def publish_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Publish a campaign to ad platforms."""
+    service = CampaignService(db)
+    campaign, error = service.publish_campaign(campaign_id)
+
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    return CampaignResponse.model_validate(campaign)
+
+
+@campaign_router.post("/{campaign_id}/publish-to-facebook")
+def publish_campaign_to_facebook(
+    campaign_id: uuid.UUID,
+    page_id: uuid.UUID = Query(..., description="Facebook page ID to publish to"),
+    db: Session = Depends(get_db)
+):
+    """
+    Publish campaign ads to a selected Facebook page.
+
+    This endpoint posts the selected ad sets from a campaign to the specified Facebook page.
+    Each ad set's primary content is posted as a separate Facebook post.
+
+    Args:
+        campaign_id: UUID of the campaign to publish
+        page_id: UUID of the Facebook page to post to
+
+    Returns:
+        Dictionary with success status, message, and list of posted post IDs
+    """
+    if not FACEBOOK_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Facebook integration is not available"
+        )
+
+    # Get the campaign
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Get the Facebook page
+    page = db.query(FacebookPage).filter(FacebookPage.id == page_id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Facebook page not found")
+
+    if not page.is_connected or not page.page_access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Facebook page is not connected or missing access token"
+        )
+
+    # Get selected ad sets with their content
+    ad_sets = db.query(AdSet).filter(
+        AdSet.campaign_id == campaign_id,
+        AdSet.is_selected == True
+    ).all()
+
+    if not ad_sets:
+        raise HTTPException(
+            status_code=400,
+            detail="No ad sets selected for publishing"
+        )
+
+    posted_ids = []
+    errors = []
+
+    for ad_set in ad_sets:
+        # Get primary ad content for this ad set
+        ad_content = db.query(AdContent).filter(
+            AdContent.ad_set_id == ad_set.id,
+            AdContent.is_primary == True
+        ).first()
+
+        if not ad_content:
+            continue
+
+        # Prepare post content
+        message_parts = []
+        if ad_content.headline:
+            message_parts.append(ad_content.headline)
+        if ad_content.primary_text:
+            message_parts.append(ad_content.primary_text)
+        if ad_content.description:
+            message_parts.append(ad_content.description)
+        if ad_content.call_to_action:
+            message_parts.append(f"\n{ad_content.call_to_action}")
+
+        message = "\n\n".join(message_parts) if message_parts else f"Check out {campaign.name}!"
+
+        # Fail-closed Meta ad-copy compliance gate: never post non-compliant copy.
+        _ok, _verdict = _check_copy_compliance(message)
+        if not _ok:
+            logger.warning(f"[Facebook] Blocked non-compliant copy for ad set {ad_set.name}: {_verdict.get('blocked_words')}")
+            errors.append({
+                "ad_set_id": str(ad_set.id), "ad_set_name": ad_set.name,
+                "error": "ad_copy_policy_violation",
+                "blocked_words": _verdict.get("blocked_words", []),
+            })
+            continue
+
+        post_data = FacebookPostCreate(
+            message=message,
+            link=ad_content.destination_url or campaign.source_url,
+            published=True
+        )
+
+        try:
+            result = post_to_facebook_page(
+                page.page_id,
+                page.page_access_token,
+                post_data
+            )
+            if result and result.get("id"):
+                posted_ids.append({
+                    "ad_set_id": str(ad_set.id),
+                    "ad_set_name": ad_set.name,
+                    "facebook_post_id": result.get("id")
+                })
+                logger.info(f"[Facebook] Posted ad set {ad_set.name} to page {page.page_name}")
+        except Exception as e:
+            errors.append({
+                "ad_set_id": str(ad_set.id),
+                "ad_set_name": ad_set.name,
+                "error": str(e)
+            })
+            logger.error(f"[Facebook] Failed to post ad set {ad_set.name}: {e}")
+
+    return {
+        "success": len(posted_ids) > 0,
+        "message": f"Published {len(posted_ids)} ads to Facebook" if posted_ids else "No ads were published",
+        "published_posts": posted_ids,
+        "errors": errors if errors else None,
+        "campaign_id": str(campaign_id),
+        "page_name": page.page_name
+    }
+
+
+@campaign_router.post("/{campaign_id}/publish-to-meta-ads")
+def publish_campaign_to_meta_ads(
+    campaign_id: uuid.UUID,
+    ad_account_id: uuid.UUID = Query(..., description="Meta Ad Account ID to publish to"),
+    page_id: Optional[uuid.UUID] = Query(None, description="Facebook Page ID to use for ads (optional, will use first available if not provided)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Publish campaign to Meta Ads Manager as paid advertising.
+
+    This endpoint creates actual paid ad campaigns in Meta Ads Manager:
+    1. Creates a Meta Campaign
+    2. Creates Meta Ad Sets for each selected ad set
+    3. Creates Meta Ads with the ad content
+
+    Args:
+        campaign_id: UUID of the URL campaign to publish
+        ad_account_id: UUID of the Meta Ad Account to use
+        page_id: Optional UUID of the Facebook Page (will use first available if not provided)
+
+    Returns:
+        Dictionary with success status, created IDs, and any errors
+    """
+    if not META_ADS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta Ads integration is not available"
+        )
+
+    # Get the URL campaign with ad sets and content
+    from sqlalchemy.orm import joinedload
+    campaign = db.query(Campaign).options(
+        joinedload(Campaign.ad_sets).joinedload(AdSet.ad_contents)
+    ).filter(Campaign.id == campaign_id).first()
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Get the Meta Ad Account
+    ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == ad_account_id).first()
+    if not ad_account:
+        raise HTTPException(status_code=404, detail="Meta Ad Account not found")
+
+    if not ad_account.is_connected:
+        raise HTTPException(
+            status_code=400,
+            detail="Meta Ad Account is not connected"
+        )
+
+    # Get Facebook Page ID for creating ads
+    facebook_page_id = None
+    if page_id:
+        fb_page = db.query(FacebookPage).filter(FacebookPage.id == page_id).first()
+        if fb_page:
+            facebook_page_id = fb_page.page_id
+
+    # If no page_id provided or found, try to get from ad_account.business_id or first available page
+    if not facebook_page_id:
+        if ad_account.business_id:
+            facebook_page_id = ad_account.business_id
+        else:
+            # Get the first connected Facebook page
+            first_page = db.query(FacebookPage).filter(
+                FacebookPage.is_connected == True,
+                FacebookPage.is_active == True
+            ).first()
+            if first_page:
+                facebook_page_id = first_page.page_id
+
+    if not facebook_page_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No Facebook Page found. Please connect a Facebook Page first."
+        )
+
+    # Get selected ad sets
+    selected_ad_sets = [ad_set for ad_set in campaign.ad_sets if ad_set.is_selected]
+    if not selected_ad_sets:
+        raise HTTPException(
+            status_code=400,
+            detail="No ad sets selected for publishing"
+        )
+
+    results = {
+        "success": False,
+        "campaign_id": str(campaign_id),
+        "meta_campaign_id": None,
+        "meta_ad_sets": [],
+        "meta_ads": [],
+        "errors": []
+    }
+
+    try:
+        # Map URL campaign goal to Meta objective
+        goal_to_objective = {
+            "sales": "OUTCOME_SALES",
+            "leads": "OUTCOME_LEADS",
+            "traffic": "OUTCOME_TRAFFIC",
+            "awareness": "OUTCOME_AWARENESS",
+            "engagement": "OUTCOME_ENGAGEMENT"
+        }
+        objective = goal_to_objective.get(campaign.goal.value if hasattr(campaign.goal, 'value') else campaign.goal, "OUTCOME_TRAFFIC")
+
+        # 1. Create Meta Campaign
+        special_categories = resolve_special_ad_categories(campaign)
+        meta_campaign_data = {
+            "name": campaign.name,
+            "objective": objective,
+            "status": "PAUSED",  # Start as paused, user can activate later
+            "buying_type": "AUCTION",
+            "special_ad_categories": json.dumps(special_categories)
+        }
+
+        # Add budget if set
+        if campaign.daily_budget:
+            meta_campaign_data["daily_budget"] = str(int(campaign.daily_budget * 100))  # Convert to cents
+
+        # Add schedule if set
+        if campaign.start_date:
+            meta_campaign_data["start_time"] = str(int(campaign.start_date.timestamp()))
+        if campaign.end_date:
+            meta_campaign_data["stop_time"] = str(int(campaign.end_date.timestamp()))
+
+        logger.info(f"[Meta Ads] Creating campaign: {meta_campaign_data}")
+        meta_campaign_result = create_meta_campaign(
+            ad_account.ad_account_id,
+            ad_account.access_token,
+            meta_campaign_data
+        )
+
+        meta_campaign_id = meta_campaign_result.get("id")
+        results["meta_campaign_id"] = meta_campaign_id
+
+        # Save Meta Campaign to database
+        db_meta_campaign = MetaCampaign(
+            campaign_id=meta_campaign_id,
+            ad_account_id=ad_account.id,
+            name=campaign.name,
+            objective=objective,
+            status="PAUSED",
+            special_ad_categories=special_categories,
+            buying_type="AUCTION",
+            daily_budget=int(campaign.daily_budget * 100) if campaign.daily_budget else None,
+            start_time=campaign.start_date,
+            stop_time=campaign.end_date,
+            created_time=datetime.utcnow(),
+            updated_time=datetime.utcnow(),
+            effective_status="PAUSED",
+            is_draft=False,
+            is_active=True
+        )
+        db.add(db_meta_campaign)
+        db.commit()
+        db.refresh(db_meta_campaign)
+
+        # Country name to ISO code mapping
+        country_name_to_code = {
+            "zimbabwe": "ZW", "south africa": "ZA", "united states": "US", "usa": "US",
+            "united kingdom": "GB", "uk": "GB", "canada": "CA", "australia": "AU",
+            "germany": "DE", "france": "FR", "india": "IN", "china": "CN", "japan": "JP",
+            "brazil": "BR", "mexico": "MX", "nigeria": "NG", "kenya": "KE", "ghana": "GH",
+            "botswana": "BW", "zambia": "ZM", "mozambique": "MZ", "namibia": "NA",
+            "tanzania": "TZ", "uganda": "UG", "malawi": "MW", "ethiopia": "ET",
+        }
+
+        # Convert country names to codes
+        def get_country_codes(countries_list):
+            if not countries_list:
+                return ["ZW"]  # Default to Zimbabwe
+            codes = []
+            for country in countries_list:
+                country_lower = country.lower().strip()
+                if len(country_lower) == 2:
+                    # Already a code
+                    codes.append(country_lower.upper())
+                elif country_lower in country_name_to_code:
+                    codes.append(country_name_to_code[country_lower])
+                else:
+                    # Try to use first 2 letters as fallback (not ideal but better than failing)
+                    logger.warning(f"Unknown country: {country}, skipping")
+            return codes if codes else ["ZW"]
+
+        country_codes = get_country_codes(campaign.countries)
+
+        # 2. Create Meta Ad Sets for each selected ad set
+        for ad_set in selected_ad_sets:
+            try:
+                # Build targeting from campaign settings
+                targeting = {
+                    "geo_locations": {
+                        "countries": country_codes
+                    },
+                    "age_min": campaign.age_range.get("min", 18) if campaign.age_range else 18,
+                    "age_max": campaign.age_range.get("max", 65) if campaign.age_range else 65
+                }
+
+                # Add gender targeting if specified
+                if campaign.gender and campaign.gender != "all":
+                    if campaign.gender == "male":
+                        targeting["genders"] = [1]
+                    elif campaign.gender == "female":
+                        targeting["genders"] = [2]
+
+                meta_adset_data = {
+                    "name": ad_set.name,
+                    "campaign_id": meta_campaign_id,
+                    "status": "PAUSED",
+                    "optimization_goal": "LINK_CLICKS",
+                    "billing_event": "IMPRESSIONS",
+                    "targeting": json.dumps(targeting),
+                    "bid_amount": "100"  # $1.00 minimum bid
+                }
+
+                # Add schedule
+                if campaign.start_date:
+                    meta_adset_data["start_time"] = str(int(campaign.start_date.timestamp()))
+                if campaign.end_date:
+                    meta_adset_data["end_time"] = str(int(campaign.end_date.timestamp()))
+
+                logger.info(f"[Meta Ads] Creating ad set: {ad_set.name}")
+                meta_adset_result = create_meta_adset(
+                    ad_account.ad_account_id,
+                    ad_account.access_token,
+                    meta_adset_data
+                )
+
+                meta_adset_id = meta_adset_result.get("id")
+                results["meta_ad_sets"].append({
+                    "url_ad_set_id": str(ad_set.id),
+                    "url_ad_set_name": ad_set.name,
+                    "meta_adset_id": meta_adset_id
+                })
+
+                # Save Meta Ad Set to database
+                db_meta_adset = MetaAdSet(
+                    adset_id=meta_adset_id,
+                    ad_account_id=ad_account.id,
+                    campaign_id=db_meta_campaign.id,
+                    name=ad_set.name,
+                    status="PAUSED",
+                    optimization_goal="LINK_CLICKS",
+                    billing_event="IMPRESSIONS",
+                    targeting=targeting,
+                    bid_amount=100,
+                    start_time=campaign.start_date,
+                    end_time=campaign.end_date,
+                    created_time=datetime.utcnow(),
+                    updated_time=datetime.utcnow(),
+                    effective_status="PAUSED",
+                    is_active=True
+                )
+                db.add(db_meta_adset)
+                db.commit()
+                db.refresh(db_meta_adset)
+
+                # 3. Create Meta Ads for each ad content in this ad set
+                for ad_content in ad_set.ad_contents:
+                    if not ad_content.is_active:
+                        continue
+
+                    # Fail-closed compliance gate on the copy before creating the ad.
+                    _copy = " ".join(x for x in [ad_content.primary_text, ad_content.headline, ad_content.description] if x)
+                    _ok, _verdict = _check_copy_compliance(_copy)
+                    if not _ok:
+                        logger.warning(f"[MetaAds] Blocked non-compliant copy in ad set {ad_set.name}: {_verdict.get('blocked_words')}")
+                        results.setdefault("errors", []).append({
+                            "ad_set_name": ad_set.name,
+                            "error": "ad_copy_policy_violation",
+                            "blocked_words": _verdict.get("blocked_words", []),
+                        })
+                        continue
+
+                    try:
+                        # Create ad with link creative
+                        meta_ad_data = {
+                            "name": f"{ad_set.name} - Ad",
+                            "adset_id": meta_adset_id,
+                            "status": "PAUSED",
+                            "creative": json.dumps({
+                                "object_story_spec": {
+                                    "page_id": facebook_page_id,
+                                    "link_data": {
+                                        "link": ad_content.destination_url or campaign.source_url,
+                                        "message": ad_content.primary_text or campaign.name,
+                                        "name": ad_content.headline or campaign.name,
+                                        "description": ad_content.description or "",
+                                        "call_to_action": {
+                                            "type": "LEARN_MORE",
+                                            "value": {
+                                                "link": ad_content.destination_url or campaign.source_url
+                                            }
+                                        }
+                                    }
+                                }
+                            })
+                        }
+
+                        logger.info(f"[Meta Ads] Creating ad for ad set: {ad_set.name}")
+                        meta_ad_result = create_meta_ad(
+                            ad_account.ad_account_id,
+                            ad_account.access_token,
+                            meta_ad_data
+                        )
+
+                        meta_ad_id = meta_ad_result.get("id")
+                        results["meta_ads"].append({
+                            "url_ad_content_id": str(ad_content.id),
+                            "meta_ad_id": meta_ad_id,
+                            "ad_set_name": ad_set.name
+                        })
+
+                        # Save Meta Ad to database
+                        db_meta_ad = MetaAd(
+                            ad_id=meta_ad_id,
+                            ad_account_id=ad_account.id,
+                            adset_id=db_meta_adset.id,
+                            campaign_id=db_meta_campaign.id,
+                            name=f"{ad_set.name} - Ad",
+                            status="PAUSED",
+                            effective_status="PAUSED",
+                            created_time=datetime.utcnow(),
+                            updated_time=datetime.utcnow(),
+                            is_active=True
+                        )
+                        db.add(db_meta_ad)
+
+                    except Exception as ad_error:
+                        results["errors"].append({
+                            "type": "ad",
+                            "ad_set_name": ad_set.name,
+                            "error": str(ad_error)
+                        })
+                        logger.error(f"[Meta Ads] Failed to create ad: {ad_error}")
+
+            except Exception as adset_error:
+                results["errors"].append({
+                    "type": "ad_set",
+                    "ad_set_name": ad_set.name,
+                    "error": str(adset_error)
+                })
+                logger.error(f"[Meta Ads] Failed to create ad set: {adset_error}")
+
+        # Update URL campaign with platform IDs
+        platform_ids = campaign.platform_campaign_ids or {}
+        platform_ids["meta"] = meta_campaign_id
+        campaign.platform_campaign_ids = platform_ids
+        campaign.status = CampaignStatus.ACTIVE
+        campaign.published_at = datetime.utcnow()
+
+        db.commit()
+
+        results["success"] = True
+        results["message"] = f"Published campaign to Meta Ads. Created {len(results['meta_ad_sets'])} ad sets and {len(results['meta_ads'])} ads."
+
+        logger.info(f"[Meta Ads] Successfully published campaign {campaign_id} to Meta Ads")
+
+        # Create system notification for campaign publish
+        if NOTIFICATIONS_AVAILABLE:
+            try:
+                ad_sets_count = len(results['meta_ad_sets'])
+                has_errors = len(results['errors']) > 0
+
+                notification_title = "Campaign Published to Meta Ads"
+                if has_errors:
+                    notification_title = "Campaign Published with Warnings"
+
+                notification_message = f"Your campaign '{campaign.name}' has been published to Meta Ads Manager with {ad_sets_count} ad sets."
+                if has_errors:
+                    error_types = set([e.get('type', 'unknown') for e in results['errors']])
+                    notification_message += f" Some items had issues: {', '.join(error_types)}. Check Meta Ads Manager for details."
+
+                notification = Notification(
+                    store_id=campaign.store_id,
+                    title=notification_title,
+                    message=notification_message,
+                    type=NotificationType.SYSTEM.value,
+                    priority=NotificationPriority.HIGH.value if has_errors else NotificationPriority.NORMAL.value,
+                    related_entity_type="campaign",
+                    related_entity_id=campaign.id,
+                    action_url=f"/marketing/campaigns",
+                    action_data={
+                        "campaign_id": str(campaign.id),
+                        "campaign_name": campaign.name,
+                        "meta_campaign_id": meta_campaign_id,
+                        "ad_sets_count": ad_sets_count,
+                        "has_errors": has_errors
+                    }
+                )
+                db.add(notification)
+                db.commit()
+                logger.info(f"[Notification] Created campaign publish notification for store {campaign.store_id}")
+            except Exception as notif_error:
+                logger.error(f"[Notification] Failed to create notification: {notif_error}")
+
+    except Exception as e:
+        results["errors"].append({
+            "type": "campaign",
+            "error": str(e)
+        })
+        logger.error(f"[Meta Ads] Failed to publish campaign: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to publish to Meta Ads: {str(e)}"
+        )
+
+    return results
+
+
+@campaign_router.post("/{campaign_id}/pause", response_model=CampaignResponse)
+def pause_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Pause an active campaign."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.status != CampaignStatus.ACTIVE:
+        raise HTTPException(status_code=400, detail="Only active campaigns can be paused")
+
+    campaign.status = CampaignStatus.PAUSED
+    db.commit()
+    db.refresh(campaign)
+    return CampaignResponse.model_validate(campaign)
+
+
+@campaign_router.post("/{campaign_id}/resume", response_model=CampaignResponse)
+def resume_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Resume a paused campaign."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.status != CampaignStatus.PAUSED:
+        raise HTTPException(status_code=400, detail="Only paused campaigns can be resumed")
+
+    campaign.status = CampaignStatus.ACTIVE
+    db.commit()
+    db.refresh(campaign)
+    return CampaignResponse.model_validate(campaign)
+
+
+@campaign_router.post("/{campaign_id}/regenerate", response_model=CampaignResponse)
+def regenerate_ads(
+    campaign_id: uuid.UUID,
+    request: GenerateAdsRequest,
+    db: Session = Depends(get_db)
+):
+    """Regenerate ad content for a campaign."""
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not campaign.scraped_data:
+        raise HTTPException(status_code=400, detail="No scraped data available for regeneration")
+
+    service = CampaignService(db)
+
+    # Delete existing ad sets if regenerating
+    if request.regenerate:
+        db.query(AdContent).filter(
+            AdContent.ad_set_id.in_(
+                db.query(AdSet.id).filter(AdSet.campaign_id == campaign_id)
+            )
+        ).delete(synchronize_session=False)
+        db.query(AdSet).filter(AdSet.campaign_id == campaign_id).delete(synchronize_session=False)
+
+    # IMPORTANT: Do NOT pass any store context for regeneration
+    # The AI should determine business name, type, and everything else from SCRAPED CONTENT ONLY
+    # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
+    # for completely different businesses (e.g., Edgars clothing store)
+    store_context = None  # AI derives everything from scraped content
+
+    # Generate new ad content with store context
+    ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url, store_context)
+    if ad_content:
+        campaign.generated_headlines = ad_content.get("headlines", [])
+        campaign.generated_descriptions = ad_content.get("descriptions", [])
+        service._create_ad_sets(campaign, ad_content)
+
+    db.commit()
+    db.refresh(campaign)
+    return CampaignResponse.model_validate(campaign)
+
+
+# Ad Set endpoints
+@campaign_router.get("/{campaign_id}/ad-sets", response_model=List[AdSetResponse])
+def get_campaign_ad_sets(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Get all ad sets for a campaign."""
+    ad_sets = db.query(AdSet).filter(AdSet.campaign_id == campaign_id).all()
+    return [AdSetResponse.model_validate(ad_set) for ad_set in ad_sets]
+
+
+@campaign_router.put("/ad-sets/{ad_set_id}/toggle")
+def toggle_ad_set(ad_set_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Toggle ad set selection."""
+    ad_set = db.query(AdSet).filter(AdSet.id == ad_set_id).first()
+    if not ad_set:
+        raise HTTPException(status_code=404, detail="Ad set not found")
+
+    ad_set.is_selected = not ad_set.is_selected
+    db.commit()
+    return {"is_selected": ad_set.is_selected}
+
+
+# ============ Quick Launch ============
+
+@campaign_router.post("/quick-launch", response_model=QuickLaunchResponse)
+async def quick_launch(request: QuickLaunchRequest, db: Session = Depends(get_db)):
+    """
+    Quick Launch: paste a URL → scrape → generate ads → publish to Meta → start scheduler.
+
+    End-to-end pipeline that creates a full Meta Ads campaign from just a URL:
+    1. Scrape the URL and create a campaign
+    2. Run the AI pipeline (research → angles → copy → visuals)
+    3. Publish to Meta Ads Manager
+    4. Register with the scheduler for 24/7 optimization
+
+    Returns:
+        QuickLaunchResponse with campaign details and publish results
+    """
+    if not META_ADS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Meta Ads integration is not available"
+        )
+
+    errors = []
+    response_data = {
+        "success": False,
+        "campaign_id": None,
+        "campaign_name": "",
+        "meta_campaign_id": None,
+        "ad_sets_created": 0,
+        "ads_created": 0,
+        "scheduler_registered": False,
+        "pipeline_results": None,
+        "publish_results": None,
+        "errors": [],
+        "message": ""
+    }
+
+    try:
+        # Step 1: Scrape URL and create campaign
+        logger.info(f"[QuickLaunch] Step 1: Scraping URL: {request.url}")
+        service = CampaignService(db)
+        campaign = service.scrape_url_for_campaign(
+            url=request.url,
+            store_id=request.store_id,
+            campaign_name=request.campaign_name
+        )
+
+        # Set campaign settings from request
+        campaign.daily_budget = request.daily_budget
+        campaign.countries = request.countries
+        campaign.age_range = request.age_range
+        campaign.gender = request.gender
+        campaign.goal = request.goal
+        db.commit()
+
+        response_data["campaign_id"] = campaign.id
+        response_data["campaign_name"] = campaign.name
+
+        # Step 2: Generate ad content
+        logger.info(f"[QuickLaunch] Step 2: Generating ad content for '{campaign.name}'")
+        store_context = None
+        try:
+            from modules.stores.models import Store
+            store = db.query(Store).filter(Store.id == request.store_id).first()
+            if store:
+                store_context = {
+                    "store_name": store.name,
+                    "store_description": store.description,
+                    "store_category": getattr(store, 'category', None),
+                }
+        except Exception:
+            pass
+
+        ad_content = service._generate_ad_content(campaign.scraped_data, campaign.source_url, store_context)
+        if ad_content:
+            campaign.generated_headlines = ad_content.get("headlines", [])
+            campaign.generated_descriptions = ad_content.get("descriptions", [])
+            service._create_ad_sets(campaign, ad_content)
+            db.commit()
+            db.refresh(campaign)
+
+        # Ensure all ad sets are selected
+        for ad_set in campaign.ad_sets:
+            ad_set.is_selected = True
+        db.commit()
+
+        response_data["ad_sets_created"] = len(campaign.ad_sets)
+
+        # Step 3: Publish to Meta Ads
+        logger.info(f"[QuickLaunch] Step 3: Publishing to Meta Ads")
+        ad_account = db.query(MetaAdAccount).filter(MetaAdAccount.id == request.ad_account_id).first()
+        if not ad_account:
+            raise HTTPException(status_code=404, detail="Meta Ad Account not found")
+
+        if not ad_account.is_connected:
+            raise HTTPException(status_code=400, detail="Meta Ad Account is not connected")
+
+        # Get Facebook Page — prefer top-performing page if available
+        facebook_page_id = None
+        if request.page_id:
+            fb_page = db.query(FacebookPage).filter(FacebookPage.id == request.page_id).first()
+            if fb_page:
+                facebook_page_id = fb_page.page_id
+
+        if not facebook_page_id:
+            # Try to find the best-performing page based on historical ad insights
+            try:
+                from sqlalchemy import func, desc
+                connected_pages = db.query(FacebookPage).filter(
+                    FacebookPage.is_connected == True,
+                    FacebookPage.is_active == True
+                ).all()
+
+                if connected_pages and len(connected_pages) > 1:
+                    # Check which page has best CTR from past campaigns
+                    # We look at MetaAdInsight aggregated by page (via ad → campaign → account → page)
+                    best_page = None
+                    best_score = -1
+
+                    for page in connected_pages:
+                        # Find campaigns that used this page's business account
+                        page_campaigns = db.query(MetaCampaign).filter(
+                            MetaCampaign.ad_account_id == ad_account.id,
+                            MetaCampaign.is_active == True
+                        ).all()
+
+                        if not page_campaigns:
+                            continue
+
+                        campaign_ids = [c.id for c in page_campaigns]
+
+                        # Get aggregated performance for ads under these campaigns
+                        from modules.marketing.models import MetaAdInsight
+                        perf = db.query(
+                            func.sum(MetaAdInsight.clicks).label("total_clicks"),
+                            func.sum(MetaAdInsight.impressions).label("total_impressions"),
+                            func.sum(MetaAdInsight.conversions).label("total_conversions"),
+                            func.avg(MetaAdInsight.ctr).label("avg_ctr")
+                        ).join(
+                            MetaAd, MetaAd.id == MetaAdInsight.ad_id
+                        ).filter(
+                            MetaAd.campaign_id.in_(campaign_ids)
+                        ).first()
+
+                        if perf and perf.total_impressions and perf.total_impressions > 0:
+                            # Score: weighted combination of CTR and conversion rate
+                            ctr = float(perf.avg_ctr or 0)
+                            conv_rate = (float(perf.total_conversions or 0) / float(perf.total_impressions)) * 100
+                            score = (ctr * 0.6) + (conv_rate * 0.4)
+
+                            if score > best_score:
+                                best_score = score
+                                best_page = page
+                                logger.info(
+                                    f"[QuickLaunch] Page '{page.page_name}' score: {score:.4f} "
+                                    f"(CTR={ctr:.2f}%, conv_rate={conv_rate:.4f}%)"
+                                )
+
+                    if best_page:
+                        facebook_page_id = best_page.page_id
+                        logger.info(f"[QuickLaunch] Selected top-performing page: {best_page.page_name} (score={best_score:.4f})")
+                elif connected_pages:
+                    facebook_page_id = connected_pages[0].page_id
+            except Exception as page_err:
+                logger.warning(f"[QuickLaunch] Top-performer page selection error: {page_err}")
+
+        # Fallback: use business_id or first connected page
+        if not facebook_page_id:
+            if ad_account.business_id:
+                facebook_page_id = ad_account.business_id
+            else:
+                first_page = db.query(FacebookPage).filter(
+                    FacebookPage.is_connected == True,
+                    FacebookPage.is_active == True
+                ).first()
+                if first_page:
+                    facebook_page_id = first_page.page_id
+
+        if not facebook_page_id:
+            raise HTTPException(status_code=400, detail="No Facebook Page found. Connect a Facebook Page first.")
+
+        # Country code mapping
+        country_name_to_code = {
+            "zimbabwe": "ZW", "south africa": "ZA", "united states": "US", "usa": "US",
+            "united kingdom": "GB", "uk": "GB", "canada": "CA", "australia": "AU",
+            "germany": "DE", "france": "FR", "india": "IN", "nigeria": "NG", "kenya": "KE",
+            "ghana": "GH", "botswana": "BW", "zambia": "ZM", "mozambique": "MZ",
+            "namibia": "NA", "tanzania": "TZ", "uganda": "UG",
+        }
+
+        def get_country_codes(countries_list):
+            if not countries_list:
+                return ["ZW"]
+            codes = []
+            for country in countries_list:
+                cl = country.lower().strip()
+                if len(cl) == 2:
+                    codes.append(cl.upper())
+                elif cl in country_name_to_code:
+                    codes.append(country_name_to_code[cl])
+            return codes if codes else ["ZW"]
+
+        country_codes = get_country_codes(campaign.countries)
+
+        # Map goal to Meta objective
+        goal_to_objective = {
+            "sales": "OUTCOME_SALES", "leads": "OUTCOME_LEADS", "traffic": "OUTCOME_TRAFFIC",
+            "awareness": "OUTCOME_AWARENESS", "engagement": "OUTCOME_ENGAGEMENT"
+        }
+        objective = goal_to_objective.get(
+            campaign.goal.value if hasattr(campaign.goal, 'value') else campaign.goal,
+            "OUTCOME_TRAFFIC"
+        )
+
+        # Determine budget type and dayparting schedule
+        use_lifetime = getattr(request, 'budget_type', 'daily') == 'lifetime'
+        campaign_duration_days = getattr(request, 'campaign_duration_days', 30)
+        dayparting_schedule = []
+        dayparting_reasoning = ""
+
+        if use_lifetime and campaign.daily_budget:
+            try:
+                from modules.marketing.dayparting_service import (
+                    get_schedule_for_industry,
+                    daily_budget_to_lifetime,
+                    generate_schedule_with_ai,
+                )
+                # Extract industry/business_type from generated content
+                ad_content_data = campaign.scraped_data or {}
+                business_type = ""
+                industry = ""
+
+                # Try to get business type from generated ad content
+                if campaign.ad_sets:
+                    for aset in campaign.ad_sets:
+                        if hasattr(aset, 'audience_description') and aset.audience_description:
+                            business_type = aset.audience_description[:100]
+                            break
+
+                # Try scraped data for industry
+                if isinstance(ad_content_data, dict):
+                    content_text = str(ad_content_data.get("content", ""))[:500].lower()
+                    industry = ad_content_data.get("industry", "")
+                    if not industry:
+                        # Infer from content
+                        for keyword in ["restaurant", "ecommerce", "technology", "fashion",
+                                       "health", "education", "real estate", "services",
+                                       "fitness", "food", "retail", "software"]:
+                            if keyword in content_text:
+                                industry = keyword
+                                break
+
+                dayparting_schedule = get_schedule_for_industry(industry, business_type)
+                dayparting_reasoning = f"Auto-scheduled for {industry or 'general'} business"
+                logger.info(f"[QuickLaunch] Dayparting: {len(dayparting_schedule)} schedule blocks for industry='{industry}'")
+            except Exception as dp_err:
+                logger.warning(f"[QuickLaunch] Dayparting setup error: {dp_err}, continuing without schedule")
+                dayparting_schedule = []
+
+        # Create Meta Campaign
+        special_categories = resolve_special_ad_categories(campaign)
+        meta_campaign_data = {
+            "name": campaign.name,
+            "objective": objective,
+            "status": "PAUSED",
+            "buying_type": "AUCTION",
+            "special_ad_categories": json.dumps(special_categories)
+        }
+
+        if use_lifetime and campaign.daily_budget:
+            from modules.marketing.dayparting_service import daily_budget_to_lifetime
+            lifetime_cents = daily_budget_to_lifetime(campaign.daily_budget, campaign_duration_days)
+            meta_campaign_data["lifetime_budget"] = str(lifetime_cents)
+            response_data["budget_type"] = "lifetime"
+            response_data["dayparting_enabled"] = bool(dayparting_schedule)
+            response_data["dayparting_schedule"] = dayparting_schedule if dayparting_schedule else None
+            response_data["dayparting_reasoning"] = dayparting_reasoning
+        elif campaign.daily_budget:
+            meta_campaign_data["daily_budget"] = str(int(campaign.daily_budget * 100))
+            response_data["budget_type"] = "daily"
+
+        meta_campaign_result = create_meta_campaign(
+            ad_account.ad_account_id, ad_account.access_token, meta_campaign_data
+        )
+        meta_campaign_id = meta_campaign_result.get("id")
+        response_data["meta_campaign_id"] = meta_campaign_id
+
+        # Save Meta Campaign to DB
+        db_budget = None
+        if use_lifetime and campaign.daily_budget:
+            from modules.marketing.dayparting_service import daily_budget_to_lifetime
+            db_budget = daily_budget_to_lifetime(campaign.daily_budget, campaign_duration_days)
+        elif campaign.daily_budget:
+            db_budget = int(campaign.daily_budget * 100)
+
+        db_meta_campaign = MetaCampaign(
+            campaign_id=meta_campaign_id,
+            ad_account_id=ad_account.id,
+            name=campaign.name,
+            objective=objective,
+            status="PAUSED",
+            special_ad_categories=special_categories,
+            buying_type="AUCTION",
+            daily_budget=db_budget,
+            created_time=datetime.utcnow(),
+            updated_time=datetime.utcnow(),
+            effective_status="PAUSED",
+            is_draft=False,
+            is_active=True
+        )
+        db.add(db_meta_campaign)
+        db.commit()
+        db.refresh(db_meta_campaign)
+
+        # Create Ad Sets and Ads
+        ads_created = 0
+        selected_ad_sets = [ad_set for ad_set in campaign.ad_sets if ad_set.is_selected]
+
+        for ad_set in selected_ad_sets:
+            try:
+                targeting = {
+                    "geo_locations": {"countries": country_codes},
+                    "age_min": campaign.age_range.get("min", 18) if campaign.age_range else 18,
+                    "age_max": campaign.age_range.get("max", 65) if campaign.age_range else 65
+                }
+                if campaign.gender and campaign.gender != "all":
+                    targeting["genders"] = [1] if campaign.gender == "male" else [2]
+
+                meta_adset_data = {
+                    "name": ad_set.name,
+                    "campaign_id": meta_campaign_id,
+                    "status": "PAUSED",
+                    "optimization_goal": "LINK_CLICKS",
+                    "billing_event": "IMPRESSIONS",
+                    "targeting": json.dumps(targeting),
+                    "bid_amount": "100"
+                }
+
+                # Apply dayparting schedule for lifetime budget campaigns
+                if use_lifetime and campaign.daily_budget:
+                    from modules.marketing.dayparting_service import (
+                        build_adset_schedule_params, daily_budget_to_lifetime
+                    )
+                    lifetime_cents = daily_budget_to_lifetime(
+                        campaign.daily_budget, campaign_duration_days
+                    )
+                    schedule_params = build_adset_schedule_params(
+                        schedule=dayparting_schedule,
+                        lifetime_budget_cents=lifetime_cents,
+                        campaign_duration_days=campaign_duration_days
+                    )
+                    # Remove daily budget params, add lifetime + schedule
+                    meta_adset_data.pop("bid_amount", None)
+                    meta_adset_data.update(schedule_params)
+                    logger.info(
+                        f"[QuickLaunch] Ad set '{ad_set.name}': lifetime budget "
+                        f"${campaign.daily_budget * campaign_duration_days:.2f}, "
+                        f"{len(dayparting_schedule)} schedule blocks"
+                    )
+
+                meta_adset_result = create_meta_adset(
+                    ad_account.ad_account_id, ad_account.access_token, meta_adset_data
+                )
+                meta_adset_id = meta_adset_result.get("id")
+
+                # Save Ad Set to DB
+                db_meta_adset = MetaAdSet(
+                    adset_id=meta_adset_id,
+                    ad_account_id=ad_account.id,
+                    campaign_id=db_meta_campaign.id,
+                    name=ad_set.name,
+                    status="PAUSED",
+                    optimization_goal="LINK_CLICKS",
+                    billing_event="IMPRESSIONS",
+                    targeting=targeting,
+                    bid_amount=100,
+                    created_time=datetime.utcnow(),
+                    updated_time=datetime.utcnow(),
+                    effective_status="PAUSED",
+                    is_active=True
+                )
+                db.add(db_meta_adset)
+                db.commit()
+                db.refresh(db_meta_adset)
+
+                # Create Ads for each content
+                for ad_content_item in ad_set.ad_contents:
+                    if not ad_content_item.is_active:
+                        continue
+                    try:
+                        meta_ad_data = {
+                            "name": f"{ad_set.name} - Ad",
+                            "adset_id": meta_adset_id,
+                            "status": "PAUSED",
+                            "creative": json.dumps({
+                                "object_story_spec": {
+                                    "page_id": facebook_page_id,
+                                    "link_data": {
+                                        "link": ad_content_item.destination_url or campaign.source_url,
+                                        "message": ad_content_item.primary_text or campaign.name,
+                                        "name": ad_content_item.headline or campaign.name,
+                                        "description": ad_content_item.description or "",
+                                        "call_to_action": {
+                                            "type": "LEARN_MORE",
+                                            "value": {"link": ad_content_item.destination_url or campaign.source_url}
+                                        }
+                                    }
+                                }
+                            })
+                        }
+
+                        meta_ad_result = create_meta_ad(
+                            ad_account.ad_account_id, ad_account.access_token, meta_ad_data
+                        )
+                        meta_ad_id = meta_ad_result.get("id")
+
+                        db_meta_ad = MetaAd(
+                            ad_id=meta_ad_id,
+                            ad_account_id=ad_account.id,
+                            adset_id=db_meta_adset.id,
+                            campaign_id=db_meta_campaign.id,
+                            name=f"{ad_set.name} - Ad",
+                            status="PAUSED",
+                            effective_status="PAUSED",
+                            created_time=datetime.utcnow(),
+                            updated_time=datetime.utcnow(),
+                            is_active=True
+                        )
+                        db.add(db_meta_ad)
+                        ads_created += 1
+
+                    except Exception as ad_err:
+                        errors.append(f"Ad creation failed for {ad_set.name}: {str(ad_err)}")
+
+            except Exception as adset_err:
+                errors.append(f"Ad set creation failed for {ad_set.name}: {str(adset_err)}")
+
+        # Update campaign status
+        platform_ids = campaign.platform_campaign_ids or {}
+        platform_ids["meta"] = meta_campaign_id
+        campaign.platform_campaign_ids = platform_ids
+        campaign.status = CampaignStatus.ACTIVE
+        campaign.published_at = datetime.utcnow()
+        db.commit()
+
+        response_data["ads_created"] = ads_created
+
+        # Step 4: Register with scheduler
+        if request.auto_start_scheduler:
+            try:
+                from modules.agents.scheduler import add_ad_account_to_scheduler, start_rules_scheduler, rules_scheduler
+                add_ad_account_to_scheduler(ad_account.ad_account_id)
+                if not rules_scheduler._running:
+                    start_rules_scheduler(interval_minutes=15)
+                response_data["scheduler_registered"] = True
+                logger.info(f"[QuickLaunch] Registered {ad_account.ad_account_id} with scheduler")
+            except Exception as sched_err:
+                errors.append(f"Scheduler registration failed: {str(sched_err)}")
+
+        # Create notification
+        if NOTIFICATIONS_AVAILABLE:
+            try:
+                notification = Notification(
+                    store_id=campaign.store_id,
+                    title="Quick Launch Campaign Published",
+                    message=f"Campaign '{campaign.name}' published with {len(selected_ad_sets)} ad sets and {ads_created} ads. Scheduler {'active' if response_data['scheduler_registered'] else 'inactive'}.",
+                    type=NotificationType.SYSTEM.value,
+                    priority=NotificationPriority.HIGH.value,
+                    related_entity_type="campaign",
+                    related_entity_id=campaign.id,
+                    action_url="/marketing/campaigns"
+                )
+                db.add(notification)
+                db.commit()
+            except Exception:
+                pass
+
+        response_data["success"] = True
+        response_data["errors"] = errors
+        response_data["message"] = (
+            f"Quick Launch complete! Created {len(selected_ad_sets)} ad sets with {ads_created} ads. "
+            f"Campaign is PAUSED — activate in Meta Ads Manager when ready."
+        )
+
+        logger.info(f"[QuickLaunch] Complete: {campaign.name} → {len(selected_ad_sets)} ad sets, {ads_created} ads")
+        return QuickLaunchResponse(**response_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[QuickLaunch] Failed: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Quick Launch failed: {str(e)}"
+        )
+
+
+# ──────────────────────────────────────────────
+# Optimization & Fatigue Detection Endpoints
+# ──────────────────────────────────────────────
+
+@campaign_router.post("/{campaign_id}/collect-metrics")
+def collect_campaign_metrics(
+    campaign_id: uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    """Pull latest performance metrics from Meta for all ad content variants."""
+    # Meta ads optimization/metrics moved to the OpenClaw optimizer plugin.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Campaign metrics collection has moved to OpenClaw.",
+    )
+
+
+@campaign_router.post("/{campaign_id}/optimize")
+def optimize_campaign(
+    campaign_id: uuid.UUID,
+    dry_run: bool = Query(False, description="Preview actions without executing"),
+    min_impressions: int = Query(1000, description="Minimum impressions before evaluating"),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate variant performance and auto-pause losers.
+
+    - Collects latest metrics from Meta
+    - Compares CTR across variants within each ad set
+    - Pauses variants with CTR < 50% of the best performer
+    - Increases budget on winning ad sets by 30%
+    """
+    # Campaign optimization moved to the OpenClaw optimizer plugin.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Campaign optimization has moved to OpenClaw.",
+    )
+
+
+@campaign_router.post("/{campaign_id}/check-fatigue")
+async def check_ad_fatigue(
+    campaign_id: uuid.UUID,
+    auto_refresh: bool = Query(False, description="Auto-generate fresh creatives for fatigued ads"),
+    db: Session = Depends(get_db),
+):
+    """
+    Check for ad fatigue and optionally auto-refresh stale creatives.
+
+    Fatigue signals:
+    - Frequency > 3.0 (audience seeing ad too often)
+    - CTR declining 3+ consecutive days
+    - CTR dropped > 30% from peak
+
+    When auto_refresh=True, fatigued ads are paused and replaced with fresh copy/images.
+    """
+    # Ad fatigue detection + creative refresh depend on the ad-generation modules
+    # removed in the OpenClaw migration; this is handled by OpenClaw now.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Ad fatigue detection and creative refresh have moved to OpenClaw.",
+    )
+
+
+class PublishMetaRequest(BaseModel):
+    ad_set_id: Optional[uuid.UUID] = None          # defaults to the first ad set with an image
+    daily_budget: Optional[float] = None           # defaults to the ad set's share of the campaign budget
+    goal: Optional[str] = None                     # traffic | conversions | leads | engagement ...
+    countries: Optional[List[str]] = None          # ISO-2; defaults to the store's country
+    start_date: Optional[str] = None               # ISO 8601; ad set start (Meta), default: immediately
+    end_date: Optional[str] = None                 # ISO 8601; ad set end, so the run is time-boxed
+    status: str = "PAUSED"                        # PAUSED so nothing spends until it's reviewed
+    validate_only: bool = False                    # build and return the payload, creates nothing
+    destination: str = "whatsapp"                  # whatsapp (Click-to-WhatsApp, default) | website
+    whatsapp_number: Optional[str] = None          # E.164; defaults to the store's connected WhatsApp number
+    age_min: Optional[int] = None                  # defaults to the ad set's age range, else 25
+    age_max: Optional[int] = None                  # defaults to the ad set's age range, else 55
+
+
+@campaign_router.post("/{campaign_id}/publish-meta")
+async def publish_campaign_to_meta(
+    campaign_id: uuid.UUID,
+    request: PublishMetaRequest,
+    db: Session = Depends(get_db)
+):
+    """Publish a saved campaign's ad set to Meta through Zernio.
+
+    Paused by default: the ad is created, goes through Meta review, and spends nothing
+    until it is activated. Pass validate_only to check the payload without creating.
+    """
+    from modules.openclaw.router import _dispatch_zernio, resolve_meta_targets
+    from modules.stores.models import Store
+
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    store = db.query(Store).filter(Store.id == campaign.store_id).first()
+    if not store or not store.zernio_profile_id:
+        raise HTTPException(status_code=400, detail="Store is not connected to Zernio")
+
+    ad_sets = sorted(campaign.ad_sets or [], key=lambda s: s.created_at or datetime.min)
+    if request.ad_set_id:
+        ad_sets = [s for s in ad_sets if s.id == request.ad_set_id]
+    ad_set = next((s for s in ad_sets if any(c.media_url for c in s.ad_contents)), None) or \
+        (ad_sets[0] if ad_sets else None)
+    if not ad_set:
+        raise HTTPException(status_code=400, detail="Campaign has no ad set to publish")
+    content = next((c for c in ad_set.ad_contents if c.is_primary), None) or \
+        (ad_set.ad_contents[0] if ad_set.ad_contents else None)
+    if not content or not content.media_url:
+        raise HTTPException(status_code=400, detail="This ad set has no image yet — Meta requires one")
+
+    from modules.openclaw.router import _store_whatsapp_number, _ctwa_payload, _campaign_payload
+
+    targets = await resolve_meta_targets(store)
+    whatsapp = request.destination != "website"
+    countries = request.countries or (campaign.countries or None) or \
+        ([store.country_code] if store.country_code else ["ZW"])
+    age = ad_set.age_range if isinstance(ad_set.age_range, dict) else {}
+    age_min = request.age_min or age.get("min") or age.get("age_min") or 25
+    age_max = request.age_max or age.get("max") or age.get("age_max") or 55
+    audience_tags = [str(t) for t in (ad_set.audience_tags or [])][:8]
+    from utils.text_clean import clean_ad_name
+    common = {
+        **targets,
+        "name": clean_ad_name(f"{campaign.name} - {ad_set.name}")[:80],
+        "headline": (content.headline or "")[:40],
+        "body": content.primary_text or "",
+        "image_url": content.media_url,
+        "budget": request.daily_budget or ad_set.daily_budget or 5,
+        "budget_type": "daily",
+        "currency": store.currency or "USD",
+        "countries": countries,
+        "status": request.status,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "age_min": age_min,
+        "age_max": age_max,
+        "advantage_audience": 1,
+    }
+    if whatsapp:
+        # "auto" omits the number so Meta picks whichever number is paired with the Page.
+        wa_number = None if request.whatsapp_number == "auto" else (
+            request.whatsapp_number or await _store_whatsapp_number(store))
+        data = {
+            **common,
+            "whatsapp_number": wa_number,
+            "welcome_text": f"Hi! Thanks for reaching out to {store.store_name}. How can we help you today?",
+            "prefill_text": f"Hi, I'd like to know more about {store.store_name}.",
+        }
+        goal_label = "Conversations (WhatsApp messages)"
+        action = "create_ctwa_campaign"
+        payload_preview = _ctwa_payload(data)
+    else:
+        wa_number = None
+        data = {
+            **common,
+            "goal": request.goal or campaign.goal or "traffic",
+            "link_url": content.destination_url or campaign.source_url or store.store_link,
+            "call_to_action": content.call_to_action or "Learn More",
+            "validate_only": request.validate_only,
+        }
+        goal_label = str(data["goal"])
+        action = "create_campaign"
+        payload_preview = _campaign_payload(data)
+
+    publish_info = {
+        "destination": "whatsapp" if whatsapp else "website",
+        "goal": goal_label,
+        "countries": [str(c).upper() for c in countries],
+        "whatsapp_number": wa_number,
+        "audience": {"age_min": age_min, "age_max": age_max, "advantage_audience": True, "tags": audience_tags},
+        "call_to_action": "WhatsApp" if whatsapp else str(data.get("call_to_action") or "Learn More"),
+        "daily_budget": data["budget"],
+    }
+    if request.validate_only and whatsapp:
+        # Click-to-WhatsApp has no validate-only mode on Zernio, so nothing is sent.
+        return {"validated": False, "sent": False, "note": "payload built only; nothing was created",
+                "publish_info": publish_info, "payload": {k: v for k, v in payload_preview.items() if k != "body"}}
+    try:
+        result = await _dispatch_zernio(action, data)
+    except HTTPException as e:
+        from modules.openclaw.router import friendly_ad_error
+        raise friendly_ad_error(e)
+    if request.validate_only:
+        return {"validated": True, "payload": {k: v for k, v in data.items() if k != "body"}, "result": result}
+
+    ad_obj = result.get("ad") if isinstance(result.get("ad"), dict) else {}
+    meta_campaign_id = (result.get("id") or result.get("campaignId") or result.get("campaign_id")
+                        or ad_obj.get("platformCampaignId"))
+    campaign.platform_campaign_ids = {**(campaign.platform_campaign_ids or {}), "publish": publish_info}
+    # Keep the draft's own fields truthful, so reopening it shows what was actually published.
+    campaign.daily_budget = float(data["budget"])
+    campaign.countries = [str(c).upper() for c in countries]
+    campaign.goal = CampaignGoal.LEADS if whatsapp else CampaignGoal.TRAFFIC
+    if meta_campaign_id:
+        campaign.platform_campaign_ids = {**(campaign.platform_campaign_ids or {}), "meta": str(meta_campaign_id)}
+    # Click-to-WhatsApp ads have no scheduled start on Zernio (they start when activated).
+    for attr, raw in (("start_date", None if whatsapp else request.start_date), ("end_date", request.end_date)):
+        if raw:
+            try:
+                setattr(campaign, attr, datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None))
+            except ValueError:
+                pass
+    ad_id = result.get("adId") or result.get("ad_id") or ad_obj.get("platformAdId")
+    if ad_id:
+        content.meta_ad_id = str(ad_id)
+    db.commit()
+    logger.info(f"[Publish] campaign {campaign.id} ad set '{ad_set.name}' -> Meta ({request.status})")
+    return {"published": True, "status": request.status, "ad_set": ad_set.name,
+            "meta_campaign_id": meta_campaign_id, "result": result}
