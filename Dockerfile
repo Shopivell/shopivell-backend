@@ -84,7 +84,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run as non-root user (commented out for now as some operations may need root)
