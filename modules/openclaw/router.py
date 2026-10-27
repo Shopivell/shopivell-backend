@@ -5369,23 +5369,8 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         if method == "delivery" and subtotal < 10:
             return f"Delivery requires a minimum order of {format_price(10)}. Your current subtotal is {format_price(subtotal)}. Please add more items or choose walk-in collection."
 
-        # The newest answer wins. If the customer changes their mind between
-        # walk-in and delivery, stale payment info from the old choice must not
-        # let confirm_order skip the payment step.
-        if state and state.get("collection_method") not in (None, method):
-            _update_order_state(db, store_id, customer_phone,
-                                payment_method=None, payment_provider=None)
-
-        if method == "delivery":
-            _update_order_state(db, store_id, customer_phone,
-                               collection_method=method,
-                               current_state="delivery_step_name")
-            return "Great! I'll need a few details for delivery.\n\n*Step 1 of 3*\nWhat is your *full name*?\n\n(You'll also need to provide a delivery address. If you'd prefer not to, I can switch you to walk-in collection instead.)"
-        else:
-            _update_order_state(db, store_id, customer_phone,
-                               collection_method=method,
-                               current_state="payment")
-            return "Walk-in collection selected. Which payment method would you like?\n1. Cash - Pay on collection\n2. EcoCash\n3. OneMoney\n4. InnBucks"
+        _update_order_state(db, store_id, customer_phone, collection_method=method)
+        return await _resume_checkout(db, store, customer_phone, user_text)
 
     elif tool_name == "set_delivery_details":
         state = _get_order_state(db, store_id, customer_phone) or {}
@@ -5405,6 +5390,20 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
             if address_phone:
                 phone_clean = address_phone
                 args = {**args, "address": address_without_phone}
+        partial = {}
+        if len(customer_name) >= 2 and not re.search(r"\d", customer_name):
+            partial["customer_name"] = customer_name
+        address = (args.get("address") or "").strip()
+        if looks_like_address(address):
+            partial["customer_address"] = address
+        if phone_clean:
+            partial["customer_phone_delivery"] = phone_clean
+        if partial:
+            _update_order_state(db, store_id, customer_phone, **partial)
+        state = _get_order_state(db, store_id, customer_phone) or {}
+        customer_name = partial.get("customer_name") or state.get("customer_name") or ""
+        phone_clean = phone_clean or state.get("customer_phone_delivery")
+        args = {**args, "address": partial.get("customer_address") or state.get("customer_address") or ""}
         if not phone_clean:
             return ("DELIVERY DETAILS INCOMPLETE: the phone number is not valid.\n"
                     f"{phone_error}\n"
@@ -5422,10 +5421,9 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         _update_order_state(db, store_id, customer_phone,
                            customer_name=customer_name,
                            customer_phone_delivery=phone_clean,
-                           payment_phone=phone_clean,
                            customer_address=address,
                            current_state="payment")
-        return f"Delivery details saved:\nName: {customer_name}\nPhone: {phone_clean}\nAddress: {address}\n\nWhich payment method would you like?\n1. Cash - Pay on delivery\n2. EcoCash\n3. OneMoney\n4. InnBucks"
+        return await _resume_checkout(db, store, customer_phone, user_text)
 
     elif tool_name == "set_payment_method":
         raw_method = str(args.get("method") or "").strip().lower()
@@ -5721,14 +5719,10 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         cart_items = state.get("cart_items", []) if state else []
         if not cart_items:
             return "Your cart is empty. Please add items before checking out."
+        if state.get("collection_method"):
+            return await _resume_checkout(db, store, customer_phone, user_text)
         _update_order_state(db, store_id, customer_phone,
-                            current_state="awaiting_collection",
-                            # A fresh checkout asks again. Keeping the old
-                            # choice was what made "2 = Delivery" look like an
-                            # answer that had already been given.
-                            collection_method=None,
-                            payment_method=None,
-                            payment_provider=None)
+                            current_state="awaiting_collection")
         subtotal = cart_subtotal(cart_items)
         return (
             f"*Cart Total:* {format_price(subtotal)}\n\n"
@@ -6793,6 +6787,28 @@ _CHECKOUT_PAYMENT_WORDS = {
 }
 
 
+async def _resume_checkout(db, store, customer_phone, user_text=""):
+    """Resume from saved fields; repeated tool calls must not reset checkout."""
+    state = _get_order_state(db, str(store.id), customer_phone) or {}
+    if state.get("collection_method") == "delivery":
+        step = _delivery_next_state(state)
+        prompts = {
+            "delivery_step_name": "What is your full name for delivery?",
+            "delivery_step_phone": "What is your 10-digit phone number for delivery?",
+            "delivery_step_address": "What is your delivery address (street, suburb and city)?",
+        }
+        if step in prompts:
+            _update_order_state(db, str(store.id), customer_phone, current_state=step)
+            return prompts[step]
+    if state.get("payment_method") or state.get("payment_provider"):
+        return await _execute_pharmacy_tool(
+            db, store, customer_phone, "set_payment_method",
+            {"method": state.get("payment_provider") or state.get("payment_method"),
+             "mobile_number": state.get("payment_phone")}, user_text)
+    _update_order_state(db, str(store.id), customer_phone, current_state="payment")
+    return "How would you like to pay?\n1. Cash\n2. EcoCash\n3. OneMoney\n4. InnBucks"
+
+
 async def _checkout_choice_reply(db, store, user_text: str, customer_phone: str,
                                  history: Optional[List[Dict[str, str]]] = None) -> Optional[str]:
     """Answer a bare collection/payment choice from code, saving it immediately.
@@ -7258,6 +7274,12 @@ async def _generate_bot_reply(
         if rewritten_text:
             logger.info("Pharmacy gate restating request: %s", rewritten_text)
             user_text = rewritten_text
+
+    if (is_pharmacy_store and customer_phone and not image_urls
+            and pharmacy_state.get("current_state") == "confirm"
+            and is_affirmative(user_text)):
+        return await _execute_pharmacy_tool(
+            db, store, customer_phone, "confirm_order", {}, user_text)
 
     # Get current order state for context (cart, branch, etc.)
     order_state_context = ""

@@ -389,12 +389,10 @@ def is_medication_related(text: str) -> bool:
 # detected here, deterministically, before any model call happens.
 
 PHARMACIST_QUESTION_MESSAGE = (
-    "*This one needs our pharmacist.*\n\n"
-    "I'm the shop assistant, so I can't advise on medication, dosages, "
-    "prescriptions, side effects or which medicine to take - that has to come "
-    "from a pharmacist.\n\n"
-    "I've passed your question to our pharmacist, who will reply to you here "
-    "shortly. Please don't start, stop or change any medication until they do. 🙏"
+    "Our pharmacist is reviewing your question and will reply here shortly.\n\n"
+    "I'm the shop assistant, so I'll leave advice about medicines, dosages, "
+    "prescriptions and side effects to them. Please wait for their advice "
+    "before starting, stopping or changing any medication."
 )
 
 # Same rule for a store that is not a pharmacy (no pharmacist on the team): the
