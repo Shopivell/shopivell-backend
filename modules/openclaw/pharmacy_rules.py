@@ -696,6 +696,37 @@ def is_purchase_intent(text: str) -> bool:
     return _contains_any(lowered, PURCHASE_INTENT) is not None
 
 
+# One line of a catalogue list the customer pasted back: "1. NAME - $6",
+# "- NAME - $6" or "* NAME - $6". Two or more of them is a whole order.
+_LIST_ENTRY = re.compile(r"^\s*(?:\d{1,3}\s*[.):\-]|[*•\-])\s*\S", re.M)
+
+LIST_SELECTION_PHRASES = (
+    "add these", "add them all", "add all", "all of them", "all these",
+    "these to the cart", "the whole list", "add everything",
+)
+
+
+def is_multi_item_selection(text: str) -> bool:
+    """True when the message is a list of products, not one product request.
+
+    A pasted catalogue list ("1. X - $6 / 2. Y - $1") or an explicit "add these
+    to the cart" is a whole order. The single-item "are you really sure you
+    want <one item>?" double-check must never answer it: confirming it added
+    that one line and silently dropped every other product the customer had
+    just selected. The checkout summary still confirms the whole order.
+    """
+    if not text:
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    priced = [line for line in lines if re.search(r"\$\s?\d", line)]
+    if len(priced) >= 2:
+        return True
+    if len(lines) >= 2 and len(_LIST_ENTRY.findall(text)) >= 2:
+        return True
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in LIST_SELECTION_PHRASES)
+
+
 def is_affirmative(text: str) -> bool:
     if not text:
         return False

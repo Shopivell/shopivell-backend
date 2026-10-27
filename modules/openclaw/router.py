@@ -43,6 +43,7 @@ from modules.openclaw.pharmacy_rules import (
     is_conversational,
     is_medication_question,
     is_medication_related,
+    is_multi_item_selection,
     is_negative,
     is_purchase_intent,
     is_uncertain_request,
@@ -6758,6 +6759,11 @@ def _pharmacy_intent_gate(db: Session, store, user_text: str,
 
     # 3) Customer named a medication and wants it -> double-check they're sure
     if is_medication_related(text) and is_purchase_intent(text):
+        # But a pasted list or "add these to the cart" is a whole order: one
+        # item's double-check cannot stand in for it. Asking it added that
+        # single line and dropped every other product the customer selected.
+        if is_multi_item_selection(text):
+            return None, None
         named = _named_medication(db, store, text,
                                   branch=state.get("selected_branch"))
         if named:
