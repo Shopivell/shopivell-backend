@@ -102,6 +102,17 @@ OPENCLAW_GATEWAY_TOKEN = os.getenv("OPENCLAW_GATEWAY_TOKEN", "shopivell-openclaw
 # Agent target on the gateway. "openclaw" is the configured default agent;
 # "openclaw/<agentId>" selects a dedicated one.
 OPENCLAW_AGENT_MODEL = os.getenv("OPENCLAW_AGENT_MODEL", "openclaw")
+# A gateway that has more than one agent configured refuses the bare "openclaw"
+# selector ("Multiple agents are configured, but this operation has no explicit
+# owner"), and every turn died on it with our "temporary problem" reply. Always
+# qualify the model with the agent that owns the pharmacy sessions.
+OPENCLAW_AGENT_ID = os.getenv("OPENCLAW_AGENT_ID", "shopivell").strip() or "shopivell"
+if "/" not in OPENCLAW_AGENT_MODEL:
+    OPENCLAW_AGENT_MODEL = f"{OPENCLAW_AGENT_MODEL}/{OPENCLAW_AGENT_ID}"
+# Gateway calls get their own, shorter budget: a brain that is up but wedged
+# must not hold a customer's message for the full model timeout before the
+# direct path below answers it.
+OPENCLAW_GATEWAY_TIMEOUT = float(os.getenv("OPENCLAW_GATEWAY_TIMEOUT", "25"))
 
 
 def _first(d, *keys, default=None):
@@ -252,17 +263,25 @@ async def _llm(path: str, payload: dict, timeout: float = 60.0, session_key: str
             "Content-Type": "application/json",
             "X-OpenClaw-Session-Key": session_key,  # For conversation isolation
         }
-        # OpenClaw expects model="openclaw" not the actual model name
+        # OpenClaw expects "openclaw" or "openclaw/<agentId>", not the model name
         openclaw_payload = payload.copy()
-        openclaw_payload["model"] = "openclaw"
+        openclaw_payload["model"] = OPENCLAW_AGENT_MODEL
         logger.info("[OpenClaw] Forwarding to gateway with session: %s", session_key[:30] + "...")
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(f"{base}/v1{path}", headers=headers, json=openclaw_payload)
-            if resp.status_code >= 400:
-                logger.error("[OpenClaw] Gateway error: %s %s", resp.status_code, resp.text[:200])
-                raise HTTPException(status_code=resp.status_code,
-                                    detail=f"OpenClaw error ({resp.status_code}): {resp.text[:300]}")
-            return resp.json()
+        gateway_error = None
+        try:
+            async with httpx.AsyncClient(timeout=min(float(timeout), OPENCLAW_GATEWAY_TIMEOUT)) as client:
+                resp = await client.post(f"{base}/v1{path}", headers=headers, json=openclaw_payload)
+        except Exception as e:
+            gateway_error = f"{type(e).__name__}: {e}"
+        else:
+            if resp.status_code < 400:
+                return resp.json()
+            gateway_error = f"{resp.status_code}: {resp.text[:200]}"
+        # A brain that is down, wedged or unhappy must not cost the customer
+        # their reply - fall through to the direct model below, which is the
+        # same model the pharmacy tool loop was already written against.
+        logger.error("[OpenClaw] gateway failed (%s); answering from the direct model",
+                     gateway_error)
 
     # Fallback: Prefer OpenAI direct over OpenRouter
     if OPENAI_API_KEY:
@@ -285,7 +304,7 @@ async def _llm(path: str, payload: dict, timeout: float = 60.0, session_key: str
 
 
 async def _openclaw_agent_reply(system_prompt: str, user_text: str, session_key: str,
-                                timeout: float = 90.0) -> str:
+                                timeout: float = 45.0) -> str:
     """Run one WhatsApp turn on the real OpenClaw agent.
 
     The agent owns the conversation and calls the pharmacy MCP tools itself
