@@ -8290,7 +8290,16 @@ async def _generate_bot_reply(
         # instead of a real AI response. _llm() is this file's actual OpenAI-direct
         # (falls back to OpenRouter) helper, already used everywhere else here.
         # Increase max_tokens when listing products/medications or processing prescription images
-        max_tokens = 800 if (is_pharmacy_store and (product_context or medication_context or image_urls)) else 300
+        # A customer who pastes a whole list makes the model emit one
+        # add_to_cart call per line; at 800 tokens the batch was cut off
+        # mid-argument (a call arrived with product_name=None) and the last
+        # items were silently dropped from the order.
+        if is_pharmacy_store:
+            max_tokens = 2000
+        elif product_context or medication_context or image_urls:
+            max_tokens = 800
+        else:
+            max_tokens = 300
 
         # Build request payload
         request_payload = {

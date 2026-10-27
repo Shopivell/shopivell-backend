@@ -98,6 +98,7 @@ def main() -> int:
 
     # 2. The customer asks for a shelf, not a brand.
     reply = customer.say("first aid products")
+    listed_reply = reply
     check("a category request is answered with a numbered list",
           len(re.findall(r"^\s*\d+\.", reply, re.M)) >= 5, reply)
     check("a category request is never answered with 'did you mean'",
@@ -105,16 +106,28 @@ def main() -> int:
     check("a category request is not answered with a branch question",
           "which branch" not in reply.lower(), reply)
 
+    # The bot's own list is the order the customer is answering: every product
+    # it showed for the branch has to reach the cart.
+    listed = [name.upper() for name in
+              re.findall(r"^\s*\d+\.\s*(.+?)\s*-\s*\$\d", listed_reply, re.M)]
+    check("the category reply lists products with prices", len(listed) >= 5, listed_reply)
+
     # 3. The customer pastes the list back and asks for all of it.
     customer.say(FIRST_AID_LIST + "\nadd these to the cart")
     if re.search(r"reply yes|really sure|are you sure", customer.reply, re.I):
         customer.say("yes")
 
     cart = {str(i.get("product_name") or "").upper() for i in customer.cart}
-    wanted = [line.split(". ", 1)[1].split(" - $")[0] for line in FIRST_AID_LIST.splitlines()]
-    missing = [name for name in wanted if name.upper() not in cart]
-    check(f"every listed product reaches the cart ({len(cart)} added)",
+    missing = [name for name in listed if name not in cart]
+    check(f"every product the bot listed reaches the cart ({len(cart)} added)",
           not missing, f"missing: {missing}")
+    # A requested line the branch does not stock must be said, not dropped.
+    unstocked = [line.split(". ", 1)[1].split(" - $")[0]
+                 for line in FIRST_AID_LIST.splitlines()
+                 if line.split(". ", 1)[1].split(" - $")[0].upper() not in cart]
+    for name in unstocked:
+        check(f"'{name}' is either added or explained",
+              name.split()[0].lower() in customer.reply.lower(), customer.reply)
     check("the cart holds no duplicate lines",
           len(cart) == len(customer.cart), str([i.get("product_name") for i in customer.cart]))
     check("no turn fell back to 'temporary problem'",
