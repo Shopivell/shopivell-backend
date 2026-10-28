@@ -4828,6 +4828,58 @@ _CATEGORY_DISPLAY = {
 }
 
 
+def _is_general_catalogue_request(message: str) -> bool:
+    """Recognize a general catalogue question, without answering advice requests."""
+    text = re.sub(r'[^a-z0-9\s]', ' ', str(message or '').lower())
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'^(?:hi|hello|hey)\s+', '', text)
+    return bool(re.fullmatch(
+        r'(?:what (?:(?:kind|type|types) of )?(?:products|items|categories) (?:do you (?:have|sell|stock|offer)|are available)(?: in (?:your |the )?(?:store|stock))?'
+        r'|what do you (?:sell|stock|offer|have)'
+        r'|(?:show|list|tell) (?:me )?(?:your |the )?(?:products|items|categories|product range)'
+        r'|(?:your |the )?(?:products|product range|product categories|categories))', text))
+
+
+def _catalogue_categories_reply(db, store, branch: Optional[str] = None) -> str:
+    """Describe categories backed by this store's active online catalogue."""
+    from sqlalchemy import text as sql_text
+    params = {'store_id': str(store.id)}
+    branch_clause = ''
+    if branch:
+        branch_clause = ' AND LOWER(branch) = LOWER(:branch)'
+        params['branch'] = branch
+    rows = db.execute(sql_text('''
+        SELECT title, content FROM company_knowledge
+        WHERE store_id = :store_id AND content_type = 'product' AND is_active = true
+    ''' + branch_clause), params).fetchall()
+    if not rows:
+        where = f' for {branch}' if branch else ''
+        return f'I don’t have an online product list{where} yet. Our team can check what is available.'
+    texts = [f'{title or ""} {content or ""}'.lower() for title, content in rows]
+    categories = [
+        ('Baby products', 'baby products'),
+        ('Oral care', 'oral care'),
+        ('Skincare', 'skincare'),
+        ('Haircare', 'hair care'),
+        ('Personal care and toiletries', 'personal care'),
+        ('Cosmetics and beauty', 'cosmetics'),
+        ('Vitamins and supplements', 'wellness'),
+        ('First aid', 'first aid'),
+        ('Medicines', 'medications'),
+    ]
+    found = []
+    for label, key in categories:
+        terms = _CATEGORY_SEARCH_TERMS[key].lower().split(' or ')
+        if any(any(re.search(r'\b' + re.escape(term) + r'\b', text) for term in terms) for text in texts):
+            found.append(label)
+    if not found:
+        return 'We have products in our online catalogue. Tell me what you are looking for and I can check.'
+    where = f' for {branch}' if branch else ''
+    return (f'Our online catalogue{where} includes:\n\n'
+            + '\n'.join(f'• {category}' for category in found)
+            + '\n\nTell me what you are looking for and I can check the products and prices.')
+
+
 def _named_categories(text: str) -> List[tuple]:
     """(display, key) for every shelf a message names, de-duplicated."""
     cleaned = re.sub(r"\b(products?|items?|stuff|range|category|categories)\b",
@@ -5114,16 +5166,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                 return result
 
         if is_generic_query:
-            # Show product categories instead of searching for nothing
-            categories = ["Skincare (Nivea, Vaseline, Dove)", "Haircare (Shampoo, Conditioner)",
-                         "Oral Care (Toothpaste, Mouthwash)", "Cosmetics (Lipstick, Mascara)",
-                         "Baby Products", "Medications", "First Aid"]
-            branch_text = f" at {branch} branch" if branch else ""
-            result = f"We have many products{branch_text}! Here are some categories:\n\n"
-            for i, cat in enumerate(categories, 1):
-                result += f"{i}. {cat}\n"
-            result += "\nWhat type of product are you looking for? (e.g., 'nivea lotion', 'toothpaste', 'shampoo')"
-            return result
+            return _catalogue_categories_reply(db, store, branch)
 
         # Check if customer already has a branch selected (from cart items)
         state = _get_order_state(db, store_id, customer_phone)
@@ -7412,6 +7455,14 @@ async def _generate_bot_reply(
     pharmacist_reply = _medication_question_guard(store, user_text)
     if pharmacist_reply:
         return pharmacist_reply
+
+    if store and _is_pharmacy_store(store) and not image_urls and _is_general_catalogue_request(user_text):
+        try:
+            state = _get_order_state(db, str(store.id), customer_phone) if customer_phone else None
+            return _catalogue_categories_reply(db, store, (state or {}).get('selected_branch'))
+        except Exception:
+            logger.exception('Could not list catalogue categories for store %s', store.id)
+            return 'Tell me what product you are looking for and I can check the catalogue.'
 
     context = _business_context(store)
     faq_text = _faq_context(db, store)
