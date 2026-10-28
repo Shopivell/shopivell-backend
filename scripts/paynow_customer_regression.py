@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlencode
 from uuid import uuid4
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 os.environ['PAYNOW_INTEGRATION_KEY'] = 'test-integration-key'
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -50,7 +50,7 @@ def form(amount='15.00', signature=True, status='Paid'):
     digest = hashlib.sha512((''.join(value for _, value in fields) + os.environ['PAYNOW_INTEGRATION_KEY']).encode()).hexdigest().upper()
     return urlencode(fields + [('hash', digest if signature else 'BAD')])
 url = '/v1/api/whatsapp/paynow-callback'
-with patch('modules.whatsapp.router._notify_payment_result', new_callable=AsyncMock) as notify:
+with patch('modules.jobs.queue.enqueue', return_value='job-id') as notify:
     assert client.post(url, content=form(signature=False)).status_code == 403
     assert client.post(url, content=form(amount='14.00')).status_code == 400
     assert client.post(url, content=form(status='Failed')).status_code == 200
@@ -61,7 +61,7 @@ with patch('modules.whatsapp.router._notify_payment_result', new_callable=AsyncM
     assert client.post(url, content=form()).status_code == 200
     assert client.post(url, content=form()).status_code == 200
     assert client.post(url, content=form(status='Failed')).status_code == 200
-    assert notify.await_count == 2
+    assert notify.call_count == 2
 with Testing() as db:
     assert db.query(WhatsAppOrder).first().payment_status == 'paid'
     assert db.query(CustomerOrder).first().payment_status == 'paid'

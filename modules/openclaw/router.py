@@ -589,6 +589,38 @@ def _store_branches(db, store_id):
         return []
 
 
+def _listed_store_branches(db, store):
+    """Combine branch names from the store's FAQ with its catalogue branches."""
+    branches = _store_branches(db, store.id)
+    try:
+        from modules.whatsapp.models import FAQ
+        faqs = (db.query(FAQ).filter(FAQ.store_id == store.id, FAQ.is_active.is_(True),
+                                    FAQ.question.ilike('%branch%')).order_by(FAQ.display_order).all())
+        names = []
+        for faq in faqs:
+            if not re.search(r'\b(?:where|which|locations?|branches)\b', faq.question or '', re.I):
+                continue
+            for line in (faq.answer or '').splitlines():
+                match = re.match(r'^\s*\d+[.)]\s*(.+?)\s+[-–—]\s+', line)
+                if not match:
+                    continue
+                name = match.group(1).strip()
+                store_name = (store.store_name or '').strip()
+                if store_name and name.lower().startswith(store_name.lower() + ' '):
+                    name = name[len(store_name):].strip()
+                if name and name.lower() not in {b.lower() for b in names}:
+                    names.append(name)
+            if names:
+                break
+        for branch in branches:
+            if branch.lower() not in {name.lower() for name in names}:
+                names.append(branch)
+        return names or branches
+    except Exception as exc:
+        logger.warning('Could not read branch FAQ: %s', exc)
+        return branches
+
+
 def _catalogue_price(db, store_id, product_name, branch=None):
     """The real catalogue price for a product, parsed from its knowledge entry.
 
@@ -4004,12 +4036,9 @@ PHARMACY_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_branches",
-            "description": ("List the branches that currently have products in the online "
-                            "catalogue (where an order can be placed). Use it to choose a "
-                            "branch for a search or order, and before saying a product is "
-                            "unavailable everywhere. If the customer asks which branches the "
-                            "pharmacy itself has, answer from the store information/FAQ - "
-                            "there may be more branches than the online catalogue covers."),
+            "description": ("List all branches in the store information and identify those "
+                            "with online catalogue data. For other branches, ask the team "
+                            "to confirm stock and prices; do not assume items are unavailable."),
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -5121,7 +5150,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                 return result
             if smart["did_you_mean"]:
                 return _format_did_you_mean(smart, query, branch)
-            return f"NOT FOUND: No products matching '{query}' at {branch} branch. Tell the customer this item is not available at this branch and ask if they want to check another branch or look for something else."
+            return f"NOT FOUND: No products matching '{query}' in the online catalogue for {branch}. Ask the team to confirm availability at that branch; do not say it is out of stock solely because it is missing from the catalogue."
         else:
             # Search all branches and collect which ones have the product
             branches = _store_branches(db, store_id)
@@ -5361,11 +5390,14 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         return "Orders (newest first):\n" + "\n".join(l.strip(" -") for l in lines)
 
     elif tool_name == "list_branches":
-        branches = _store_branches(db, store_id)
+        branches = _listed_store_branches(db, store)
         if not branches:
             return ("No branch list is configured for this store. Do not guess branch "
                     "names - offer to check with the team.")
-        return "Branches: " + ", ".join(branches)
+        catalogue = _store_branches(db, store_id)
+        return ("Branches: " + ", ".join(branches) + ". Catalogue available for: "
+                + (", ".join(catalogue) or "none")
+                + ". For other branches, ask the team to check stock and pricing; do not guess.")
 
     elif tool_name == "view_cart":
         state = _get_order_state(db, store_id, customer_phone)
@@ -5430,7 +5462,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         chosen = (args.get("branch") or "").strip()
         if not chosen:
             return "Please choose a branch."
-        branches = _store_branches(db, store_id)
+        branches = _listed_store_branches(db, store)
         match = next((b for b in branches if b.lower() == chosen.lower()), None)
         if not match:
             # Let the model recover from a partial answer ("angwa" for "Angwa Branch").
@@ -6587,14 +6619,14 @@ def _branded_greeting(db: Session, store, customer_phone: Optional[str],
         except Exception as e:
             logger.warning("Could not check order state for greeting: %s", e)
 
-    branches = _store_branches(db, store.id) if store is not None else []
+    branches = _listed_store_branches(db, store) if store is not None else []
     welcome = (f"Welcome back to {name}. How can I help you today?"
                if returning else
                f"Welcome to {name}. How can I help you today?")
     lines = [welcome]
 
     if len(branches) > 1:
-        lines += ["", "You can shop from any of these branches:"]
+        lines += ["", "Our branches:"]
         for index, branch in enumerate(branches, 1):
             marker = " (current)" if (chosen_branch
                                       and branch.lower() == chosen_branch.lower()) else ""
@@ -6627,20 +6659,10 @@ _PRODUCT_QUERY_LEADINS = (
 
 
 def _branches_for_store(db: Session, store) -> List[str]:
-    """The branches this store actually stocks, taken from its catalogue."""
+    """Branches available for selection, including those in the store FAQ."""
     if store is None:
         return []
-    try:
-        from sqlalchemy import text as sql_text
-        rows = db.execute(sql_text("""
-            SELECT DISTINCT branch FROM company_knowledge
-            WHERE store_id = :store_id AND branch IS NOT NULL AND branch != ''
-            ORDER BY branch
-        """), {"store_id": str(store.id)}).fetchall()
-        return [r[0] for r in rows if r[0]]
-    except Exception as e:
-        logger.warning("Could not fetch branches: %s", e)
-        return []
+    return _listed_store_branches(db, store)
 
 
 def _branch_choice(user_text: str, branches: List[str]) -> Optional[str]:
@@ -7544,13 +7566,7 @@ async def _generate_bot_reply(
     available_branches = []
     if is_pharmacy_store:
         try:
-            from sqlalchemy import text as sql_text
-            branch_result = db.execute(sql_text("""
-                SELECT DISTINCT branch FROM company_knowledge
-                WHERE store_id = :store_id AND branch IS NOT NULL AND branch != ''
-                ORDER BY branch
-            """), {"store_id": str(store.id)}).fetchall()
-            available_branches = [r[0] for r in branch_result if r[0]]
+            available_branches = _listed_store_branches(db, store)
         except Exception as e:
             logger.warning("Could not fetch branches: %s", e)
 

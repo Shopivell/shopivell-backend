@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from modules.whatsapp.payment_service import WhatsAppPaymentService
 
@@ -22,7 +23,8 @@ for response, accepted in [
     (SimpleNamespace(success=False, status='Error', data={'error':'Insufficient funds'}), False),
 ]:
     service.paynow = Provider(response)
-    result, error = service.initiate_mobile_payment('id', 'order', 10, '0771234567', 'ecocash')
+    with patch('modules.jobs.queue.enqueue', return_value='job-id'):
+        result, error = service.initiate_mobile_payment('id', 'order', 10, '0771234567', 'ecocash')
     assert bool(result) is accepted
     assert updates[-1]['payment_status'] == ('processing' if accepted else 'failed')
     if not accepted and 'error' in response.data:

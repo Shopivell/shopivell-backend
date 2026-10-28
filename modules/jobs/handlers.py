@@ -13,6 +13,47 @@ from modules.jobs.queue import handler
 logger = logging.getLogger(__name__)
 
 
+@handler('poll_whatsapp_payment')
+def poll_whatsapp_payment(payload: dict) -> dict:
+    """Poll accepted mobile payments until a verified final result is known."""
+    from modules.jobs.queue import enqueue
+    from modules.whatsapp.models import WhatsAppOrder
+    from modules.whatsapp.payment_service import WhatsAppPaymentService
+    db = SessionLocal()
+    try:
+        order = db.query(WhatsAppOrder).filter(WhatsAppOrder.id == UUID(str(payload['order_id']))).first()
+        if not order:
+            return {'status': 'not_found'}
+        if order.payment_status in ('paid', 'completed', 'failed', 'cancelled', 'refunded'):
+            return {'status': order.payment_status}
+        result = WhatsAppPaymentService(db).check_payment_status(str(order.id))
+        outcome = result.get('status')
+        if outcome in ('processing', 'unavailable', 'error', None):
+            raise RuntimeError('Payment is still pending or the provider could not be checked')
+        if outcome in ('paid', 'failed', 'cancelled', 'refunded'):
+            if not enqueue('notify_whatsapp_payment', {'order_id': str(order.id), 'status': outcome}, max_attempts=8):
+                raise RuntimeError('Could not schedule payment notification')
+        return {'status': outcome}
+    finally:
+        db.close()
+
+
+@handler('notify_whatsapp_payment')
+async def notify_whatsapp_payment(payload: dict) -> dict:
+    """Deliver a verified payment result; the job worker retries failures."""
+    from modules.whatsapp.models import WhatsAppOrder
+    from modules.whatsapp.router import _notify_payment_result
+    db = SessionLocal()
+    try:
+        order = db.query(WhatsAppOrder).filter(WhatsAppOrder.id == UUID(str(payload['order_id']))).first()
+        if not order or order.payment_status != payload.get('status'):
+            return {'status': 'superseded'}
+        await _notify_payment_result(db, order, payload['status'])
+        return {'status': 'sent'}
+    finally:
+        db.close()
+
+
 @handler("sync_store_knowledge")
 def sync_store_knowledge(payload: dict) -> dict:
     """Embed a store's FAQs (and optionally products) into the knowledge base.

@@ -981,11 +981,9 @@ async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_d
             customer_order.payment_status = 'refunded'
         db.commit()
     if order.payment_status in ('paid', 'failed', 'cancelled', 'refunded') and order.payment_status != previous_status:
-        try:
-            await _notify_payment_result(db, order, order.payment_status)
-        except Exception:
-            # Payment records stay authoritative even when WhatsApp is down.
-            logger.exception('Could not notify customer of payment status for order %s', order_number)
+        from modules.jobs.queue import enqueue
+        if not enqueue('notify_whatsapp_payment', {'order_id': str(order.id), 'status': order.payment_status}, max_attempts=8):
+            logger.error('Could not schedule payment notification for order %s', order_number)
     return {'received': True}
 
 

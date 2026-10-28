@@ -120,6 +120,11 @@ class WhatsAppPaymentService:
                     payment_reference=paynow_ref,
                     payment_poll_url=poll_url
                 )
+                # Paynow may accept the request before the wallet later rejects
+                # it, and a callback is not guaranteed to arrive promptly.
+                from modules.jobs.queue import enqueue
+                if not enqueue('poll_whatsapp_payment', {'order_id': str(order_id)}, max_attempts=12, delay_seconds=20):
+                    logger.error('Could not schedule payment status check for order %s', order_number)
 
                 return {
                     "success": True,
