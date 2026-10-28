@@ -45,15 +45,15 @@ def get_test_db():
         yield db
 app.dependency_overrides[get_db] = get_test_db
 client = TestClient(app)
-def form(amount='15.00', signature=True, status='Paid'):
-    fields = [('reference', 'Order PP-123'), ('paynowreference', 'PAY-1'), ('amount', amount), ('status', status)]
+def form(amount='15.00', signature=True, status='Paid', reference='Order PP-123'):
+    fields = [('reference', reference), ('paynowreference', 'PAY-1'), ('amount', amount), ('status', status)]
     digest = hashlib.sha512((''.join(value for _, value in fields) + os.environ['PAYNOW_INTEGRATION_KEY']).encode()).hexdigest().upper()
     return urlencode(fields + [('hash', digest if signature else 'BAD')])
 url = '/v1/api/whatsapp/paynow-callback'
 with patch('modules.jobs.queue.enqueue', return_value='job-id') as notify:
     assert client.post(url, content=form(signature=False)).status_code == 403
     assert client.post(url, content=form(amount='14.00')).status_code == 400
-    assert client.post(url, content=form(status='Failed')).status_code == 200
+    assert client.post(url, content=form(status='Failed', reference='Order+PP-123')).status_code == 200
     with Testing() as db:
         assert db.query(WhatsAppOrder).first().payment_status == 'failed'
         assert db.query(CustomerOrder).first().payment_status == 'failed'

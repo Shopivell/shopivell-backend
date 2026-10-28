@@ -16,8 +16,8 @@ class DB:
     def commit(self): pass
 class Response:
     status_code = 200
-    def __init__(self, status, signature=True):
-        fields = [('reference', 'Order PP-123'), ('paynowreference', '123'), ('amount', '15.00'), ('status', status)]
+    def __init__(self, status, signature=True, reference='Order PP-123'):
+        fields = [('reference', reference), ('paynowreference', '123'), ('amount', '15.00'), ('status', status)]
         digest = hashlib.sha512((''.join(v for _, v in fields) + 'test-key').encode()).hexdigest().upper()
         self.text = urlencode(fields + [('hash', digest if signature else 'BAD')])
     def raise_for_status(self): pass
@@ -31,6 +31,9 @@ with patch('requests.post', return_value=Response('Paid', False)):
 with patch('requests.post', return_value=Response('Failed')):
     assert service.check_payment_status('id')['status'] == 'failed'
     assert updates[-1]['payment_status'] == 'failed'
+with patch('requests.post', return_value=Response('Cancelled', reference='Order+PP-123')):
+    assert service.check_payment_status('id')['status'] == 'cancelled'
+    assert updates[-1]['payment_status'] == 'cancelled'
 with patch('requests.post', return_value=Response('Paid')):
     assert service.check_payment_status('id')['paid'] is True
     assert updates[-1]['payment_status'] == 'paid'

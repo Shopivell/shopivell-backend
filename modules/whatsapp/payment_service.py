@@ -235,7 +235,7 @@ class WhatsAppPaymentService:
                     signature = hashlib.sha512((''.join(value for name, value in fields if name.lower() != 'hash') + key).encode()).hexdigest().upper()
                     if not key or not hmac.compare_digest(signature, values.get('hash', '').upper()):
                         raise ValueError('Invalid payment status signature')
-                    if values.get('reference') != f'Order {result[4]}' or Decimal(values.get('amount', '')) != Decimal(str(result[3])).quantize(Decimal('0.01')):
+                    if values.get('reference') not in (f'Order {result[4]}', f'Order+{result[4]}') or Decimal(values.get('amount', '')) != Decimal(str(result[3])).quantize(Decimal('0.01')):
                         raise ValueError('Payment status does not match the order')
                     if result[1] and not str(result[1]).startswith('PNW-') and values.get('paynowreference') != str(result[1]):
                         raise ValueError('Payment reference does not match the order')

@@ -920,7 +920,7 @@ async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_d
     if not hmac.compare_digest(expected, data.get('hash', '').upper()):
         raise HTTPException(status_code=403, detail='Invalid payment signature')
     reference = data.get('reference', '')
-    if not reference.startswith('Order '):
+    if not reference.startswith(('Order ', 'Order+')):
         raise HTTPException(status_code=400, detail='Unknown order reference')
     order_number = reference[len('Order '):].strip()
     order = db.query(WhatsAppOrder).filter(WhatsAppOrder.order_number == order_number).with_for_update().first()

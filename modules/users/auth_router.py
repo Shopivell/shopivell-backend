@@ -951,7 +951,15 @@ async def set_active_store(
     user = db.query(User).filter(User.id == current_user.id).first()
     user.last_active_store_id = store.id
     db.commit()
-    return {"success": True, "store_id": str(store.id)}
+    # Issue the selected store's role in the same response so the UI does not
+    # depend on a second refresh request racing with another token refresh.
+    role = _store_role(user, store)
+    tokens = jwt_auth.create_tokens(user_id=str(user.id), email=user.email, role=role,
+                                    store_id=str(store.id), agency_id=current_user.agency_id)
+    return {"success": True, "store_id": str(store.id), "role": role,
+            "permissions": _member_permissions(db, user, store),
+            "access_token": tokens.access_token, "refresh_token": tokens.refresh_token,
+            "token_type": "bearer"}
 
 
 class StoreMemberInput(BaseModel):
