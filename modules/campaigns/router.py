@@ -1,6 +1,6 @@
 # modules/campaigns/router.py
 import os
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -26,6 +26,8 @@ from .schemas import (
     QuickLaunchRequest, QuickLaunchResponse
 )
 from .service import CampaignService
+from utils.jwt_auth import get_current_user
+from modules.users.access import require_store_capability
 
 # Import Facebook posting functionality
 try:
@@ -133,7 +135,39 @@ def _check_copy_compliance(text: str):
         return True, {}
 
 
-campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"])
+async def _authorize_campaign_request(request: Request, db: Session = Depends(get_db),
+                                      current_user=Depends(get_current_user)):
+    params = request.path_params
+    campaign = None
+    try:
+        if params.get('campaign_id'):
+            campaign = db.query(UrlCampaign).filter(UrlCampaign.id == uuid.UUID(str(params['campaign_id']))).first()
+        elif params.get('ad_set_id'):
+            ad_set = db.query(UrlAdSet).filter(UrlAdSet.id == uuid.UUID(str(params['ad_set_id']))).first()
+            campaign = db.query(UrlCampaign).filter(UrlCampaign.id == ad_set.campaign_id).first() if ad_set else None
+        elif params.get('ad_content_id'):
+            content = db.query(UrlAdContent).filter(UrlAdContent.id == uuid.UUID(str(params['ad_content_id']))).first()
+            ad_set = db.query(UrlAdSet).filter(UrlAdSet.id == content.ad_set_id).first() if content else None
+            campaign = db.query(UrlCampaign).filter(UrlCampaign.id == ad_set.campaign_id).first() if ad_set else None
+    except ValueError:
+        campaign = None
+    if any(params.get(key) for key in ('campaign_id', 'ad_set_id', 'ad_content_id')) and not campaign:
+        raise HTTPException(status_code=404, detail='Campaign resource not found')
+    store_id = campaign.store_id if campaign else params.get('store_id') or request.query_params.get('store_id')
+    if not store_id and request.method in ('POST', 'PUT') and 'application/json' in request.headers.get('content-type', ''):
+        try:
+            body = await request.json()
+            store_id = body.get('store_id') if isinstance(body, dict) else None
+        except ValueError:
+            pass
+    store_id = store_id or current_user.store_id
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Store could not be determined')
+    require_store_capability(db, current_user, store_id, 'ads')
+
+
+campaign_router = APIRouter(prefix="/api/url-campaigns", tags=["url-campaigns"],
+                            dependencies=[Depends(_authorize_campaign_request)])
 
 
 class ClassifyAdCategoryRequest(BaseModel):

@@ -3,7 +3,7 @@ import math
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_
 
@@ -20,8 +20,59 @@ from modules.delivery.schemas import (
     DriverCreate, DriverUpdate, DriverResponse,
 )
 from modules.orders.models import CustomerOrder
+from modules.users.access import require_store_capability
+from utils.jwt_auth import get_current_user
 
-delivery_router = APIRouter(prefix="/api/delivery", tags=["Delivery"])
+
+async def _authorize_delivery_request(request: Request, db: Session = Depends(get_db),
+                                      current_user=Depends(get_current_user)):
+    """Resolve the affected store from the route or resource, never from a JWT claim."""
+    params = request.path_params
+    store_id = params.get('store_id')
+    resources = {'delivery_id': Delivery, 'zone_id': DeliveryZone,
+                 'vehicle_id': Vehicle, 'driver_id': Driver}
+    for key, model in resources.items():
+        if key in params:
+            try:
+                obj = db.query(model).filter(model.id == uuid.UUID(str(params[key]))).first()
+            except ValueError:
+                raise HTTPException(status_code=404, detail='Delivery resource not found')
+            if not obj:
+                raise HTTPException(status_code=404, detail='Delivery resource not found')
+            store_id = obj.store_id
+            break
+    if 'tracking_number' in params:
+        obj = db.query(Delivery).filter(Delivery.tracking_number == params['tracking_number']).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail='Delivery not found')
+        store_id = obj.store_id
+    payload = {}
+    if request.method in ('POST', 'PUT', 'PATCH'):
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if not store_id:
+            store_id = payload.get('store_id')
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Store could not be determined')
+    store = require_store_capability(db, current_user, store_id, 'deliveries')
+    # Linked objects must belong to the same store as the delivery.
+    for field, model in [('order_id', CustomerOrder), ('delivery_zone_id', DeliveryZone),
+                         ('zone_id', DeliveryZone), ('vehicle_id', Vehicle), ('driver_id', Driver)]:
+        if payload.get(field):
+            try:
+                related = db.query(model).filter(model.id == uuid.UUID(str(payload[field]))).first()
+            except ValueError:
+                related = None
+            if not related or related.store_id != store.id:
+                raise HTTPException(status_code=403, detail='Linked resource belongs to another store')
+
+
+delivery_router = APIRouter(prefix="/api/delivery", tags=["Delivery"],
+                            dependencies=[Depends(_authorize_delivery_request)])
 
 
 # ──────────────────────────────── Delivery Zones ────────────────────────────────
@@ -488,7 +539,7 @@ def assign_driver_vehicle(
     if not delivery:
         raise HTTPException(status_code=404, detail="Delivery not found")
 
-    driver = db.query(Driver).filter(Driver.id == payload.driver_id).first()
+    driver = db.query(Driver).filter(Driver.id == payload.driver_id, Driver.store_id == delivery.store_id).first()
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
 
@@ -499,7 +550,7 @@ def assign_driver_vehicle(
     # Use the vehicle from payload, or fallback to driver's assigned vehicle
     vid = payload.vehicle_id or driver.vehicle_id
     if vid:
-        vehicle = db.query(Vehicle).filter(Vehicle.id == vid).first()
+        vehicle = db.query(Vehicle).filter(Vehicle.id == vid, Vehicle.store_id == delivery.store_id).first()
         if vehicle:
             delivery.vehicle_id = vehicle.id
             vehicle.status = VehicleStatus.IN_USE

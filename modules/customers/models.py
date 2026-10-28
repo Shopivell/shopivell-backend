@@ -23,7 +23,7 @@ class Customer(Base):
     last_name: Mapped[str] = mapped_column(String(100), nullable=False)
     # Email is unique PER STORE (see uq_customer_store_email), not globally — two
     # different stores may have the same customer email.
-    email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)

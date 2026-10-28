@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
 
 from database import get_db
-from dependencies import get_current_user, CurrentUser
+from dependencies import get_current_user, get_current_user_optional, CurrentUser
 from modules.orders.models import CustomerOrder
 from modules.orders.schemas import (
     CustomerOrderCreate,
@@ -19,7 +19,37 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-order_router = APIRouter(prefix="/api/orders", tags=["orders"])
+async def _authorize_order_request(request: Request, db: Session = Depends(get_db),
+                                   current_user=Depends(get_current_user_optional)):
+    # The customer checkout form must be able to create an unpaid order.
+    if request.method == 'POST' and request.url.path.rstrip('/').endswith('/orders/public'):
+        return
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    order_id = request.path_params.get('order_id')
+    if order_id:
+        try:
+            order = db.query(CustomerOrder).filter(CustomerOrder.id == uuid.UUID(str(order_id))).first()
+        except ValueError:
+            order = None
+        if not order:
+            raise HTTPException(status_code=404, detail='Order not found')
+        store_id = order.store_id
+    else:
+        store_id = request.path_params.get('store_id') or request.query_params.get('store_id')
+        if not store_id and request.method == 'POST':
+            try:
+                store_id = (await request.json()).get('store_id')
+            except (ValueError, AttributeError):
+                pass
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Store could not be determined')
+    from modules.users.access import require_store_capability
+    require_store_capability(db, current_user, store_id, 'orders')
+
+
+order_router = APIRouter(prefix="/api/orders", tags=["orders"],
+                         dependencies=[Depends(_authorize_order_request)])
 
 
 def _auto_create_delivery(db: Session, order: CustomerOrder, delivery_address: str, delivery_city: str = None):
@@ -367,6 +397,9 @@ async def create_order(
         # Create order
         db_order = CustomerOrder(**order_dict)
         db.add(db_order)
+        if db_order.payment_status == 'paid':
+            from modules.customers.paid_order import link_paid_order_customer
+            link_paid_order_customer(db, db_order)
         db.commit()
         db.refresh(db_order)
 
@@ -426,6 +459,9 @@ async def update_order(
     for field, value in update_data.items():
         setattr(db_order, field, value)
 
+    if db_order.payment_status == 'paid':
+        from modules.customers.paid_order import link_paid_order_customer
+        link_paid_order_customer(db, db_order)
     db.commit()
     db.refresh(db_order)
 
@@ -458,6 +494,9 @@ async def update_order_status(
     if 'tracking_info' in status_update:
         db_order.tracking_info = status_update['tracking_info']
 
+    if db_order.payment_status == 'paid':
+        from modules.customers.paid_order import link_paid_order_customer
+        link_paid_order_customer(db, db_order)
     db.commit()
     db.refresh(db_order)
 

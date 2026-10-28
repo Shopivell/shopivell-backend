@@ -14,6 +14,9 @@ class Product(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    # Branch catalogues may state only yes/no rather than a stock count.
+    in_stock: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     price: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     vendor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

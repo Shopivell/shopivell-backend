@@ -423,8 +423,9 @@ class StoreBotConfigResponse(StoreBotConfigBase):
 
     id: UUID
     store_id: UUID
-    created_at: datetime
-    updated_at: datetime
+    # Older store configurations may predate these timestamps.
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 # =============================================================================

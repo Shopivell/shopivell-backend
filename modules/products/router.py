@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -10,14 +10,85 @@ from pathlib import Path
 
 from database import get_db
 from modules.products.models import Product, Collection, CollectionProduct
+from modules.products.catalogue_sync import sync_product_to_bot
+from modules.whatsapp.models import CompanyKnowledge
 from modules.products.schemas import (
     ProductCreate, ProductResponse, ProductUpdate, ProductListResponse,
     CollectionCreate, CollectionResponse, CollectionUpdate, CollectionListResponse,
     InventoryListResponse, InventoryItemResponse, InventoryUpdate
 )
 from utils.cache import cache, CacheConfig, generate_cache_key, cache_invalidator as invalidator
+from utils.jwt_auth import get_current_user_optional
+from modules.users.access import require_store_capability
 
-products_router = APIRouter(prefix="/api/products", tags=["products"])
+
+async def _authorize_products_request(request: Request, db: Session = Depends(get_db),
+                                      current_user=Depends(get_current_user_optional)):
+    path = request.url.path
+    if request.method == 'GET' and '/images/' in path:
+        return
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    params = request.path_params
+    store_id = params.get('store_id') or request.query_params.get('store_id')
+    resource_stores = []
+    for key, model in (('product_id', Product), ('collection_id', Collection)):
+        if params.get(key):
+            try:
+                entity = db.query(model).filter(model.id == uuid.UUID(str(params[key]))).first()
+            except ValueError:
+                entity = None
+            if not entity:
+                raise HTTPException(status_code=404, detail='Product resource not found')
+            resource_stores.append(entity.store_id)
+    if resource_stores:
+        if any(value != resource_stores[0] for value in resource_stores):
+            raise HTTPException(status_code=403, detail='Resources belong to different stores')
+        store_id = resource_stores[0]
+    if params.get('sku'):
+        entity = db.query(Product).filter(Product.sku == params['sku']).first()
+        if not entity:
+            raise HTTPException(status_code=404, detail='Product not found')
+        store_id = entity.store_id
+    payload = None
+    if request.method in ('POST', 'PUT', 'PATCH') and 'application/json' in request.headers.get('content-type', ''):
+        try:
+            payload = await request.json()
+        except ValueError:
+            pass
+    if not store_id and isinstance(payload, dict):
+        store_id = payload.get('store_id')
+    # The product and collection list queries otherwise return every store.
+    if request.method == 'GET' and path.rstrip('/').endswith(('/products', '/products/collections')) and not store_id:
+        raise HTTPException(status_code=400, detail='Store is required')
+    store_id = store_id or current_user.store_id
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Store could not be determined')
+    store = require_store_capability(db, current_user, store_id, 'products')
+    # Reject mixed-store bulk updates and cross-store collection membership.
+    rows = payload if isinstance(payload, list) else ([payload] if isinstance(payload, dict) else [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ids = list(row.get('product_ids') or []) + ([row['product_id']] if row.get('product_id') else [])
+        for item_id in ids:
+            try:
+                item = db.query(Product).filter(Product.id == uuid.UUID(str(item_id))).first()
+            except ValueError:
+                item = None
+            if not item or item.store_id != store.id:
+                raise HTTPException(status_code=403, detail='Product belongs to another store')
+        for collection_id in row.get('collections') or []:
+            try:
+                collection = db.query(Collection).filter(Collection.id == uuid.UUID(str(collection_id))).first()
+            except ValueError:
+                collection = None
+            if not collection or collection.store_id != store.id:
+                raise HTTPException(status_code=403, detail='Collection belongs to another store')
+
+
+products_router = APIRouter(prefix="/api/products", tags=["products"],
+                            dependencies=[Depends(_authorize_products_request)])
 
 # Image upload configuration
 UPLOAD_DIR = Path("uploads")
@@ -64,7 +135,7 @@ async def get_inventory_items(
         total = query.count()
         
         # Apply pagination
-        products = query.offset(skip).limit(limit).all()
+        products = query.order_by(Product.created_at.asc(), Product.id.asc()).offset(skip).limit(limit).all()
         
         # Convert to inventory items format
         inventory_items = []
@@ -423,7 +494,7 @@ async def get_collection_image(filename: str):
 @products_router.get("/", response_model=ProductListResponse)
 async def get_products(
     skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=100),
+    limit: int = Query(10, ge=1, le=5000),
     store_id: Optional[uuid.UUID] = None,
     category: Optional[str] = None,
     status: Optional[str] = None,
@@ -465,7 +536,7 @@ async def get_products(
         total = query.count()
 
         # Apply pagination
-        products = query.offset(skip).limit(limit).all()
+        products = query.order_by(Product.created_at.asc(), Product.id.asc()).offset(skip).limit(limit).all()
 
         result = ProductListResponse(
             products=products,
@@ -497,7 +568,7 @@ async def download_product_template():
     ws.title = "Products"
 
     headers = [
-        "title", "description", "category", "price", "sku", "barcode",
+        "title", "description", "category", "branch", "in_stock", "price", "sku", "barcode",
         "quantity", "weight", "weight_unit", "status", "vendor", "tags", "type", "image_url"
     ]
 
@@ -518,7 +589,7 @@ async def download_product_template():
         ws.column_dimensions[cell.column_letter].width = max(15, len(header) + 5)
 
     sample_data = [
-        "Sample Product", "A great product description", "Clothing", 29.99,
+        "Sample Product", "A great product description", "Clothing", "Main", "Yes", 29.99,
         "SKU-001", "123456789", 100, 0.5, "kg", "Active", "BrandName",
         "summer, new", "Physical", ""
     ]
@@ -534,6 +605,8 @@ async def download_product_template():
         ("title", "Product name", "Yes", "Blue T-Shirt"),
         ("description", "Product description", "No", "Cotton t-shirt"),
         ("category", "Product category", "No", "Clothing"),
+        ("branch", "Branch name", "No", "Main"),
+        ("in_stock", "Yes, No, or leave blank if unknown", "No", "Yes"),
         ("price", "Product price", "Yes", "29.99"),
         ("sku", "Stock keeping unit code", "No", "BTS-001"),
         ("barcode", "Product barcode", "No", "123456789"),
@@ -594,8 +667,18 @@ async def bulk_upload_products(
 
     content = await file.read()
     created_products = []
+    updated_products = []
     failed_products = []
     rows_to_process = []
+    # A branch and SKU identify a row; products without a SKU use their title.
+    # Ambiguous existing keys are never silently merged.
+    existing_index = {}
+    for existing in db.query(Product).filter(Product.store_id == store_id).all():
+        branch_key = (existing.branch or '').strip().casefold()
+        sku = (existing.sku or '').strip()
+        identity = ('sku', sku.casefold()) if sku and sku.lower() != 'no sku' else ('title', existing.title.strip().casefold())
+        key = (branch_key, *identity)
+        existing_index[key] = None if key in existing_index else existing
 
     if filename.endswith('.csv'):
         csv_content = io.StringIO(content.decode('utf-8'))
@@ -661,6 +744,16 @@ async def bulk_upload_products(
                 except (ValueError, TypeError):
                     pass
 
+            if ((row.get('in_stock') or '').strip().lower() in ('yes', 'true')
+                    and (row.get('quantity') or '').strip() and quantity <= 0):
+                failed_products.append({'row': row_num, 'title': title,
+                                        'error': 'In-stock products must have a positive quantity when quantity is provided'})
+                continue
+            stock_text = (row.get('in_stock') or '').strip().lower()
+            if stock_text and stock_text not in ('yes', 'no', 'true', 'false'):
+                failed_products.append({'row': row_num, 'title': title, 'error': 'in_stock must be Yes, No or blank'})
+                continue
+
             weight = 0.0
             if row.get('weight'):
                 try:
@@ -668,17 +761,49 @@ async def bulk_upload_products(
                 except (ValueError, TypeError):
                     pass
 
+            branch = (row.get('branch') or '').strip() or None
+            sku = (row.get('sku') or '').strip() or 'No SKU'
+            identity = ('sku', sku.casefold()) if sku.lower() != 'no sku' else ('title', title.casefold())
+            key = ((branch or '').casefold(), *identity)
+            if key in existing_index and existing_index[key] is None:
+                failed_products.append({'row': row_num, 'title': title, 'error': 'Multiple existing products match this branch and SKU'})
+                continue
+            product = existing_index.get(key)
+            if product:
+                if (stock_text in ('yes', 'true') and product.inventory_tracked
+                        and not (row.get('quantity') or '').strip()
+                        and not (product.available or product.on_hand)):
+                    failed_products.append({'row': row_num, 'title': title,
+                        'error': 'Enter a positive quantity for this tracked product'})
+                    continue
+                product.title, product.price = title, price
+                for field in ('description', 'category', 'barcode', 'vendor', 'tags', 'type', 'image_url', 'weight_unit', 'status'):
+                    value = row.get(field)
+                    if value is not None and str(value).strip():
+                        setattr(product, field, str(value).strip())
+                if stock_text:
+                    product.in_stock = stock_text in ('yes', 'true')
+                if (row.get('quantity') or '').strip():
+                    product.quantity = product.available = product.on_hand = quantity
+                    product.inventory_tracked = True
+                if (row.get('weight') or '').strip():
+                    product.weight = weight
+                updated_products.append(product)
+                continue
             product = Product(
                 store_id=store_id,
                 title=title,
                 description=row.get('description'),
                 category=row.get('category'),
+                branch=branch,
+                in_stock={'yes': True, 'true': True, 'no': False, 'false': False}.get(stock_text),
                 price=price,
-                sku=row.get('sku') or 'No SKU',
+                sku=sku,
                 barcode=row.get('barcode'),
                 quantity=quantity,
                 available=quantity,
                 on_hand=quantity,
+                inventory_tracked=bool((row.get('quantity') or '').strip()),
                 weight=weight,
                 weight_unit=row.get('weight_unit') or 'kg',
                 status=row.get('status') or 'Active',
@@ -688,6 +813,7 @@ async def bulk_upload_products(
                 image_url=row.get('image_url'),
             )
             db.add(product)
+            existing_index[key] = product
             created_products.append(product)
 
         except Exception as e:
@@ -697,12 +823,18 @@ async def bulk_upload_products(
                 "error": str(e)
             })
 
+    db.flush()
+    unique_products = {product.id: product for product in created_products + updated_products}
+    for product in unique_products.values():
+        sync_product_to_bot(db, product)
     db.commit()
+    invalidator.invalidate_product()
     for product in created_products:
         db.refresh(product)
 
     return {
         "created_count": len(created_products),
+        "updated_count": len(updated_products),
         "failed_count": len(failed_products),
         "failed_products": failed_products,
     }
@@ -791,11 +923,18 @@ async def create_product(product_data: ProductCreate, db: Session = Depends(get_
         # Special handling for SKU
         if not product_dict.get('sku'):
             product_dict['sku'] = 'No SKU'
+        if product_dict.get('quantity') and not product_dict.get('available') and not product_dict.get('on_hand'):
+            product_dict['available'] = product_dict['quantity']
+            product_dict['on_hand'] = product_dict['quantity']
+        if (product_dict.get('in_stock') is True and product_dict.get('inventory_tracked')
+                and not (product_dict.get('available') or product_dict.get('on_hand'))):
+            raise HTTPException(status_code=400, detail='Enter a positive quantity or disable inventory tracking for an in-stock item')
         
         # Check if SKU already exists (only if not using default)
         if product_dict['sku'] != 'No SKU':
             existing_product = db.query(Product).filter(
-                Product.sku == product_dict['sku']
+                Product.sku == product_dict['sku'], Product.store_id == product_dict['store_id'],
+                Product.branch == product_dict.get('branch')
             ).first()
             
             if existing_product:
@@ -808,6 +947,7 @@ async def create_product(product_data: ProductCreate, db: Session = Depends(get_
         db_product = Product(**product_dict)
         db.add(db_product)
         db.flush()
+        sync_product_to_bot(db, db_product)
         
         # Handle collections if provided
         if product_data.collections:
@@ -868,7 +1008,8 @@ async def update_product(
         # Check if SKU already exists (if being updated and not using default)
         if 'sku' in update_data and update_data['sku'] != 'No SKU' and update_data['sku'] != db_product.sku:
             existing_product = db.query(Product).filter(
-                Product.sku == update_data['sku']
+                Product.sku == update_data['sku'], Product.store_id == db_product.store_id,
+                Product.branch == update_data.get('branch', db_product.branch), Product.id != db_product.id
             ).first()
             
             if existing_product:
@@ -880,6 +1021,13 @@ async def update_product(
         # Update fields
         for field, value in update_data.items():
             setattr(db_product, field, value)
+        if 'quantity' in update_data and 'available' not in update_data and 'on_hand' not in update_data:
+            db_product.available = update_data['quantity']
+            db_product.on_hand = update_data['quantity']
+        if (db_product.in_stock is True and db_product.inventory_tracked
+                and not (db_product.available or db_product.on_hand)):
+            raise HTTPException(status_code=400, detail='Enter a positive quantity or disable inventory tracking for an in-stock item')
+        sync_product_to_bot(db, db_product)
         
         db.commit()
         db.refresh(db_product)
@@ -914,6 +1062,9 @@ async def delete_product(product_id: uuid.UUID, db: Session = Depends(get_db)):
         db.query(CollectionProduct).filter(
             CollectionProduct.product_id == product_id
         ).delete()
+        db.query(CompanyKnowledge).filter(CompanyKnowledge.store_id == db_product.store_id,
+            CompanyKnowledge.source_id == db_product.id, CompanyKnowledge.content_type == 'product').update(
+                {'is_active': False}, synchronize_session=False)
         
         db.delete(db_product)
         db.commit()
@@ -1016,7 +1167,8 @@ async def create_collection(collection_data: CollectionCreate, db: Session = Dep
     try:
         # Check if collection title already exists
         existing_collection = db.query(Collection).filter(
-            Collection.title == collection_data.title
+            Collection.title == collection_data.title,
+            Collection.store_id == collection_data.store_id
         ).first()
         
         if existing_collection:

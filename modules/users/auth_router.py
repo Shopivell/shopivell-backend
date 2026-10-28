@@ -2,19 +2,20 @@
 import os
 import traceback
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr, Field
 import uuid
 import os
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 import requests
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from database import get_db
-from modules.users.models import User, UserRole
+from modules.users.models import User, UserRole, StoreMember
 from modules.users.schemas import (
-    GoogleAuthRequest, GoogleSignupRequest, LoginRequest, LoginVerifyRequest, LoginResponse
+    GoogleAuthRequest, GoogleSignupRequest, LoginRequest, LoginVerifyRequest, LoginResponse, UserResponse
 )
 from modules.stores.models import Store, StoreSetupSession
 from utils.Verification_Codes_Services import VerificationCodeService
@@ -51,6 +52,35 @@ def generate_unique_slug(db: Session, base_name: str) -> str:
     return f"{base_slug}-{uuid_module.uuid4().hex[:8]}"
 
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
+
+
+def _accessible_stores(db: Session, user_id):
+    memberships = db.query(StoreMember.store_id).filter(
+        StoreMember.user_id == user_id, StoreMember.is_active.is_(True))
+    return db.query(Store).filter((Store.owner_id == user_id) | Store.id.in_(memberships))
+
+
+def _active_store_for_user(db: Session, user):
+    query = _accessible_stores(db, user.id)
+    if user.last_active_store_id:
+        store = query.filter(Store.id == user.last_active_store_id).first()
+        if store:
+            return store
+    return query.order_by(Store.created_at.asc()).first()
+
+
+def _store_role(user, store):
+    if store and store.owner_id != user.id:
+        return UserRole.STAFF.value
+    return user.role.value if hasattr(user.role, 'value') else user.role
+
+
+def _member_permissions(db, user, store):
+    if not store or store.owner_id == user.id:
+        return []
+    member = db.query(StoreMember).filter(StoreMember.store_id == store.id,
+        StoreMember.user_id == user.id, StoreMember.is_active.is_(True)).first()
+    return member.permissions if member else []
 
 # Google OAuth configuration
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "664377144183-g2si02jr6d7ulhc101sd9e037dkkji0u.apps.googleusercontent.com")
@@ -256,7 +286,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
 
         # Check store and setup session status
         # Get all stores ordered by created_at (first created = default)
-        stores = db.query(Store).filter(Store.owner_id == user.id).order_by(Store.created_at.asc()).all()
+        stores = _accessible_stores(db, user.id).order_by(Store.created_at.asc()).all()
         stores_count = len(stores)
         # Prefer whichever store the user was last working in (so it's restored
         # across logout/login here too, same as /verify-login, /refresh and /me)
@@ -332,7 +362,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         tokens = jwt_auth.create_tokens(
             user_id=str(verified_user.id),
             email=verified_user.email,
-            role=verified_user.role.value if hasattr(verified_user.role, 'value') else verified_user.role,
+            role=_store_role(verified_user, store),
             store_id=str(store.id) if store else None,
             agency_id=str(agency_id) if agency_id else None
         )
@@ -345,7 +375,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
             "name": verified_user.name,
             "email": verified_user.email,
             "phone_number": verified_user.phone_number,
-            "role": verified_user.role.value if hasattr(verified_user.role, 'value') else verified_user.role,
+            "role": _store_role(verified_user, store),
             "is_verified": bool(verified_user.is_verified),
             "is_active": bool(verified_user.is_active),
             "google_id": verified_user.google_id,
@@ -359,6 +389,7 @@ async def google_auth(google_data: GoogleSignupRequest, db: Session = Depends(ge
         # Create response - ensure all UUIDs are converted to strings
         response_data = {
             "user": user_dict,
+            "permissions": _member_permissions(db, verified_user, store),
             "store_id": str(store.id) if store else None,
             "agency_id": str(agency_id) if agency_id else None,
             "stores_count": stores_count,  # Number of stores user owns
@@ -397,6 +428,9 @@ async def send_login_code(login_data: LoginRequest, db: Session = Depends(get_db
     try:
         # Find user by email
         user = db.query(User).filter(User.email == login_data.email).first()
+
+        if user and not user.is_active:
+            raise HTTPException(status_code=403, detail="This account is disabled")
 
         is_new_user = False
         if not user:
@@ -473,6 +507,8 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="This account is disabled")
         
         # Mark user as verified if not already
         if not user.is_verified:
@@ -484,13 +520,9 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         # working in (so it's restored across logout/login) over an arbitrary .first()
         # match, falling back to .first() if last_active_store_id is unset, stale
         # (store deleted), or belongs to a different owner.
-        store = None
-        if user.last_active_store_id:
-            store = db.query(Store).filter(
-                Store.id == user.last_active_store_id, Store.owner_id == user.id
-            ).first()
-        if not store:
-            store = db.query(Store).filter(Store.owner_id == user.id).first()
+        store = _active_store_for_user(db, user)
+        if user.role == UserRole.STAFF and not store:
+            raise HTTPException(status_code=403, detail="No active store access")
         # Only consider has_store=True if setup is actually completed
         has_store = store is not None and store.is_setup_completed
 
@@ -555,13 +587,14 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         tokens = jwt_auth.create_tokens(
             user_id=str(user.id),
             email=user.email,
-            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            role=_store_role(user, store),
             store_id=str(store.id) if store else None,
             agency_id=str(agency_id) if agency_id else None
         )
 
         return LoginResponse(
-            user=user,
+            user=UserResponse.model_validate(user).model_copy(update={'role': _store_role(user, store)}),
+            permissions=_member_permissions(db, user, store),
             store_id=store.id if store else None,
             agency_id=agency_id if agency_id else None,
             has_active_setup_session=has_active_session,
@@ -619,7 +652,7 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
 
         # Check store and setup session status
         # Get all stores ordered by created_at (first created = default)
-        stores = db.query(Store).filter(Store.owner_id == user.id).order_by(Store.created_at.asc()).all()
+        stores = _accessible_stores(db, user.id).order_by(Store.created_at.asc()).all()
         stores_count = len(stores)
         # Prefer whichever store the user was last working in (so it's restored
         # across logout/login here too, same as /verify-login, /refresh and /me)
@@ -695,7 +728,7 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
         tokens = jwt_auth.create_tokens(
             user_id=str(user.id),
             email=user.email,
-            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            role=_store_role(user, store),
             store_id=str(store.id) if store else None,
             agency_id=str(agency_id) if agency_id else None
         )
@@ -703,7 +736,8 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
         refresh_token = tokens.refresh_token
 
         return LoginResponse(
-            user=user,
+            user=UserResponse.model_validate(user).model_copy(update={'role': _store_role(user, store)}),
+            permissions=_member_permissions(db, user, store),
             store_id=store.id if store else None,
             agency_id=agency_id if agency_id else None,
             stores_count=stores_count,  # Number of stores user owns
@@ -729,9 +763,16 @@ async def verify_and_login(verify_data: LoginVerifyRequest, db: Session = Depend
 
 # Token refresh endpoint
 @auth_router.post("/refresh")
-async def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
+async def refresh_token(request: Request, refresh_token: str = None, db: Session = Depends(get_db)):
     """Get a new access token using a refresh token"""
     try:
+        if not refresh_token:
+            try:
+                refresh_token = (await request.json()).get('refresh_token')
+            except (ValueError, AttributeError):
+                refresh_token = None
+        if not refresh_token:
+            raise HTTPException(status_code=401, detail="Refresh token required")
         # Verify refresh token
         payload = jwt_auth.verify_token(refresh_token, token_type="refresh")
         
@@ -742,15 +783,13 @@ async def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found"
             )
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="This account is disabled")
         
         # Get store and agency - same last-active-store preference as /verify-login.
-        store = None
-        if user.last_active_store_id:
-            store = db.query(Store).filter(
-                Store.id == user.last_active_store_id, Store.owner_id == user.id
-            ).first()
-        if not store:
-            store = db.query(Store).filter(Store.owner_id == user.id).first()
+        store = _active_store_for_user(db, user)
+        if user.role == UserRole.STAFF and not store:
+            raise HTTPException(status_code=403, detail="No active store access")
 
         from sqlalchemy import text
         agency_id = None
@@ -767,7 +806,7 @@ async def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
         tokens = jwt_auth.create_tokens(
             user_id=str(user.id),
             email=user.email,
-            role=user.role.value if hasattr(user.role, 'value') else user.role,
+            role=_store_role(user, store),
             store_id=str(store.id) if store else None,
             agency_id=str(agency_id) if agency_id else None
         )
@@ -814,13 +853,10 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user), db: Sess
             detail="User not found"
         )
 
-    store = None
-    if user.last_active_store_id:
-        store = db.query(Store).filter(
-            Store.id == user.last_active_store_id, Store.owner_id == user.id
-        ).first()
-    if not store:
-        store = db.query(Store).filter(Store.owner_id == user.id).first()
+    store = _active_store_for_user(db, user)
+    member = (db.query(StoreMember).filter(StoreMember.store_id == store.id,
+               StoreMember.user_id == user.id, StoreMember.is_active.is_(True)).first()
+              if store and store.owner_id != user.id else None)
 
     # Check for active setup session
     setup_session = db.query(StoreSetupSession).filter(
@@ -832,7 +868,8 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user), db: Sess
         "id": str(user.id),
         "name": user.name,
         "email": user.email,
-        "role": user.role.value if hasattr(user.role, 'value') else user.role,
+        "role": _store_role(user, store),
+        "permissions": member.permissions if member else [],
         "is_verified": user.is_verified,
         "profile_picture": user.profile_picture,
         "store_id": str(store.id) if store else None,
@@ -858,9 +895,7 @@ async def set_active_store(
     /refresh and /me restore it on their next login instead of defaulting to an
     arbitrary store. Called from the frontend whenever the store switcher changes
     (see authService.setStoreId)."""
-    store = db.query(Store).filter(
-        Store.id == payload.store_id, Store.owner_id == current_user.id
-    ).first()
+    store = _accessible_stores(db, uuid.UUID(str(current_user.id))).filter(Store.id == payload.store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found for this user.")
 
@@ -868,3 +903,93 @@ async def set_active_store(
     user.last_active_store_id = store.id
     db.commit()
     return {"success": True, "store_id": str(store.id)}
+
+
+class StoreMemberInput(BaseModel):
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=255)
+    role: str
+    permissions: list[str] = Field(default_factory=list)
+
+
+@auth_router.get('/stores')
+def get_accessible_stores(db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
+    from modules.stores.schemas import StoreResponse
+    stores = _accessible_stores(db, uuid.UUID(str(current_user.id))).order_by(Store.created_at).all()
+    return {'stores': [StoreResponse.model_validate(store) for store in stores],
+            'total': len(stores), 'page': 1, 'size': len(stores)}
+
+
+MEMBER_PERMISSIONS = frozenset({'messages', 'deliveries', 'ads', 'orders', 'products', 'customers'})
+
+
+def _require_store_owner(db: Session, store_id: uuid.UUID, user: CurrentUser):
+    store = db.query(Store).filter(Store.id == store_id, Store.owner_id == uuid.UUID(str(user.id))).first()
+    if not store:
+        raise HTTPException(status_code=403, detail='Only the store owner can manage its users')
+    return store
+
+
+def _member_payload(member, user):
+    return {'id': str(member.id), 'user_id': str(user.id), 'name': user.name,
+            'email': user.email, 'role': member.role,
+            'permissions': member.permissions, 'is_active': member.is_active}
+
+
+@auth_router.get('/stores/{store_id}/members')
+def list_store_members(store_id: uuid.UUID, db: Session = Depends(get_db),
+                       current_user: CurrentUser = Depends(get_current_user)):
+    _require_store_owner(db, store_id, current_user)
+    rows = db.query(StoreMember, User).join(User, User.id == StoreMember.user_id).filter(
+        StoreMember.store_id == store_id).order_by(StoreMember.created_at).all()
+    return [_member_payload(member, user) for member, user in rows]
+
+
+@auth_router.post('/stores/{store_id}/members', status_code=201)
+def create_store_member(store_id: uuid.UUID, data: StoreMemberInput, db: Session = Depends(get_db),
+                        current_user: CurrentUser = Depends(get_current_user)):
+    _require_store_owner(db, store_id, current_user)
+    if data.role not in ('staff', 'manager') or not set(data.permissions).issubset(MEMBER_PERMISSIONS):
+        raise HTTPException(status_code=400, detail='Invalid role or permissions')
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+    if user and user.id == uuid.UUID(str(current_user.id)):
+        raise HTTPException(status_code=400, detail='The owner already has access to this store')
+    if user and not user.is_active:
+        raise HTTPException(status_code=409, detail='This user account is disabled')
+    if not user:
+        user = User(name=data.name.strip(), email=email, role=UserRole.STAFF,
+                    is_active=True, is_verified=False)
+        db.add(user)
+        db.flush()
+    member = db.query(StoreMember).filter(StoreMember.store_id == store_id,
+                                           StoreMember.user_id == user.id).first()
+    if member:
+        raise HTTPException(status_code=409, detail='This user is already assigned to the store')
+    member = StoreMember(store_id=store_id, user_id=user.id, role=data.role,
+                         permissions=sorted(set(data.permissions)), is_active=True)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+    return _member_payload(member, user)
+
+
+class StoreMemberUpdate(BaseModel):
+    role: str
+    permissions: list[str] = Field(default_factory=list)
+    is_active: bool = True
+
+
+@auth_router.put('/stores/{store_id}/members/{member_id}')
+def update_store_member(store_id: uuid.UUID, member_id: uuid.UUID, data: StoreMemberUpdate,
+                        db: Session = Depends(get_db), current_user: CurrentUser = Depends(get_current_user)):
+    _require_store_owner(db, store_id, current_user)
+    if data.role not in ('staff', 'manager') or not set(data.permissions).issubset(MEMBER_PERMISSIONS):
+        raise HTTPException(status_code=400, detail='Invalid role or permissions')
+    member = db.query(StoreMember).filter(StoreMember.store_id == store_id, StoreMember.id == member_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail='Store user not found')
+    member.role, member.permissions, member.is_active = data.role, sorted(set(data.permissions)), data.is_active
+    db.commit()
+    user = db.query(User).filter(User.id == member.user_id).first()
+    return _member_payload(member, user)

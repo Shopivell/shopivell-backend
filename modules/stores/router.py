@@ -1,11 +1,12 @@
 # modules/stores/api.py
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import Any, Dict, Optional, List
 import uuid
 from datetime import datetime, timedelta
 
 from database import get_db
+from utils.jwt_auth import CurrentUser, get_current_user, get_current_user_optional
 from utils.cache import cache, CacheConfig, generate_cache_key, cache_invalidator as invalidator
 from modules.users.models import User
 from modules.stores.models import Store, StoreSetupStep, StoreSetupSession
@@ -18,7 +19,33 @@ from modules.agency.models import Agency
 from modules.assets.models import Asset, AssetType
 import re
 
-store_router = APIRouter(prefix="/api/stores", tags=["stores"])
+async def _authorize_setup_request(request: Request, db: Session = Depends(get_db),
+                                   current_user=Depends(get_current_user_optional)):
+    if '/stores/setup/' not in request.url.path:
+        return
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    if current_user.role.lower() != 'owner':
+        raise HTTPException(status_code=403, detail='Only an owner can create stores')
+    session_id = request.path_params.get('session_id')
+    if session_id:
+        try:
+            setup = db.query(StoreSetupSession).filter(StoreSetupSession.id == uuid.UUID(str(session_id))).first()
+        except ValueError:
+            setup = None
+        if not setup or str(setup.user_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail='Not authorized for this setup session')
+    elif request.method == 'POST':
+        try:
+            payload = await request.json()
+        except ValueError:
+            payload = {}
+        if not isinstance(payload, dict) or str(payload.get('user_id', '')) != str(current_user.id):
+            raise HTTPException(status_code=403, detail='Not authorized to start setup for this user')
+
+
+store_router = APIRouter(prefix="/api/stores", tags=["stores"],
+                         dependencies=[Depends(_authorize_setup_request)])
 
 # Constants for setup progress
 SETUP_STEPS = {
@@ -812,11 +839,14 @@ async def scrape_products_from_website(
 @store_router.post("/", response_model=StoreResponse)
 async def create_store(
     store_data: StoreCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Create a new store directly (for adding additional stores).
     Also creates FAQs if scraped_faqs is provided."""
     try:
+        if str(store_data.owner_id) != str(current_user.id) or current_user.role.lower() != 'owner':
+            raise HTTPException(status_code=403, detail="Only a store owner can create stores")
         # Verify owner exists
         owner = db.query(User).filter(User.id == store_data.owner_id).first()
         if not owner:
@@ -960,7 +990,8 @@ async def get_brand_dna(store_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @store_router.post("/{store_id}/brand-dna")
-async def generate_brand_dna_endpoint(store_id: uuid.UUID, db: Session = Depends(get_db)):
+async def generate_brand_dna_endpoint(store_id: uuid.UUID, db: Session = Depends(get_db),
+                                      current_user: CurrentUser = Depends(get_current_user)):
     """Generate (or regenerate) the store's Brand DNA from its own profile.
 
     Produces Voice & Style (aesthetic, tone of voice, target demographic), About
@@ -970,6 +1001,8 @@ async def generate_brand_dna_endpoint(store_id: uuid.UUID, db: Session = Depends
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    if str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can update store settings")
     import asyncio
     from modules.brand_intelligence.brand_dna import generate_brand_dna as _gen
     dna = await asyncio.to_thread(_gen, store)
@@ -987,11 +1020,14 @@ async def generate_brand_dna_endpoint(store_id: uuid.UUID, db: Session = Depends
 
 
 @store_router.put("/{store_id}/brand-dna")
-async def update_brand_dna(store_id: uuid.UUID, dna: Dict[str, Any], db: Session = Depends(get_db)):
+async def update_brand_dna(store_id: uuid.UUID, dna: Dict[str, Any], db: Session = Depends(get_db),
+                           current_user: CurrentUser = Depends(get_current_user)):
     """Owner-edited Brand DNA (they can refine the generated voice/profiles)."""
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    if str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can update store settings")
     if not isinstance(dna, dict) or "voice_and_style" not in dna:
         raise HTTPException(status_code=400, detail="brand_dna must include voice_and_style")
     store.brand_dna = dna
@@ -1070,7 +1106,8 @@ async def get_stores_by_owner(
 async def update_store(
     store_id: uuid.UUID,
     store_data: StoreUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
         db_store = db.query(Store).filter(Store.id == store_id).first()
@@ -1080,6 +1117,8 @@ async def update_store(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Store not found"
             )
+        if str(db_store.owner_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Only the store owner can update this store")
 
         update_data = store_data.model_dump(exclude_unset=True)
         print(f"[Store Update] Store ID: {store_id}")
@@ -1108,7 +1147,8 @@ async def update_store(
 
 # DELETE store
 @store_router.delete("/{store_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
+async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db),
+                       current_user: CurrentUser = Depends(get_current_user)):
     try:
         db_store = db.query(Store).filter(Store.id == store_id).first()
 
@@ -1117,6 +1157,8 @@ async def delete_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Store not found"
             )
+        if str(db_store.owner_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Only the store owner can delete this store")
 
         # Delete related FAQs first (they have store_id foreign key)
         from modules.whatsapp.models import FAQ

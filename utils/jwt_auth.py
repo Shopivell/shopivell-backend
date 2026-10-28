@@ -31,6 +31,11 @@ class JWTConfig:
     REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))  # 7 days
 
 
+if (os.getenv('USE_SQLITE', 'true').lower() != 'true'
+        and JWTConfig.SECRET_KEY == 'your-super-secret-key-change-in-production'):
+    raise RuntimeError('JWT_SECRET_KEY must be configured for PostgreSQL deployments')
+
+
 class TokenPayload(BaseModel):
     """Token payload structure"""
     sub: str  # user_id
@@ -334,6 +339,23 @@ async def get_current_user(
 
     token = credentials.credentials
     payload = jwt_auth.verify_token(token, token_type="access")
+
+    # Store memberships are revocable; do not rely solely on a JWT that may
+    # have been issued before the owner disabled access.
+    if str(payload.get('role', '')).lower() == 'staff':
+        from database import SessionLocal
+        from modules.users.models import User, StoreMember
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == UUID(payload['sub']), User.is_active.is_(True)).first()
+            member = (db.query(StoreMember).filter(
+                StoreMember.user_id == UUID(payload['sub']),
+                StoreMember.store_id == UUID(payload['store_id']),
+                StoreMember.is_active.is_(True)).first() if payload.get('store_id') else None)
+            if not user or not member:
+                raise HTTPException(status_code=403, detail='Store access has been removed')
+        finally:
+            db.close()
 
     return CurrentUser(
         id=payload["sub"],

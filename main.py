@@ -98,6 +98,10 @@ app = FastAPI(
     },
 )
 
+# Keep CORS outside the access guard so rejected requests still get CORS headers.
+from middleware.whatsapp_access import WhatsAppAccessMiddleware
+app.add_middleware(WhatsAppAccessMiddleware)
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,

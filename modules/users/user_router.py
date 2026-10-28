@@ -5,7 +5,8 @@ from typing import Optional
 import uuid
 
 from database import get_db
-from modules.users.models import User
+from modules.users.models import User, UserRole
+from utils.jwt_auth import get_current_user, CurrentUser
 from modules.users.schemas import (
     UserCreate, UserResponse, UserUpdate, UserListResponse
 )
@@ -20,8 +21,11 @@ async def get_users(
     limit: int = Query(10, ge=1, le=100),
     role: Optional[str] = None,
     is_verified: Optional[bool] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
+    # This legacy endpoint is global, not store-scoped.
+    raise HTTPException(status_code=403, detail="Use store user settings")
     try:
         # Build query with filters
         query = db.query(User)
@@ -52,7 +56,10 @@ async def get_users(
 
 # GET user by ID
 @user_router.get("/{user_id}", response_model=UserResponse)
-async def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+async def get_user(user_id: uuid.UUID, db: Session = Depends(get_db),
+                   current_user: CurrentUser = Depends(get_current_user)):
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
     try:
         user = db.query(User).filter(User.id == user_id).first()
         
@@ -75,6 +82,8 @@ async def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
 # CREATE user
 @user_router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
+    if user_data.role != UserRole.OWNER:
+        raise HTTPException(status_code=403, detail="Staff must be added by a store owner")
     try:
         # Check if user already exists
         existing_user = db.query(User).filter(User.email == user_data.email).first()
@@ -130,8 +139,11 @@ async def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
 async def update_user(
     user_id: uuid.UUID, 
     user_data: UserUpdate, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
     try:
         # Get existing user
         db_user = db.query(User).filter(User.id == user_id).first()
@@ -163,7 +175,10 @@ async def update_user(
 
 # DELETE user
 @user_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(user_id: uuid.UUID, db: Session = Depends(get_db)):
+async def delete_user(user_id: uuid.UUID, db: Session = Depends(get_db),
+                      current_user: CurrentUser = Depends(get_current_user)):
+    if str(user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
     try:
         db_user = db.query(User).filter(User.id == user_id).first()
         

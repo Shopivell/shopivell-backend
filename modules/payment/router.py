@@ -22,11 +22,45 @@ from .schemas import (
     PackageComparisonResponse, EcoCashPaymentRequest
 )
 from utils.payment_service import PaymentService
+from utils.jwt_auth import get_current_user_optional
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-payment_router = APIRouter(prefix="/api/payments", tags=["payments"])
+async def _authorize_payment_management(request: Request, db: Session = Depends(get_db),
+                                        current_user=Depends(get_current_user_optional)):
+    path = request.url.path
+    if (request.method == 'GET' and '/payments/packages' in path) or path.endswith(
+        ('/webhook/paynow', '/stripe/webhook', '/paypal/webhook')):
+        return
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    if '/payments/packages' in path:
+        raise HTTPException(status_code=403, detail='Package pricing is managed by the platform')
+    if current_user.role.lower() != 'owner':
+        raise HTTPException(status_code=403, detail='Billing is available only to store owners')
+    store_id = request.path_params.get('store_id') or request.query_params.get('store_id')
+    reference = request.path_params.get('reference')
+    if reference:
+        transaction = db.query(PaymentTransaction).filter(PaymentTransaction.reference == reference).first()
+        if not transaction:
+            raise HTTPException(status_code=404, detail='Payment not found')
+        store_id = transaction.store_id
+    if not store_id and request.method == 'POST' and 'application/json' in request.headers.get('content-type', ''):
+        try:
+            payload = await request.json()
+            store_id = payload.get('store_id') if isinstance(payload, dict) else None
+        except ValueError:
+            pass
+    store_id = store_id or current_user.store_id
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Select a store')
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, uuid.UUID(str(store_id)), current_user)
+
+
+payment_router = APIRouter(prefix="/api/payments", tags=["payments"],
+                           dependencies=[Depends(_authorize_payment_management)])
 
 
 def _apply_store_discount(db: Session, store_id, amount: float, payment_method_label: str = "") -> float:

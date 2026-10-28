@@ -1,6 +1,6 @@
 # modules/users/models.py
 from typing import Optional, List
-from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer, Text
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Integer, Text, JSON, UniqueConstraint
 from db_compat import PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
@@ -15,6 +15,20 @@ class UserRole(str, enum.Enum):
     ADMIN = "admin"
     STAFF = "staff"
     CUSTOMER = "customer"
+
+
+class StoreMember(Base):
+    """A user's role and explicitly granted capabilities for one store."""
+    __tablename__ = "store_members"
+    __table_args__ = (UniqueConstraint('store_id', 'user_id', name='uq_store_member'),)
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('stores.id', ondelete='CASCADE'), nullable=False, index=True)
+    user_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    permissions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 class User(Base):
     __tablename__ = "users"

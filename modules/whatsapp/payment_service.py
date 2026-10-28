@@ -28,7 +28,8 @@ class WhatsAppPaymentService:
             integration_id = os.getenv("PAYNOW_INTEGRATION_ID", "")
             integration_key = os.getenv("PAYNOW_INTEGRATION_KEY", "")
             return_url = os.getenv("PAYNOW_RETURN_URL", "https://shopivell.com/payment/return")
-            result_url = os.getenv("PAYNOW_RESULT_URL", "https://shopivell.com/api/v1/payment/callback")
+            result_url = (os.getenv("WHATSAPP_PAYNOW_RESULT_URL")
+                          or os.getenv("PAYNOW_RESULT_URL", "https://shopivell.com/api/v1/payment/callback"))
 
             if not integration_id or not integration_key:
                 logger.warning("PayNow credentials not configured for WhatsApp payments.")
@@ -77,12 +78,12 @@ class WhatsAppPaymentService:
             email = customer_email or f"{customer_phone}@whatsapp.order"
 
             if not self.paynow:
-                # Simulate payment for testing
-                return self._simulate_payment(order_id, order_number, amount, customer_phone, provider)
+                # A simulated request must never be reported as a real payment.
+                return None, "Mobile payments are not configured."
 
             # Create PayNow payment
             payment = self.paynow.create_payment(
-                f"Platinum Pharmacy Order {order_number}",
+                f"Order {order_number}",
                 email
             )
 
@@ -264,6 +265,19 @@ class WhatsAppPaymentService:
                     WHERE id = :order_id
                 """), {"order_id": order_id, "status": display_status})
             self.db.commit()
+            if updates.get("payment_status") in ("paid", "completed"):
+                try:
+                    from modules.orders.models import CustomerOrder
+                    from modules.customers.paid_order import link_paid_order_customer
+                    order = self.db.query(CustomerOrder).filter(CustomerOrder.id == uuid.UUID(str(order_id))).first()
+                    if order:
+                        link_paid_order_customer(self.db, order)
+                        self.db.commit()
+                        from utils.cache import cache
+                        cache.invalidate_pattern("cust:*")
+                except Exception:
+                    self.db.rollback()
+                    logger.exception("Payment succeeded but customer linking failed for order %s", order_id)
 
         except Exception as e:
             logger.error(f"Error updating order payment: {e}")
@@ -271,6 +285,11 @@ class WhatsAppPaymentService:
 
     def _extract_reference(self, response) -> str:
         """Extract PayNow reference from response."""
+        data = getattr(response, 'data', None)
+        if isinstance(data, dict):
+            ref = data.get('paynowreference') or data.get('paynow_reference')
+            if ref and str(ref).strip():
+                return str(ref).strip()
         for attr in ['paynow_reference', 'reference', 'paynowreference']:
             if hasattr(response, attr):
                 ref = getattr(response, attr)

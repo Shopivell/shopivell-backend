@@ -148,8 +148,9 @@ class ConnectionManager:
         # Dictionary to hold active connections, keyed by WhatsApp Account ID (str)
         self.active_connections: Dict[str, List[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket, account_id: str):
-        await websocket.accept()
+    async def connect(self, websocket: WebSocket, account_id: str, accepted: bool = False):
+        if not accepted:
+            await websocket.accept()
         if account_id not in self.active_connections:
             self.active_connections[account_id] = []
         self.active_connections[account_id].append(websocket)
@@ -307,9 +308,12 @@ def save_message_to_db(
 @whatsapp_router.post("/accounts", response_model=WhatsAppAccountResponse)
 def create_whatsapp_account(
     account_data: WhatsAppAccountCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Create a new WhatsApp account configuration using Business Account Token"""
+    # This legacy endpoint lacks a store association; use the scoped connection flow.
+    raise HTTPException(status_code=403, detail="Connect WhatsApp from store settings")
     
     # 1. Check if business account exists
     business_account = db.query(FacebookBusinessAccount).filter(
@@ -377,10 +381,15 @@ def get_whatsapp_accounts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     business_account_id: Optional[uuid.UUID] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get all WhatsApp accounts"""
-    query = db.query(WhatsAppAccount).filter(WhatsAppAccount.is_enabled == True)
+    if not current_user.store_id:
+        raise HTTPException(status_code=403, detail="Select a store")
+    _authorize_message_store(db, current_user, uuid.UUID(current_user.store_id))
+    query = db.query(WhatsAppAccount).filter(WhatsAppAccount.is_enabled == True,
+                                              WhatsAppAccount.store_id == uuid.UUID(current_user.store_id))
     
     if business_account_id:
         query = query.filter(WhatsAppAccount.business_account_id == business_account_id)
@@ -396,9 +405,11 @@ def get_whatsapp_accounts(
 @whatsapp_router.get("/store/{store_id}/accounts", response_model=WhatsAppAccountsListResponse)
 def get_store_whatsapp_accounts(
     store_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get all WhatsApp accounts for a specific store"""
+    _authorize_message_store(db, current_user, store_id)
     accounts = db.query(WhatsAppAccount).filter(
         WhatsAppAccount.store_id == store_id,
         WhatsAppAccount.is_enabled == True
@@ -412,12 +423,14 @@ def get_store_whatsapp_accounts(
 @whatsapp_router.get("/store/{store_id}/unread-count")
 def get_store_unread_message_count(
     store_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Get the count of unread inbound messages for a store.
     Unread messages are inbound messages that have not been marked as read by the store owner.
     """
+    _authorize_message_store(db, current_user, store_id)
     try:
         # Get all WhatsApp accounts for this store
         accounts = db.query(WhatsAppAccount).filter(
@@ -452,7 +465,8 @@ def get_store_unread_message_count(
 @whatsapp_router.post("/messages/{message_id}/mark-read")
 def mark_message_as_read(
     message_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Mark a message as read by the store owner"""
     try:
@@ -465,6 +479,10 @@ def mark_message_as_read(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Message not found"
             )
+        account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == message.whatsapp_account_id).first()
+        if not account or not account.store_id:
+            raise HTTPException(status_code=404, detail="WhatsApp account not found")
+        _authorize_message_store(db, current_user, account.store_id)
 
         message.read_at = datetime.utcnow()
         db.commit()
@@ -485,9 +503,14 @@ def mark_message_as_read(
 def mark_conversation_as_read(
     phone_number: str,
     account_id: uuid.UUID = Query(..., description="WhatsApp account ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Mark all messages in a conversation as read"""
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account or not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
     try:
         phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
 
@@ -519,7 +542,8 @@ def mark_conversation_as_read(
         )
 
 @whatsapp_router.get("/accounts/{account_id}", response_model=WhatsAppAccountResponse)
-def get_whatsapp_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_whatsapp_account(account_id: uuid.UUID, db: Session = Depends(get_db),
+                         current_user=Depends(get_current_user)):
     """Get a specific WhatsApp account"""
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
 
@@ -529,13 +553,17 @@ def get_whatsapp_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
             detail="WhatsApp account not found"
         )
 
+    if not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
     return WhatsAppAccountResponse.model_validate(account)
 
 @whatsapp_router.put("/accounts/{account_id}", response_model=WhatsAppAccountResponse)
 def update_whatsapp_account(
     account_id: uuid.UUID,
     account_data: WhatsAppAccountUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Update WhatsApp account configuration"""
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
@@ -545,6 +573,8 @@ def update_whatsapp_account(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="WhatsApp account not found"
         )
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, account.store_id, current_user)
     
     try:
         update_data = account_data.model_dump(exclude_unset=True)
@@ -567,12 +597,15 @@ def update_whatsapp_account(
 @whatsapp_router.delete("/accounts/{account_id}")
 def delete_whatsapp_account(
     account_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Delete a WhatsApp account and all related data"""
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WhatsApp account not found")
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, account.store_id, current_user)
 
     try:
         # Delete related records - order matters for FK constraints
@@ -609,7 +642,8 @@ def send_bulk_whatsapp_messages(
     account_id: uuid.UUID,
     bulk_data: BulkMessageRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Send bulk WhatsApp text messages to multiple recipients
@@ -623,6 +657,9 @@ def send_bulk_whatsapp_messages(
     import time as _time
 
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+    if not whatsapp_account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, whatsapp_account.store_id)
 
     send_delay = float(os.getenv("WHATSAPP_BULK_SEND_DELAY_SECONDS", "1.0"))
     # Bulk sends are marketing: require explicit opt-in per the WhatsApp Business
@@ -781,21 +818,120 @@ def send_bulk_whatsapp_messages(
 @whatsapp_router.websocket("/accounts/{account_id}/ws")
 async def websocket_endpoint(websocket: WebSocket, account_id: uuid.UUID):
     """WebSocket endpoint for real-time message updates for a specific account."""
+    from database import SessionLocal
+    from fastapi.security import HTTPAuthorizationCredentials
     str_account_id = str(account_id)
+    await websocket.accept()
+    db = SessionLocal()
     try:
-        await manager.connect(websocket, str_account_id)
-        # Keep the connection open indefinitely
+        auth = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+        credentials = HTTPAuthorizationCredentials(scheme='Bearer', credentials=auth.get('token', ''))
+        user = await get_current_user(credentials)
+        account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+        if not account or not account.store_id:
+            raise HTTPException(status_code=404, detail='Account not found')
+        _authorize_message_store(db, user, account.store_id)
+        await manager.connect(websocket, str_account_id, accepted=True)
         while True:
-            # You can handle incoming client data here if needed (e.g., client is typing)
-            # For now, just listen for disconnects or pings
-            await websocket.receive_text() 
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+            user = await get_current_user(credentials)
+            db.expire_all()
+            _authorize_message_store(db, user, account.store_id)
     except WebSocketDisconnect:
-        manager.disconnect(websocket, str_account_id)
+        pass
+    except (HTTPException, asyncio.TimeoutError, ValueError):
+        await websocket.close(code=1008)
     except Exception as e:
         logger.error(f"WebSocket error for account {account_id}: {str(e)}")
-        manager.disconnect(websocket, str_account_id)
+    finally:
+        if websocket in manager.active_connections.get(str_account_id, []):
+            manager.disconnect(websocket, str_account_id)
+        db.close()
 
 # Webhook Endpoints
+@whatsapp_router.post('/paynow-callback')
+async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_db)):
+    """Record verified Paynow updates for bot orders; never trust the status alone."""
+    import hashlib
+    import hmac
+    from decimal import Decimal, InvalidOperation
+    from urllib.parse import parse_qsl
+    from modules.orders.models import CustomerOrder
+    from modules.whatsapp.models import WhatsAppOrder
+
+    key = os.getenv('PAYNOW_INTEGRATION_KEY', '')
+    if not key:
+        raise HTTPException(status_code=503, detail='Payment verification is unavailable')
+    try:
+        raw = (await request.body()).decode('utf-8')
+        fields = parse_qsl(raw, keep_blank_values=True, strict_parsing=True)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail='Invalid payment update')
+    names = [name.lower() for name, _ in fields]
+    if len(names) != len(set(names)) or names.count('hash') != 1:
+        raise HTTPException(status_code=400, detail='Invalid payment update')
+    data = {name.lower(): value for name, value in fields}
+    expected = hashlib.sha512((''.join(value for name, value in fields if name.lower() != 'hash') + key).encode()).hexdigest().upper()
+    if not hmac.compare_digest(expected, data.get('hash', '').upper()):
+        raise HTTPException(status_code=403, detail='Invalid payment signature')
+    reference = data.get('reference', '')
+    if not reference.startswith('Order '):
+        raise HTTPException(status_code=400, detail='Unknown order reference')
+    order_number = reference[len('Order '):].strip()
+    order = db.query(WhatsAppOrder).filter(WhatsAppOrder.order_number == order_number).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    try:
+        amount = Decimal(data.get('amount', ''))
+        expected_amount = Decimal(str(order.total_amount)).quantize(Decimal('0.01'))
+    except InvalidOperation:
+        raise HTTPException(status_code=400, detail='Invalid payment amount')
+    if not amount.is_finite() or amount != expected_amount:
+        raise HTTPException(status_code=400, detail='Payment amount does not match the order')
+    paynow_reference = data.get('paynowreference', '')
+    saved_reference = str(order.payment_reference or '')
+    if not paynow_reference:
+        raise HTTPException(status_code=400, detail='Payment reference does not match the order')
+    if saved_reference.startswith('PNW-'):
+        if not order.payment_poll_url or data.get('pollurl') != order.payment_poll_url:
+            raise HTTPException(status_code=400, detail='Payment reference does not match the order')
+        order.payment_reference = paynow_reference
+    elif not saved_reference or saved_reference != paynow_reference:
+        raise HTTPException(status_code=400, detail='Payment reference does not match the order')
+    status_value = data.get('status', '').strip().lower()
+    if status_value in ('paid', 'awaiting delivery', 'delivered') and order.payment_status != 'refunded':
+        order.payment_status = 'paid'
+        if order.status == 'pending':
+            order.status = 'confirmed'
+        customer_order = db.query(CustomerOrder).filter(CustomerOrder.id == order.id).first()
+        if customer_order:
+            customer_order.payment_status = 'paid'
+            if customer_order.status == 'pending':
+                customer_order.status = 'confirmed'
+        db.commit()  # Never lose a confirmed payment if customer linking fails.
+        if customer_order:
+            try:
+                from modules.customers.paid_order import link_paid_order_customer
+                link_paid_order_customer(db, customer_order)
+                db.commit()
+                from utils.cache import cache
+                cache.invalidate_pattern('cust:*')
+            except Exception:
+                db.rollback()
+                logger.exception('Payment recorded but customer linking failed for order %s', order_number)
+                raise HTTPException(status_code=500, detail='Customer linking will be retried')
+    elif status_value == 'refunded':
+        order.payment_status = 'refunded'
+        customer_order = db.query(CustomerOrder).filter(CustomerOrder.id == order.id).first()
+        if customer_order:
+            customer_order.payment_status = 'refunded'
+        db.commit()
+    return {'received': True}
+
+
 @whatsapp_router.get("/webhook")
 def whatsapp_webhook_verification(
     request: Request,
@@ -1249,6 +1385,13 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                                             if order:
                                                 order.payment_status = "paid"
                                                 db.commit()
+                                                try:
+                                                    from modules.customers.paid_order import link_paid_order_customer
+                                                    link_paid_order_customer(db, order)
+                                                    db.commit()
+                                                except Exception:
+                                                    db.rollback()
+                                                    logger.exception("Payment succeeded but customer linking failed for order %s", order_id)
                                         active_conv.order_flow_active = False
                                         active_conv.order_flow_state = None
                                         db.commit()
@@ -1636,9 +1779,14 @@ def get_whatsapp_messages(
     direction: Optional[str] = Query(None, regex="^(inbound|outbound)$"),
     status: Optional[str] = None,
     phone_number: Optional[str] = Query(None, description="Filter by phone number (conversation)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get WhatsApp message history"""
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account or not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
     from sqlalchemy import or_
     query = db.query(WhatsAppMessage).filter(
         WhatsAppMessage.whatsapp_account_id == account_id
@@ -1677,9 +1825,14 @@ def get_conversation_messages(
     phone_number: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get messages for a specific conversation (phone number)"""
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account or not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
     # Clean phone number
     phone_clean = phone_number.replace(" ", "").replace("+", "").replace("-", "").strip()
 
@@ -1711,13 +1864,15 @@ def get_conversations(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status_filter: Optional[str] = Query(None, description="Filter by status: active, handoff, closed"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get all conversations for a WhatsApp account with profile pictures"""
     # Verify account exists
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
-    if not account:
+    if not account or not account.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
     
     query = db.query(WhatsAppConversation).filter(
         WhatsAppConversation.whatsapp_account_id == account_id
@@ -1755,9 +1910,11 @@ def get_conversations(
 @whatsapp_router.get("/accounts/{account_id}/info")
 def get_whatsapp_account_info(
     account_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get WhatsApp account information from Facebook API"""
+    _authorize_message_account(db, current_user, account_id)
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
     
     try:
@@ -1815,10 +1972,12 @@ def test_send_message(
     account_id: uuid.UUID,
     to: str = Query(..., description="Your phone number in E.164 format (no spaces, no +)"),
     message: str = Query("Hello from WhatsApp API!", description="Message text"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Improved test endpoint to send WhatsApp messages"""
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+    _authorize_message_store(db, current_user, whatsapp_account.store_id)
 
     try:
         # Clean phone number (remove spaces, +)
@@ -2027,10 +2186,12 @@ def send_conversion_event_background(
 def debug_send_test_message(
     account_id: uuid.UUID,
     to: str = Query(..., description="Recipient phone number"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Debug endpoint to test WhatsApp message sending (text only)"""
     whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+    _authorize_message_store(db, current_user, whatsapp_account.store_id)
 
     try:
         message_type = "text"
@@ -2099,7 +2260,8 @@ def send_whatsapp_conversion_event(
     account_id: uuid.UUID,
     event_data: WhatsAppConversionEvent,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Sends an offline conversion event to Meta's Conversions API (CAPI) 
@@ -2109,6 +2271,8 @@ def send_whatsapp_conversion_event(
     
     # 1. Retrieve the WhatsApp Account and CAPI Credentials from the database
     whatsapp_account, _ = get_whatsapp_client(account_id, db)
+    from modules.users.access import require_store_capability
+    require_store_capability(db, current_user, whatsapp_account.store_id, 'ads')
 
     # COMPLIANCE: customer data (even hashed) may only be shared with Meta if
     # the customer has consent on record and has not opted out.
@@ -2154,7 +2318,8 @@ def send_whatsapp_conversion_event(
 def update_capi_settings(
     account_id: uuid.UUID,
     settings: ConversionsAPISettingsUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Saves the Meta Conversions API Dataset ID and Access Token for the account.
@@ -2171,6 +2336,8 @@ def update_capi_settings(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"WhatsApp Account with ID {account_id} not found."
         )
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, whatsapp_account.store_id, current_user)
 
     # 2. Update the fields
     # *****************************************************************
@@ -2203,8 +2370,23 @@ class SavedReplyInput(BaseModel):
 
 def _authorize_message_store(db, user, store_id):
     from modules.whatsapp.faq_router import check_store_access
-    if not check_store_access(db, user, store_id):
-        raise HTTPException(status_code=403, detail="Not authorized to access this store")
+    if check_store_access(db, user, store_id):
+        return
+    from modules.users.models import StoreMember
+    member = db.query(StoreMember).filter(
+        StoreMember.store_id == store_id,
+        StoreMember.user_id == uuid.UUID(str(user.id)),
+        StoreMember.is_active.is_(True)).first()
+    if not member or 'messages' not in (member.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized to access messages for this store")
+
+
+def _authorize_message_account(db, user, account_id):
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account or not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, user, account.store_id)
+    return account
 
 
 @whatsapp_router.get("/stores/{store_id}/saved-replies")
@@ -2300,7 +2482,8 @@ async def send_attachment(account_id: uuid.UUID, to: str = Form(...), caption: s
 def send_whatsapp_direct_text_message(
     account_id: uuid.UUID,
     message_data: WhatsAppTextMessage, # Assuming this schema has 'to' and 'message_text'
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Send a direct text message within the 24-hour customer service window.
@@ -2313,6 +2496,13 @@ def send_whatsapp_direct_text_message(
     # access, and returns here on both success and failure. The direct-Meta code
     # below is unreachable except when account_id doesn't match any row at all.
     _sandbox_acct = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not _sandbox_acct or not _sandbox_acct.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, _sandbox_acct.store_id)
+    to_clean = ''.join(c for c in message_data.to if c.isdigit())
+    if consent.is_suppressed(db, account_id, to_clean):
+        return WhatsAppMessageSendResponse(success=False, message_id=None, wamid=None,
+                                           message="Recipient has opted out and cannot be messaged.")
     if _sandbox_acct is not None:
         from modules.openclaw.router import (
             sandbox_send_text_sync, _persist_sandbox_message, _zernio_account_id_for_wa,
@@ -2398,7 +2588,8 @@ def send_whatsapp_direct_text_message(
 async def chat_and_respond(
     account_id: uuid.UUID,
     message_data: WhatsAppTextMessage,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Process a message with AI, score the lead, and send response via WhatsApp.
@@ -2406,6 +2597,9 @@ async def chat_and_respond(
     """
     try:
         whatsapp_account, access_token = get_whatsapp_client(account_id, db)
+        if not whatsapp_account.store_id:
+            raise HTTPException(status_code=404, detail="WhatsApp account not found")
+        _authorize_message_store(db, current_user, whatsapp_account.store_id)
         to_clean = message_data.to.replace(" ", "").replace("+", "").strip()
 
         # 1. Get or create lead record
@@ -2535,6 +2729,8 @@ async def chat_and_respond(
             "capi_sent": capi_result.get("success") if capi_result else False
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
         import traceback
@@ -2549,10 +2745,16 @@ def get_all_leads(
     min_score: Optional[float] = Query(None, description="Minimum lead score"),
     status_filter: Optional[str] = Query(None, description="Filter by status: new, engaged, qualified, converted"),
     hot_leads_only: bool = Query(False, description="Only show hot leads (score >= 70)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    """Get all leads across all WhatsApp accounts"""
-    query = db.query(WhatsAppLead)
+    """Get leads for the selected store's WhatsApp accounts."""
+    if not current_user.store_id:
+        raise HTTPException(status_code=403, detail="Select a store")
+    store_id = uuid.UUID(current_user.store_id)
+    _authorize_message_store(db, current_user, store_id)
+    query = db.query(WhatsAppLead).join(WhatsAppAccount,
+        WhatsAppLead.whatsapp_account_id == WhatsAppAccount.id).filter(WhatsAppAccount.store_id == store_id)
 
     if min_score is not None:
         query = query.filter(WhatsAppLead.lead_score >= min_score)
@@ -2605,9 +2807,11 @@ def get_leads(
     min_score: Optional[float] = Query(None, description="Minimum lead score"),
     status_filter: Optional[str] = Query(None, description="Filter by status: new, engaged, qualified, converted"),
     hot_leads_only: bool = Query(False, description="Only show hot leads (score >= 70)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get all leads for a WhatsApp account with their scores and details"""
+    _authorize_message_account(db, current_user, account_id)
     query = db.query(WhatsAppLead).filter(
         WhatsAppLead.whatsapp_account_id == account_id
     )
@@ -2658,9 +2862,11 @@ def get_leads(
 def get_lead_by_phone(
     account_id: uuid.UUID,
     phone_number: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get a specific lead by phone number"""
+    _authorize_message_account(db, current_user, account_id)
     phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
 
     lead = db.query(WhatsAppLead).filter(
@@ -2704,9 +2910,11 @@ def update_lead_status(
     account_id: uuid.UUID,
     lead_id: uuid.UUID,
     payload: LeadStatusUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Manually override a lead's status (e.g. from the Leads UI)."""
+    _authorize_message_account(db, current_user, account_id)
     lead = db.query(WhatsAppLead).filter(
         WhatsAppLead.id == lead_id,
         WhatsAppLead.whatsapp_account_id == account_id
@@ -2733,9 +2941,11 @@ def update_lead_status(
 def delete_lead(
     account_id: uuid.UUID,
     lead_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Delete a lead."""
+    _authorize_message_account(db, current_user, account_id)
     lead = db.query(WhatsAppLead).filter(
         WhatsAppLead.id == lead_id,
         WhatsAppLead.whatsapp_account_id == account_id
@@ -2749,11 +2959,13 @@ def delete_lead(
 
 
 @whatsapp_router.post("/ask")
-async def ask_question(request: ChatRequest, db: Session = Depends(get_db)):
+async def ask_question(request: ChatRequest, db: Session = Depends(get_db),
+                       current_user=Depends(get_current_user)):
     """
     Test endpoint to ask questions to the AI Sales Bot.
     Uses the MultiTenantSalesBot with store-specific knowledge.
     """
+    _authorize_message_store(db, current_user, request.store_id)
     try:
         # Initialize the multi-tenant bot
         bot = MultiTenantSalesBot(
@@ -2794,11 +3006,14 @@ async def ask_question(request: ChatRequest, db: Session = Depends(get_db)):
 @whatsapp_router.post("/knowledge", response_model=KnowledgeResponse)
 def create_knowledge_entry(
     request: KnowledgeCreateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Create a new knowledge entry with REAL OpenAI embedding
     """
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, request.store_id, current_user)
     try:
         from utils.embeddings import embed_text, active_embedding_model
 
@@ -2845,12 +3060,15 @@ def create_knowledge_entry(
 
 @whatsapp_router.get("/knowledge")
 def get_knowledge_entries(
-    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec"),
+    store_id: uuid.UUID = Query(...),
     skip: int = Query(0, ge=0, description="Number of entries to skip"),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Get all knowledge entries for a store"""
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, store_id, current_user)
     # Get entries
     query = db.query(CompanyKnowledge).filter(
         CompanyKnowledge.store_id == store_id
@@ -2889,13 +3107,16 @@ def get_knowledge_entries(
 
 @whatsapp_router.post("/knowledge/fix-embeddings")
 def fix_all_embeddings(
-    store_id: uuid.UUID = Query("36689cad-4b73-4fea-802b-d3a4fbfa23ec", description="Store ID"),
-    db: Session = Depends(get_db)
+    store_id: uuid.UUID = Query(..., description="Store ID"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Fix all placeholder embeddings for a store.
     Regenerates embeddings for all entries (not just placeholders).
     """
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, store_id, current_user)
     try:
         from utils.embeddings import embed_text, active_embedding_model
         from sqlalchemy import text
@@ -3476,7 +3697,8 @@ def debug_test_autorespond(
 @whatsapp_router.get("/leads/analytics")
 def get_leads_analytics(
     days: int = Query(30, ge=1, le=365),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """
     Get lead scoring analytics — scores, categories, funnel data.
@@ -3489,7 +3711,14 @@ def get_leads_analytics(
 
     cutoff = datetime.utcnow() - timedelta(days=days)
 
-    leads = db.query(WhatsAppLead).filter(
+    if not current_user.store_id:
+        raise HTTPException(status_code=403, detail="Select a store")
+    store_id = uuid.UUID(current_user.store_id)
+    _authorize_message_store(db, current_user, store_id)
+
+    leads = db.query(WhatsAppLead).join(WhatsAppAccount,
+        WhatsAppLead.whatsapp_account_id == WhatsAppAccount.id).filter(
+        WhatsAppAccount.store_id == store_id,
         WhatsAppLead.created_at >= cutoff
     ).order_by(WhatsAppLead.lead_score.desc()).all()
 

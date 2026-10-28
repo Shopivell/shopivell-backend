@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -18,8 +18,46 @@ from .schemas import (
     CustomerSegmentUpdate, CustomerSegmentListResponse, SegmentMembership, BulkSegmentMembership,
     CustomerOrderResponse, CustomerOrderCreate, CustomerRequestResponse, CustomerRequestCreate
 )
+from utils.jwt_auth import get_current_user
+from modules.users.access import require_store_capability
 
-customer_router = APIRouter(prefix="/api/customers", tags=["customers"])
+
+async def _authorize_customer_request(request: Request, db: Session = Depends(get_db),
+                                      current_user=Depends(get_current_user)):
+    path = request.url.path
+    if current_user.role.lower() == 'staff' and ('/segments/' in path or '/lead-scores/' in path):
+        # Legacy segments are global, so they cannot safely be granted to a store user.
+        raise HTTPException(status_code=403, detail='Customer segments are not available to staff')
+    customer_id = request.path_params.get('customer_id')
+    if customer_id:
+        try:
+            customer = db.query(Customer).filter(Customer.id == uuid.UUID(str(customer_id))).first()
+        except ValueError:
+            customer = None
+        if not customer or not customer.store_id:
+            raise HTTPException(status_code=404, detail='Customer not found')
+        store_id = customer.store_id
+    else:
+        store_id = request.query_params.get('store_id')
+        if not store_id and request.method == 'POST' and 'application/json' in request.headers.get('content-type', ''):
+            try:
+                payload = await request.json()
+                store_id = payload.get('store_id') if isinstance(payload, dict) else None
+            except ValueError:
+                pass
+        store_id = store_id or current_user.store_id
+    if not store_id:
+        raise HTTPException(status_code=403, detail='Store could not be determined')
+    require_store_capability(db, current_user, store_id, 'customers')
+    if path.endswith('/bulk') and request.method == 'POST':
+        payload = await request.json()
+        for row in payload.get('customers', []):
+            if row.get('store_id') and str(row['store_id']) != str(store_id):
+                raise HTTPException(status_code=403, detail='Customers must belong to the selected store')
+
+
+customer_router = APIRouter(prefix="/api/customers", tags=["customers"],
+                            dependencies=[Depends(_authorize_customer_request)])
 
 # Sample segments data matching your frontend
 SAMPLE_SEGMENTS = [
@@ -340,10 +378,10 @@ def get_customer(customer_id: uuid.UUID, db: Session = Depends(get_db)):
 def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)):
     """Create a new customer (scoped to the caller's store)."""
     # Email uniqueness is per-store, not global.
-    existing_customer = db.query(Customer).filter(
+    existing_customer = (db.query(Customer).filter(
         Customer.store_id == customer_data.store_id,
         Customer.email == customer_data.email
-    ).first()
+    ).first() if customer_data.email else None)
     if existing_customer:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -423,10 +461,10 @@ def bulk_create_customers(
             # Store scope: explicit query param wins, else the per-row value.
             row_store_id = store_id or customer_create.store_id
             # Email uniqueness is per-store.
-            existing_customer = db.query(Customer).filter(
+            existing_customer = (db.query(Customer).filter(
                 Customer.store_id == row_store_id,
                 Customer.email == customer_create.email
-            ).first()
+            ).first() if customer_create.email else None)
             if existing_customer:
                 failed_customers.append({
                     "email": customer_create.email,

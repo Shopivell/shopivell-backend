@@ -10,6 +10,8 @@ class ProductBase(BaseModel):
     title: str
     description: Optional[str] = None
     category: Optional[str] = None
+    branch: Optional[str] = None
+    in_stock: Optional[bool] = None
     price: float = 0.0
     type: Optional[str] = None
     vendor: Optional[str] = None
@@ -45,6 +47,8 @@ class ProductUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    branch: Optional[str] = None
+    in_stock: Optional[bool] = None
     price: Optional[float] = None
     type: Optional[str] = None
     vendor: Optional[str] = None
@@ -132,6 +136,7 @@ class CollectionBase(BaseModel):
     conditions: Optional[str] = None
 
 class CollectionCreate(CollectionBase):
+    store_id: uuid.UUID
     product_ids: List[uuid.UUID] = []
 
 class CollectionUpdate(BaseModel):

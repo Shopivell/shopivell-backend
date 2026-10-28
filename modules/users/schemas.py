@@ -1,5 +1,5 @@
 # modules/users/schemas.py
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from datetime import datetime
 from typing import Optional
 import uuid
@@ -60,6 +60,7 @@ class LoginResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user: UserResponse
+    permissions: list[str] = Field(default_factory=list)
     store_id: Optional[uuid.UUID] = None
     agency_id: Optional[uuid.UUID] = None
     stores_count: int = 0  # Number of stores user owns (for multi-store support)

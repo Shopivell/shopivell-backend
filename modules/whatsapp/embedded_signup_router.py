@@ -18,11 +18,19 @@ from pydantic import BaseModel
 from database import get_db
 from dependencies import get_current_user
 from modules.users.models import User
+from modules.stores.models import Store
+from modules.users.access import require_store_capability
 
 from .embedded_signup import EmbeddedSignupService
 from .models import WhatsAppAccount
 
 logger = logging.getLogger(__name__)
+
+
+def _require_owner(db, current_user, store_id):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can manage connections")
 
 # Router
 embedded_signup_router = APIRouter(
@@ -92,8 +100,7 @@ async def init_whatsapp_connection(
     Returns OAuth URL and state for the frontend to open.
     """
     # Verify user owns this store
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     service = EmbeddedSignupService(store_id, db)
     state = service.generate_oauth_state()
@@ -161,8 +168,7 @@ async def complete_whatsapp_connection(
     Frontend calls this with the code and selected WABA/phone details.
     """
     # Verify user owns this store
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     service = EmbeddedSignupService(store_id, db)
     redirect_uri = f"{BACKEND_URL}/v1/api/whatsapp/connect/callback"
@@ -199,9 +205,8 @@ async def list_whatsapp_accounts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List all WhatsApp accounts connected to this store."""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    """List WhatsApp accounts for users with messaging access."""
+    require_store_capability(db, current_user, store_id, "messages")
 
     service = EmbeddedSignupService(store_id, db)
     accounts = service.get_store_whatsapp_accounts()
@@ -232,8 +237,7 @@ async def set_default_account(
     current_user: User = Depends(get_current_user),
 ):
     """Set a WhatsApp account as the default for this store."""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     service = EmbeddedSignupService(store_id, db)
     account = service.set_default_account(request.account_id)
@@ -252,8 +256,7 @@ async def disconnect_whatsapp_account(
     current_user: User = Depends(get_current_user),
 ):
     """Disconnect a WhatsApp account from this store."""
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     service = EmbeddedSignupService(store_id, db)
     success = service.disconnect_account(account_id)
@@ -289,8 +292,7 @@ async def sdk_callback(
         phone_number_id: string (optional, from MessageEvent)
     }
     """
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     body = await request.json()
     code = body.get("code")
@@ -497,8 +499,7 @@ async def admin_add_whatsapp_number(
     Manually add a WhatsApp number (e.g. Meta test numbers).
     Skips the OAuth flow entirely.
     """
-    if not current_user.store_id or str(current_user.store_id) != str(store_id):
-        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    _require_owner(db, current_user, store_id)
 
     from modules.business.models import FacebookBusinessAccount
 

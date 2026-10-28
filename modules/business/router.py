@@ -27,7 +27,46 @@ from .schemas import (
     InstagramAccountResponse, InstagramAccountListResponse, InstagramOAuthResponse
 )
 
-business_router = APIRouter(prefix="/api/business", tags=["business"])
+async def _authorize_connection_management(request: Request, db: Session = Depends(get_db),
+                                           current_user=Depends(get_current_user_optional)):
+    path = request.url.path
+    if any(path.endswith(suffix) for suffix in ('/facebook/deauthorize', '/facebook/data-deletion',
+                                                 '/facebook/data-deletion/status')):
+        return  # Meta's signed callbacks are handled by the endpoint.
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    if current_user.role.lower() == 'staff':
+        if request.method != 'GET' or not path.endswith('/pages') or not current_user.store_id:
+            raise HTTPException(status_code=403, detail='Legacy account management is owner-only')
+        from modules.users.access import require_store_capability
+        require_store_capability(db, current_user, current_user.store_id, 'ads')
+    connection_post = any(path.endswith(suffix) for suffix in (
+        '/facebook/oauth-url', '/facebook/callback', '/connect',
+        '/instagram/oauth-url', '/instagram/callback')) and request.method == 'POST'
+    disconnect = request.method == 'DELETE' and any(part in path for part in ('/accounts/', '/pages/'))
+    if not connection_post and not disconnect:
+        return
+    if not current_user or not current_user.store_id:
+        raise HTTPException(status_code=401, detail='Sign in and select a store')
+    from modules.users.auth_router import _require_store_owner
+    _require_store_owner(db, uuid.UUID(current_user.store_id), current_user)
+    if disconnect:
+        account = None
+        params = request.path_params
+        if params.get('page_id'):
+            page = db.query(FacebookPage).filter(FacebookPage.id == params['page_id']).first()
+            account = page.business_account if page else None
+        elif params.get('account_id') and '/instagram/' in path:
+            instagram = db.query(InstagramAccount).filter(InstagramAccount.id == params['account_id']).first()
+            account = instagram.business_account if instagram else None
+        elif params.get('account_id'):
+            account = db.query(FacebookBusinessAccount).filter(FacebookBusinessAccount.id == params['account_id']).first()
+        if not account or str(account.shopivell_user_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail='Account does not belong to this owner')
+
+
+business_router = APIRouter(prefix="/api/business", tags=["business"],
+                            dependencies=[Depends(_authorize_connection_management)])
 
 # Facebook Graph API base URL
 FB_GRAPH_API_BASE = "https://graph.facebook.com/v18.0"
@@ -469,15 +508,18 @@ def connect_facebook_account(
 def get_business_accounts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """Get all connected Facebook business accounts"""
     business_accounts = db.query(FacebookBusinessAccount).filter(
-        FacebookBusinessAccount.is_connected == True
+        FacebookBusinessAccount.is_connected == True,
+        FacebookBusinessAccount.shopivell_user_id == current_user.id
     ).offset(skip).limit(limit).all()
     
     total_count = db.query(FacebookBusinessAccount).filter(
-        FacebookBusinessAccount.is_connected == True
+        FacebookBusinessAccount.is_connected == True,
+        FacebookBusinessAccount.shopivell_user_id == current_user.id
     ).count()
     
     return FacebookBusinessAccountListResponse(
@@ -486,10 +528,12 @@ def get_business_accounts(
     )
 
 @business_router.get("/accounts/{account_id}", response_model=FacebookBusinessAccountResponse)
-def get_business_account(account_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_business_account(account_id: uuid.UUID, db: Session = Depends(get_db),
+                         current_user: CurrentUser = Depends(get_current_user)):
     """Get a specific business account by ID"""
     business_account = db.query(FacebookBusinessAccount).filter(
-        FacebookBusinessAccount.id == account_id
+        FacebookBusinessAccount.id == account_id,
+        FacebookBusinessAccount.shopivell_user_id == current_user.id
     ).first()
     
     if not business_account:

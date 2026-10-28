@@ -7,7 +7,7 @@ from uuid import UUID
 class CustomerBase(BaseModel):
     first_name: str
     last_name: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
     phone: Optional[str] = None
     date_of_birth: Optional[date] = None
     gender: Optional[str] = None

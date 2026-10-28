@@ -64,7 +64,44 @@ from modules.openclaw.pharmacy_rules import (
 from modules.openclaw.brand_context import load_brand_context as _load_brand_context
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/openclaw", tags=["OpenClaw"])
+
+
+async def _authorize_openclaw_request(request: Request, db: Session = Depends(get_db),
+                                      current_user=Depends(get_current_user_optional)):
+    """Require store-scoped access for staff-facing OpenClaw routes."""
+    path = request.url.path
+    # These endpoints have their own webhook or MCP authentication.
+    if '/mcp/pharmacy' in path or path.endswith('/zernio-webhook'):
+        return
+    if not current_user:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    store_id = request.path_params.get('store_id')
+    if store_id:
+        from modules.users.access import require_store_capability
+        capability = ('messages' if path.endswith('/sync-whatsapp-inbox') else
+                      'products' if '/catalog/' in path else 'ads')
+        require_store_capability(db, current_user, store_id, capability)
+    elif request.path_params.get('campaign_id'):
+        from modules.users.access import require_store_capability
+        if not current_user.store_id:
+            raise HTTPException(status_code=403, detail='Select a store first')
+        store = require_store_capability(db, current_user, current_user.store_id, 'ads')
+        targets = await resolve_meta_targets(store)
+        tree = await _zernio('GET', '/ads/tree', params={'accountId': targets['account_id']})
+        campaign_id = str(request.path_params['campaign_id'])
+        matching = [campaign for campaign in (tree.get('campaigns') or [])
+                    if campaign_id in {str(campaign.get('platformCampaignId') or ''),
+                                       str(campaign.get('id') or ''), str(campaign.get('_id') or '')}]
+        if not matching:
+            raise HTTPException(status_code=404, detail='Campaign not found in this store')
+    elif current_user.role.lower() == 'staff':
+        # These older routes refer to global campaign IDs and cannot yet prove
+        # that the resource belongs to the selected store.
+        raise HTTPException(status_code=403, detail='This action is not available to staff')
+
+
+router = APIRouter(prefix="/openclaw", tags=["OpenClaw"],
+                   dependencies=[Depends(_authorize_openclaw_request)])
 
 # ---------------------------------------------------------------------------
 # Zernio REST integration
@@ -1627,6 +1664,8 @@ async def connect_zernio(
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
+    if str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can connect accounts")
 
     # Reuse the store's Zernio profile if it already has a valid one. A valid
     # Zernio profile id is a 24-char hex ObjectId; a stored value containing "-"
@@ -1696,6 +1735,8 @@ async def zernio_finalize(
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
+    if str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can connect accounts")
 
     if payload.platform == "whatsapp":
         # WhatsApp finalize: POST /connect/whatsapp/select-phone-number with the
@@ -1771,6 +1812,8 @@ async def disconnect_connected_account(
     store = db.query(Store).filter(Store.id == store_id).first()
     if not store or not store.zernio_profile_id:
         raise HTTPException(status_code=400, detail="Store is not connected to Zernio")
+    if str(store.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the store owner can disconnect accounts")
     listing = await _zernio("GET", "/accounts")
     accts = listing.get("accounts", []) if isinstance(listing, dict) else (listing or [])
     match = next((a for a in accts if str(a.get("_id") or a.get("id")) == str(account_id)), None)
@@ -2075,7 +2118,7 @@ async def resume_campaign(
     current_user: User = Depends(get_current_user)
 ):
     """Resume a paused campaign (all three Meta switches, not just the campaign's)."""
-    store_id = getattr(current_user, "last_active_store_id", None)
+    store_id = current_user.store_id
     store = db.query(Store).filter(Store.id == store_id).first() if store_id else None
     if not store or not store.zernio_profile_id:
         raise HTTPException(status_code=400, detail="No active Zernio-connected store to resume this campaign in.")
@@ -5873,6 +5916,11 @@ def _product_stock(db: Session, store_id: str, source_id, name: str, content: st
                 "WHERE store_id = :sid AND LOWER(title) = :title LIMIT 1"
             ), {"sid": store_id, "title": name.strip().lower()}).fetchone()
         if row:
+            # Branch catalogues can explicitly omit stock; linking them to a
+            # non-tracked Product must not turn unknown availability into stock.
+            if (stock == "unknown" and re.search(r"(?im)^Branch:\s*\S", content or "")
+                    and str(row[4]).strip().lower() in ('false', '0', 'f', 'no')):
+                return stock
             return _availability_from_product_row(row)
     except Exception as e:
         logger.debug("Stock lookup failed for product '%s' (%s): %s", name, source_id, e)

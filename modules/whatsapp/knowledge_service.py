@@ -194,14 +194,21 @@ class KnowledgeService:
         if product.description:
             parts.append(f"Description: {product.description}")
 
-        if hasattr(product, 'price') and product.price:
+        if getattr(product, 'price', None) is not None:
             parts.append(f"Price: ${product.price}")
 
         if hasattr(product, 'category') and product.category:
             parts.append(f"Category: {product.category}")
 
         if hasattr(product, 'sku') and product.sku:
-            parts.append(f"SKU: {product.sku}")
+            parts.append(f"Stock Code: {product.sku}")
+
+        if getattr(product, 'barcode', None):
+            parts.append(f"Barcode: {product.barcode}")
+        if getattr(product, 'branch', None):
+            parts.append(f"Branch: {product.branch}")
+        if getattr(product, 'in_stock', None) is not None:
+            parts.append(f"In Stock: {'Yes' if product.in_stock else 'No'}")
 
         return "\n".join(parts)
 
@@ -227,6 +234,7 @@ class KnowledgeService:
                     # Update
                     existing.title = f"Product: {product.title}"
                     existing.content = texts[i]
+                    existing.branch = product.branch
                     existing.embedding = embeddings[i]
                     existing.embedding_model = active_embedding_model()
                     existing.last_synced_at = datetime.utcnow()
@@ -239,6 +247,7 @@ class KnowledgeService:
                         content=texts[i],
                         category="product",
                         content_type="product",
+                        branch=product.branch,
                         source_id=product.id,
                         embedding=embeddings[i],
                         embedding_model=active_embedding_model(),
