@@ -216,6 +216,10 @@ class WhatsAppPaymentService:
                             SET status = 'confirmed', confirmed_at = NOW(), updated_at = NOW()
                             WHERE id = :order_id
                         """), {"order_id": order_id})
+                        self.db.execute(text("""
+                            UPDATE customer_orders SET status = 'confirmed'
+                            WHERE id = :order_id AND status = 'pending'
+                        """), {"order_id": order_id})
                         self.db.commit()
 
                         return {"status": "paid", "paid": True, "reference": result[1]}
@@ -250,6 +254,15 @@ class WhatsAppPaymentService:
                 SET {', '.join(set_clauses)}
                 WHERE id = :order_id
             """), params)
+            if "payment_status" in updates:
+                payment_status = updates["payment_status"]
+                display_status = ("paid" if payment_status in ("paid", "completed")
+                                  else "refunded" if payment_status == "refunded"
+                                  else "unpaid")
+                self.db.execute(text("""
+                    UPDATE customer_orders SET payment_status = :status
+                    WHERE id = :order_id
+                """), {"order_id": order_id, "status": display_status})
             self.db.commit()
 
         except Exception as e:

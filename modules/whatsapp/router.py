@@ -2,7 +2,7 @@
 
 import hashlib
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, BackgroundTasks, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ from datetime import datetime, time, timedelta
 import logging 
 from sqlalchemy import text
 from database import get_db
+from utils.jwt_auth import get_current_user
 from modules.whatsapp.chatbot_engine import SalesBot, LeadScorer, MultiTenantSalesBot
 from modules.whatsapp.flow_completion import handle_flow_completion
 from modules.whatsapp.flow_token import encode_flow_token
@@ -2194,6 +2195,106 @@ def update_capi_settings(
 
 # You must also update your /send-conversion endpoint to use the 
 # database-saved capi_dataset_id instead of relying on the environment variable:
+
+class SavedReplyInput(BaseModel):
+    title: str
+    body: str
+
+
+def _authorize_message_store(db, user, store_id):
+    from modules.whatsapp.faq_router import check_store_access
+    if not check_store_access(db, user, store_id):
+        raise HTTPException(status_code=403, detail="Not authorized to access this store")
+
+
+@whatsapp_router.get("/stores/{store_id}/saved-replies")
+def list_saved_replies(store_id: uuid.UUID, db: Session = Depends(get_db),
+                       current_user=Depends(get_current_user)):
+    from modules.whatsapp.models import MessageTemplate
+    _authorize_message_store(db, current_user, store_id)
+    rows = db.query(MessageTemplate).filter(MessageTemplate.store_id == store_id).order_by(MessageTemplate.created_at).all()
+    return [{"id": str(r.id), "title": r.title, "body": r.body} for r in rows]
+
+
+@whatsapp_router.post("/stores/{store_id}/saved-replies", status_code=201)
+def create_saved_reply(store_id: uuid.UUID, data: SavedReplyInput, db: Session = Depends(get_db),
+                       current_user=Depends(get_current_user)):
+    from modules.whatsapp.models import MessageTemplate
+    _authorize_message_store(db, current_user, store_id)
+    title, body = data.title.strip(), data.body.strip()
+    if not title or len(title) > 120 or not body or len(body) > 4096:
+        raise HTTPException(status_code=400, detail="Enter a title and message (maximum 4,096 characters).")
+    row = MessageTemplate(store_id=store_id, title=title, body=body)
+    db.add(row); db.commit(); db.refresh(row)
+    return {"id": str(row.id), "title": row.title, "body": row.body}
+
+
+@whatsapp_router.delete("/stores/{store_id}/saved-replies/{reply_id}")
+def delete_saved_reply(store_id: uuid.UUID, reply_id: uuid.UUID, db: Session = Depends(get_db),
+                       current_user=Depends(get_current_user)):
+    from modules.whatsapp.models import MessageTemplate
+    _authorize_message_store(db, current_user, store_id)
+    row = db.query(MessageTemplate).filter(MessageTemplate.id == reply_id, MessageTemplate.store_id == store_id).first()
+    if not row: raise HTTPException(status_code=404, detail="Saved reply not found")
+    db.delete(row); db.commit()
+    return {"success": True}
+
+
+@whatsapp_router.post("/accounts/{account_id}/send-attachment")
+async def send_attachment(account_id: uuid.UUID, to: str = Form(...), caption: str = Form(""),
+                          file: UploadFile = File(...), db: Session = Depends(get_db),
+                          current_user=Depends(get_current_user)):
+    import httpx
+    from modules.openclaw.router import (_zernio, _zernio_account_id_for_wa,
+        _persist_sandbox_message, ZERNIO_API_BASE, ZERNIO_API_KEY, ZERNIO_SANDBOX_ACCOUNT_ID)
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
+    if not account or not account.store_id: raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    _authorize_message_store(db, current_user, account.store_id)
+    target = ''.join(c for c in to if c.isdigit())
+    if not target:
+        raise HTTPException(status_code=400, detail="Customer phone number is required")
+    if consent.is_suppressed(db, account_id, target):
+        raise HTTPException(status_code=403, detail="This customer has opted out of messages")
+    content = await file.read(25 * 1024 * 1024 + 1)
+    if not content or len(content) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Choose a file of up to 25 MB")
+    account_id_z = await _zernio_account_id_for_wa(account)
+    if (account_id_z == ZERNIO_SANDBOX_ACCOUNT_ID
+            and not str(account.waba_id or '').startswith('zernio-sandbox-')):
+        raise HTTPException(status_code=503, detail="Could not resolve the connected WhatsApp account. Please try again.")
+    convs = await _zernio("GET", "/inbox/conversations", params={"platform":"whatsapp", "limit":50, "accountId":account_id_z})
+    conv = next((c for c in (convs.get("data") or []) if ''.join(x for x in str(c.get("participantId") or c.get("participantUsername") or "") if x.isdigit()) == target), None)
+    if not conv: raise HTTPException(status_code=400, detail="No open conversation with this customer")
+    async with httpx.AsyncClient(timeout=60) as client:
+        upload = await client.post(f"{ZERNIO_API_BASE}/media/upload-direct", headers={"Authorization":f"Bearer {ZERNIO_API_KEY}"}, files={"file":(file.filename or "attachment",content,file.content_type or "application/octet-stream")})
+        if upload.status_code >= 400: raise HTTPException(status_code=502, detail="Could not upload attachment")
+        url = upload.json().get("url")
+    if not url: raise HTTPException(status_code=502, detail="Attachment upload returned no URL")
+    kind = (file.content_type or '').split('/')[0]
+    kind = kind if kind in ('image','video','audio') else 'file'
+    result = await _zernio("POST", f"/inbox/conversations/{conv['id']}/messages", json_body={"accountId":account_id_z,"message":caption,"attachmentUrl":url,"attachmentType":kind,"attachmentName":file.filename or 'attachment'})
+    mid = ((result or {}).get("data") or {}).get("messageId")
+    history_url = url
+    try:
+        from modules.assets.service import AssetService
+        saved, error = await asyncio.to_thread(
+            AssetService(db).upload_to_minio, content,
+            os.path.basename(file.filename or "attachment"), account.store_id,
+            file.content_type or "application/octet-stream")
+        if saved and saved.get("url"):
+            history_url = saved["url"]
+        elif error:
+            logger.warning("Attachment history storage failed: %s", error)
+    except Exception:
+        logger.exception("Attachment was sent but permanent history storage failed")
+    try:
+        _persist_sandbox_message(db, account, target, None, "outbound", caption, mid, media_urls=[history_url])
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Attachment sent but could not be saved to message history")
+    return {"success":True,"message_id":mid}
+
 
 @whatsapp_router.post("/accounts/{account_id}/send-text", response_model=WhatsAppMessageSendResponse)
 def send_whatsapp_direct_text_message(

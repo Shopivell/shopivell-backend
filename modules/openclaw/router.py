@@ -3692,10 +3692,32 @@ def _create_order(db: Session, store_id: str, customer_phone: str, order_data: D
             "payment": order_data.get("payment_method", "cod"),
             "provider": order_data.get("payment_provider")
         })
+        # The Orders screen reads customer_orders. Keep a corresponding record
+        # in the same transaction as the WhatsApp order and any delivery.
+        from modules.orders.models import CustomerOrder
+        items = order_data.get("items") or []
+        item_summary = ", ".join(
+            f"{item.get('product_name', 'Item')} x{item.get('quantity', 1)}"
+            for item in items
+        )
+        db.add(CustomerOrder(
+            id=uuid.UUID(order_id), store_id=uuid.UUID(str(store_id)),
+            order_number=order_number, total_amount=order_data.get("total_amount", 0),
+            status="pending", customer_name=order_data.get("customer_name") or "Customer",
+            phone=order_data.get("delivery_phone") or customer_phone,
+            product_name=item_summary[:255] or None,
+            quantity=sum(int(item.get("quantity") or 1) for item in items),
+            payment_method=order_data.get("payment_provider") or order_data.get("payment_method"),
+            payment_status="unpaid",
+            delivery_status="pending" if order_data.get("collection_method") == "delivery" else None,
+            tracking_info=order_number if order_data.get("collection_method") == "delivery" else None,
+        ))
         if order_data.get("collection_method") == "delivery":
             from modules.delivery.models import Delivery, DeliveryTracking, DeliveryStatus
+            db.flush()  # The delivery references the Orders record.
             delivery = Delivery(
                 store_id=uuid.UUID(str(store_id)),
+                order_id=uuid.UUID(order_id),
                 tracking_number=order_number,
                 customer_name=order_data.get("customer_name") or "Customer",
                 customer_phone=order_data.get("delivery_phone") or customer_phone,

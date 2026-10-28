@@ -523,3 +523,12 @@ class WhatsAppOrderState(Base):
     expires_at = Column(DateTime, nullable=True)  # Cart expiry
 
     store = relationship("Store")
+
+class MessageTemplate(Base):
+    """Reusable, store-specific replies drafted by the store team."""
+    __tablename__ = "whatsapp_message_templates"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(120), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

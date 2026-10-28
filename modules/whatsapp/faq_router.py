@@ -333,7 +333,9 @@ async def update_bot_config(
     # Update fields
     update_data = config_data.model_dump(exclude_unset=True)
     for field, value in update_data.items():
-        if value is not None:
+        # An explicit null clears the optional custom rules. Other optional
+        # update fields retain their current value when sent as null.
+        if value is not None or field == "bot_personality":
             setattr(config, field, value)
 
     config.updated_at = datetime.utcnow()
