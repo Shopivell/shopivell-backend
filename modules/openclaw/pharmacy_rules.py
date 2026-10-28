@@ -909,7 +909,7 @@ def looks_like_person_name(text) -> bool:
     if is_conversational(raw):
         return False
     low = raw.lower()
-    if any(word in low for word in _ADDRESS_WORDS):
+    if _contains_phrase(low, _ADDRESS_WORDS):
         return False
     if len(raw.split()) > 5:              # a sentence, not a name
         return False

@@ -976,6 +976,7 @@ async def run():
         _mem_update_order_state(db, STORE_ID, bot.phone, current_state="delivery_step_name",
                                 customer_address=None)
 
+    _mem_update_order_state(db, STORE_ID, bot.phone, customer_address="12 Samora Machel Ave, Harare")
     # mobile money number via the tool
     result = await router._execute_pharmacy_tool(
         db, STORE, bot.phone, "set_payment_method", {"method": "ecocash", "mobile_number": "0771"})
@@ -1051,6 +1052,7 @@ async def run():
               state.get("current_state") == "delivery_step_address",
               str(state.get("current_state")))
 
+    _mem_update_order_state(db, STORE_ID, bot.phone, customer_phone_delivery="0771234567")
     reply = await bot.say("12 samora machel ave, harare")
     transcript("real address", "12 samora machel ave, harare", reply)
     state = _mem_get_order_state(db, STORE_ID, bot.phone) or {}
@@ -1157,8 +1159,8 @@ async def run():
     before_units, before_items = _units()
     reply = await bot.say("yes")
     after_units, after_items = _units()
-    check("9", "confirming adds the medication alongside the existing item",
-          after_units == before_units + 1 and bool(before_items),
+    check("9", "confirming an existing medication does not add another",
+          after_units == before_units and bool(before_items),
           f"{before_units}->{after_units} {[i['product_name'] for i in after_items]}")
 
     _ORDER_STATES.clear()
@@ -1307,6 +1309,7 @@ async def run():
     _ORDER_STATES.clear()
     _mem_update_order_state(db, STORE_ID, "263788836799",
                             collection_method="delivery", payment_method="cod",
+                            customer_name="Test Customer", customer_phone_delivery="0771234567",
                             cart_items=[{"product_name": "DOVE SOAP 100G", "price": 4,
                                          "quantity": 1, "branch": "Angwa"}])
     before_orders = len(_CREATED_ORDERS)
@@ -1832,7 +1835,7 @@ async def run():
           str(state.get("collection_method", "")).lower() == "delivery", str(state.get("collection_method")))
     check("17", "...and does not add the second cart item again",
           len(state.get("cart_items") or []) == 2, str(state.get("cart_items")))
-    check("17", "...the model handles the menu reply", bool(fake.payloads),
+    check("17", "...the collection choice is saved without a model call", not fake.payloads,
           f"{len(fake.payloads)} model call(s)")
 
     # Payment menu: "2" must mean EcoCash and must be saved.
@@ -2077,8 +2080,33 @@ async def run():
           str(state.get("customer_name")))
     check("22", "...the phone number is asked for next",
           "phone number" in reply.lower() and "did you mean" not in reply.lower(), reply[:200])
-    check("22", "...the model saves the name at the name step", bool(fake.payloads),
+    check("22", "...the name is saved without a model call", not fake.payloads,
           f"{len(fake.payloads)} model call(s)")
+
+    # Full names, repeated confirmations and explicit checkout choices.
+    _ORDER_STATES[(STORE_ID, bot.phone)]["current_state"] = "delivery_step_name"
+    await bot.say("Tinotenda Cosmas Nyaruwanga")
+    state = _mem_get_order_state(db, STORE_ID, bot.phone)
+    check("22", "all parts of a delivery name are saved",
+          state.get("customer_name") == "Tinotenda Cosmas Nyaruwanga", str(state.get("customer_name")))
+    _ORDER_STATES[(STORE_ID, bot.phone)]["current_state"] = "awaiting_checkout"
+    bot.history[:] = [{"role": "assistant", "content": "Added to your cart. Would you like to proceed to checkout?"}]
+    before = list(_ORDER_STATES[(STORE_ID, bot.phone)]["cart_items"])
+    reply = await bot.say("yes")
+    check("22", "yes starts checkout with the existing cart",
+          (_mem_get_order_state(db, STORE_ID, bot.phone) or {}).get("cart_items") == before
+          and "phone" in reply.lower(), reply[:180])
+    _ORDER_STATES[(STORE_ID, bot.phone)]["current_state"] = "awaiting_checkout"
+    _ORDER_STATES[(STORE_ID, bot.phone)]["collection_method"] = None
+    bot.history[:] = [{"role": "assistant", "content": "Would you like to proceed to checkout?"}]
+    await bot.say("no")
+    check("22", "no continues shopping", _mem_get_order_state(db, STORE_ID, bot.phone).get("current_state") == "cart")
+    result = await router._execute_pharmacy_tool(db, STORE, bot.phone, "add_to_cart",
+        {"product_name":"NIVEA CREAM 100ML", "price":6, "branch":"Angwa"}, "yes")
+    check("22", "repeated confirmation keeps the quantity", _mem_get_order_state(db, STORE_ID, bot.phone)["cart_items"][0]["quantity"] == 1, result)
+    result = await router._execute_pharmacy_tool(db, STORE, bot.phone, "add_to_cart",
+        {"product_name":"NIVEA CREAM 100ML", "price":6, "branch":"Angwa"}, "add one more")
+    check("22", "an explicit extra unit is added", _mem_get_order_state(db, STORE_ID, bot.phone)["cart_items"][0]["quantity"] == 2, result)
 
     # ---------------------------------------------------------------- 23
     print("\n[23] A NULL collection method cannot break the payment summary")

@@ -5163,6 +5163,13 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                            product_name, price, round_price(real_price))
             price = round_price(real_price)
 
+        # Repeated confirmations are idempotent unless another unit was requested.
+        for item in cart_items:
+            if (item.get("product_name") or "").strip().lower() == product_name.strip().lower():
+                if not user_text or not (_ONE_EXTRA.search(user_text) or _requested_quantity(user_text) > 1):
+                    return (f"{product_name} is already in your cart (quantity {item.get('quantity', 1)}). "
+                            "Would you like to proceed to checkout?")
+
         # Same product added again -> grow the quantity instead of a second line
         merged = False
         for item in cart_items:
@@ -5181,14 +5188,14 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
 
         _update_order_state(db, store_id, customer_phone,
                            cart_items=cart_items,
-                           current_state="cart",
+                           current_state="awaiting_checkout",
                            selected_branch=branch)
 
         subtotal = cart_subtotal(cart_items)
         item_count = sum(int(i.get("quantity", 1) or 1) for i in cart_items)
         return (f"Added {quantity}x {product_name} at {format_price(price)} each.\n"
                 f"Cart: {len(cart_items)} item(s) ({item_count} total) - "
-                f"Subtotal {format_price(subtotal)}.")
+                f"Subtotal {format_price(subtotal)}.\n\nWould you like to proceed to checkout?")
 
     elif tool_name == "update_cart":
         product_name = (args.get("product_name") or "").strip()
@@ -5461,6 +5468,11 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                            payment_phone=mobile_number,
                            current_state="confirm")
 
+        # Payment may arrive before delivery details; collect missing fields first.
+        saved = _get_order_state(db, store_id, customer_phone) or {}
+        if saved.get("collection_method") == "delivery" and _delivery_next_state(saved) != "payment":
+            return await _resume_checkout(db, store, customer_phone, user_text)
+
         # Show order summary (all prices rounded to whole numbers)
         state = _get_order_state(db, store_id, customer_phone)
         cart_items = state.get("cart_items", []) if state else []
@@ -5502,6 +5514,11 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         # A delivery order without a usable address cannot be dispatched, so it
         # must never be confirmed (this used to be silently allowed).
         if (state.get("collection_method") or "delivery") == "delivery":
+            if not (state.get("customer_name") or "").strip():
+                return "DELIVERY NAME MISSING: ask for the customer's full name before confirming."
+            delivery_phone, _ = normalize_phone(state.get("customer_phone_delivery"))
+            if not delivery_phone:
+                return "DELIVERY PHONE MISSING: ask for the customer's 10-digit delivery phone number before confirming."
             address = (state.get("customer_address") or "").strip()
             if not address:
                 return ("DELIVERY ADDRESS MISSING: ask the customer for their delivery "
@@ -5684,11 +5701,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                     "Example: '670 Ushewekunze Street, Mabelreign, Harare'")
         updates = {"customer_address": address}
         current = (state.get("current_state") or "")
-        if current == "delivery_step_address":
-            # The address step is the last detail; the phone was collected on
-            # the previous step. Move straight to payment.
-            updates["current_state"] = "payment"
-        elif current in ("delivery_step_name", "delivery_step_phone"):
+        if current in ("delivery_step_name", "delivery_step_phone", "delivery_step_address"):
             updates["current_state"] = _delivery_next_state(state, address=address)
         _update_order_state(db, store_id, customer_phone, **updates)
         saved = f"Address updated to *{address}*."
@@ -6738,14 +6751,16 @@ def _pharmacy_intent_gate(db: Session, store, user_text: str,
                 # from the message that named the item, not a hardcoded 1.
                 quantity = _pending_quantity(history, pending_item)
                 items = list(state.get("cart_items") or [])
+                if any((i.get("product_name") or "").lower() == pending_item.lower() for i in items):
+                    return (f"{pending_item} is already in your cart. Would you like to proceed to checkout?"), None
                 items.append({"product_name": pending_item,
                               "price": round_price(price),
                               "quantity": quantity, "branch": branch})
-                _update_order_state(db, str(store.id), customer_phone, cart_items=items)
+                _update_order_state(db, str(store.id), customer_phone, cart_items=items, current_state="awaiting_checkout")
                 return (f"Added {quantity}x *{pending_item}* at "
                         f"{format_price(round_price(price))} each. "
                         f"Cart now: {len(items)} item(s), subtotal "
-                        f"{format_price(cart_subtotal(items))}."), None
+                        f"{format_price(cart_subtotal(items))}. Would you like to proceed to checkout?"), None
             # Confirmed but not in the catalogue: restate it so the flow continues
             return None, f"Yes, I am sure. I want {pending_item}."
         if is_negative(text) or is_uncertain_request(text):
@@ -6823,7 +6838,7 @@ async def _checkout_choice_reply(db, store, user_text: str, customer_phone: str,
     state = _get_order_state(db, str(store.id), customer_phone) or {}
     if not state.get("cart_items"):
         return None
-    lowered = re.sub(r"[^a-z ]", " ", str(user_text).lower())
+    lowered = re.sub(r"[^a-z0-9 ]", " ", str(user_text).lower())
     lowered = re.sub(r"\s+", " ", lowered).strip()
     if not lowered or len(lowered.split()) > 3:
         return None
@@ -6831,7 +6846,7 @@ async def _checkout_choice_reply(db, store, user_text: str, customer_phone: str,
     # customer's name can legitimately be "Cash", and the order-flow tests send
     # exactly that. Only a bare choice at the collection/payment step counts.
     current = (state.get("current_state") or "").lower()
-    if current in _CHECKOUT_STATES and current != "payment":
+    if current in _CHECKOUT_STATES and current not in ("payment", "awaiting_collection"):
         return None
 
     # "2" answering "Delivery or Walk-in?": read the menu the bot just sent, so
@@ -6973,7 +6988,7 @@ def _delivery_next_state(state, name=None, phone=None, address=None) -> str:
                      else state.get("customer_address")) or ""
     if not str(name_value).strip():
         return "delivery_step_name"
-    if not str(phone_value).strip():
+    if not normalize_phone(phone_value)[0]:
         return "delivery_step_phone"
     if not str(address_value).strip():
         return "delivery_step_address"
@@ -7137,7 +7152,8 @@ async def _numbered_choice_reply(db, store, user_text: str,
             lines.append("")
             lines.append(sure_confirmation_message(medicines[0]["label"]))
         lines.append("")
-        lines.append("Would you like to add more, or shall I start the checkout?")
+        if not medicines:
+            lines.append("Would you like to proceed to checkout?")
         return "\n".join(lines)
 
     # 5) Category list without prices ("1. Skincare (Nivea, ...)") -> open it.
@@ -7170,13 +7186,13 @@ _DELIVERY_NAME_NOISE = {
 def _looks_like_a_name(text: str) -> bool:
     """True for the shortest thing a customer types at "what is your name?"."""
     value = str(text or "").strip()
-    if not value or "?" in value or len(value) > 40:
+    if not value or "?" in value or len(value) > 160:
         return False
     words = value.split()
-    if not 1 <= len(words) <= 4:
+    if not 1 <= len(words) <= 10:
         return False
     for word in words:
-        if not re.fullmatch(r"[A-Za-z][A-Za-z'\-]{0,20}", word):
+        if not re.fullmatch(r"[^\W\d_][^\W\d_'\-]*(?:['\-][^\W\d_]+)*", word, re.UNICODE):
             return False
         if word.lower() in _DELIVERY_NAME_NOISE:
             return False
@@ -7196,14 +7212,16 @@ async def _delivery_name_reply(db, store, user_text: str, history, customer_phon
         return None
     if not _looks_like_a_name(user_text):
         return None
-    if _named_categories(user_text) or is_medication_related(user_text):
+    if _named_categories(user_text) or is_medication_question(user_text):
         return None
 
-    name = " ".join(word.capitalize() if word.islower() else word
-                    for word in str(user_text).split())
+    name = " ".join(str(user_text).split())
+    next_step = _delivery_next_state(state, name=name)
     _update_order_state(db, str(store.id), customer_phone,
-                        customer_name=name, current_state="delivery_step_phone")
-    on_file = state.get("customer_phone_delivery") or customer_phone
+                        customer_name=name, current_state=next_step)
+    if next_step != "delivery_step_phone":
+        return f"Thanks, *{name}*!\n\n" + await _resume_checkout(db, store, customer_phone, user_text)
+    on_file = state.get("customer_phone_delivery")
     lines = [f"Thanks, *{name}*!", "", "*Step 2 of 3*",
              "What is your *phone number*?", "", "_Example: 0771234567_"]
     if on_file:
@@ -7262,6 +7280,20 @@ async def _generate_bot_reply(
         pharmacy_state = _get_order_state(db, str(store.id), customer_phone) or {}
         current_state = pharmacy_state.get("current_state", "") or ""
 
+    if is_pharmacy_store and customer_phone and not image_urls:
+        if (current_state == "awaiting_checkout"
+                and "proceed to checkout" in last_assistant_message(history).lower()
+                and not extract_sure_check_item(last_assistant_message(history))):
+            if is_affirmative(user_text):
+                return await _execute_pharmacy_tool(db, store, customer_phone, "start_checkout", {}, user_text)
+            if is_negative(user_text):
+                return await _execute_pharmacy_tool(db, store, customer_phone, "go_back_to_cart", {}, user_text)
+            if re.fullmatch(r"(?:i\s+)?(?:want|like|will take|take)\s+(?:that|this)\s+(?:one|item|product)[.! ]*", user_text.strip(), re.I):
+                return "That item is already in your cart. Would you like to proceed to checkout?"
+        name_reply = await _delivery_name_reply(db, store, user_text, history, customer_phone)
+        if name_reply:
+            return name_reply
+
     # MEDICATION SAFETY GATE: an unsure customer is handed to the pharmacist
     # (never suggested medication), a sure one is asked to double-check first.
     if is_pharmacy_store and customer_phone and user_text and not image_urls:
@@ -7274,6 +7306,12 @@ async def _generate_bot_reply(
         if rewritten_text:
             logger.info("Pharmacy gate restating request: %s", rewritten_text)
             user_text = rewritten_text
+
+    if is_pharmacy_store and customer_phone and not image_urls:
+        choice_reply = await _checkout_choice_reply(
+            db, store, user_text, customer_phone, history)
+        if choice_reply:
+            return choice_reply
 
     if (is_pharmacy_store and customer_phone and not image_urls
             and pharmacy_state.get("current_state") == "confirm"
@@ -8658,6 +8696,8 @@ async def _handle_inbound_whatsapp(payload: dict):
         if interactive_type in ("button_reply", "list_reply") and interactive_id:
             interactive_map = {
                 # Add to cart confirmation
+                "checkout_yes": "yes",
+                "checkout_no": "no",
                 "confirm_add_yes": "yes",
                 "confirm_add_no": "no, don't add it",
                 # Collection method
@@ -8767,11 +8807,32 @@ async def _handle_inbound_whatsapp(payload: dict):
             # If the customer is explicitly asking for a human (Settings > WhatsApp
             # Business > Handoff Keywords), skip the AI reply entirely and send the
             # configured handoff message instead.
+            checkout_reply = None
+            if _is_pharmacy_store(store) and not media_urls:
+                action = {
+                    "collection_walkin": ("set_collection_method", {"method": "walkin"}),
+                    "collection_delivery": ("set_collection_method", {"method": "delivery"}),
+                    "pay_cash": ("set_payment_method", {"method": "cash"}),
+                    "pay_ecocash": ("set_payment_method", {"method": "ecocash"}),
+                    "pay_onemoney": ("set_payment_method", {"method": "onemoney"}),
+                    "pay_innbucks": ("set_payment_method", {"method": "innbucks"}),
+                }.get(interactive_id)
+                if action:
+                    checkout_reply = await _execute_pharmacy_tool(
+                        db, store, sender_phone, action[0], action[1], user_text)
+
             handoff_msg = _check_handoff(db, store, user_text)
             no_knowledge = False
             pharmacist_handoff = False
             if handoff_msg:
                 reply = handoff_msg
+            elif (interactive_id in ("checkout_yes", "checkout_no")
+                  and (_get_order_state(db, str(store.id), sender_phone) or {}).get("current_state") == "awaiting_checkout"):
+                reply = await _execute_pharmacy_tool(
+                    db, store, sender_phone,
+                    "start_checkout" if interactive_id == "checkout_yes" else "go_back_to_cart", {}, user_text)
+            elif checkout_reply is not None:
+                reply = checkout_reply
             else:
                 # Pass in prior history so the model knows whether it's already spoken
                 # to this customer - without it, every reply re-introduced the business
@@ -8822,9 +8883,28 @@ async def _handle_inbound_whatsapp(payload: dict):
                 # Check if this is an ordering step that should use interactive buttons
                 interactive_sent = False
                 reply_lower = reply.lower()
+                saved_checkout = _get_order_state(db, str(store.id), sender_phone) or {}
+                checkout_step = saved_checkout.get("current_state")
+
+                if (checkout_step == "awaiting_checkout" and saved_checkout.get("cart_items")
+                        and not extract_sure_check_item(reply)
+                        and ("proceed to checkout" in reply_lower or re.search(r"\badded\b.*\bcart\b", reply_lower, re.S))):
+                    try:
+                        if "would you like to proceed to checkout?" not in reply_lower:
+                            reply = reply.rstrip() + "\n\nWould you like to proceed to checkout?"
+                        await _zernio("POST", f"/inbox/conversations/{conv_id}/messages", json_body={
+                            "accountId": account_id, "message": reply,
+                            "buttons": [
+                                {"type": "postback", "title": "Yes", "payload": "checkout_yes"},
+                                {"type": "postback", "title": "No", "payload": "checkout_no"},
+                            ],
+                        })
+                        interactive_sent = True
+                    except Exception as ie:
+                        logger.warning("Failed to send checkout buttons, falling back to text: %s", ie)
 
                 # Product Add Confirmation - send yes/no list
-                if "just to confirm" in reply_lower and "to your cart" in reply_lower:
+                if not interactive_sent and "just to confirm" in reply_lower and "to your cart" in reply_lower:
                     try:
                         # Extract product info for the list description
                         import re
@@ -8879,7 +8959,10 @@ async def _handle_inbound_whatsapp(payload: dict):
                         logger.warning("Failed to send add confirmation list, falling back to text: %s", ie)
 
                 # Collection Method - send list (Zernio only supports list, not button)
-                if "*collection method*" in reply_lower or "collection method" in reply_lower:
+                if (not interactive_sent
+                        and not saved_checkout.get("collection_method")
+                        and (checkout_step == "awaiting_collection"
+                             or "collection method" in reply_lower)):
                     try:
                         action = build_list_action("Select Option", [{
                             "title": "Collection Options",
@@ -8901,7 +8984,8 @@ async def _handle_inbound_whatsapp(payload: dict):
                         logger.warning("Failed to send interactive list, falling back to text: %s", ie)
 
                 # Payment Method - send list
-                elif "*payment method*" in reply_lower or "payment method" in reply_lower:
+                elif (not interactive_sent and checkout_step == "payment"
+                      and "payment method" in reply_lower):
                     try:
                         action = build_list_action("Select Payment", [{
                             "title": "Payment Options",
@@ -8914,7 +8998,7 @@ async def _handle_inbound_whatsapp(payload: dict):
                         }])
                         await _send_interactive_message(
                             conv_id, account_id, "list",
-                            "How would you like to pay?",
+                            reply,
                             action,
                             header="Payment Method",
                             recipient_phone=sender_phone
