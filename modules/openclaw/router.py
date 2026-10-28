@@ -3692,6 +3692,25 @@ def _create_order(db: Session, store_id: str, customer_phone: str, order_data: D
             "payment": order_data.get("payment_method", "cod"),
             "provider": order_data.get("payment_provider")
         })
+        if order_data.get("collection_method") == "delivery":
+            from modules.delivery.models import Delivery, DeliveryTracking, DeliveryStatus
+            delivery = Delivery(
+                store_id=uuid.UUID(str(store_id)),
+                tracking_number=order_number,
+                customer_name=order_data.get("customer_name") or "Customer",
+                customer_phone=order_data.get("delivery_phone") or customer_phone,
+                delivery_address=order_data.get("customer_address") or "",
+                delivery_cost=order_data.get("delivery_fee", 0),
+                package_description=", ".join(
+                    f"{item.get('product_name', '')} x{item.get('quantity', 1)}"
+                    for item in order_data.get("items", [])),
+                special_instructions=f"WhatsApp order {order_number}",
+                status=DeliveryStatus.PENDING,
+            )
+            db.add(delivery)
+            db.flush()
+            db.add(DeliveryTracking(delivery_id=delivery.id, status=DeliveryStatus.PENDING,
+                                    notes=f"Created from WhatsApp order {order_number}"))
         db.commit()
 
         # Clear the order state
@@ -5555,6 +5574,7 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         order_data = {
             "customer_name": state.get("customer_name"),
             "customer_address": state.get("customer_address"),
+            "delivery_phone": state.get("customer_phone_delivery"),
             "branch": (state.get("branch")
                        or (cart_items[0].get("branch") if cart_items else None)
                        or (_store_branches(db, store_id) or [None])[0]),
@@ -5685,9 +5705,6 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
 
     elif tool_name == "update_delivery_address":
         state = _get_order_state(db, store_id, customer_phone) or {}
-        if not state.get("cart_items"):
-            return ("Your cart is empty, so there are no delivery details to save "
-                    "yet. Add the items to the cart first.")
         raw = str(args.get("address") or "").strip()
         address = re.sub(r"^(?:actually|sorry|ok|okay|no)[\s,]+", "", raw, flags=re.I)
         address = re.sub(r"^(?:my\s+(?:delivery\s+)?address\s+is|it'?s)\s+", "",
@@ -5699,6 +5716,35 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
             return (f"The address *{address}* seems incomplete. "
                     "Please include: house number/name, street, suburb/area, and city. "
                     "Example: '670 Ushewekunze Street, Mabelreign, Harare'")
+        if not state.get("cart_items"):
+            from sqlalchemy import text as sql_text
+            try:
+                rows = db.execute(sql_text("""
+                    SELECT id, order_number FROM whatsapp_orders
+                    WHERE store_id = CAST(:store_id AS uuid)
+                      AND regexp_replace(customer_phone, '[^0-9]', '', 'g') = :phone
+                      AND collection_method = 'delivery' AND status = 'pending'
+                    ORDER BY created_at DESC LIMIT 2 FOR UPDATE
+                """), {"store_id": store_id, "phone": _normalize_state_phone(customer_phone)}).fetchall()
+                if not rows:
+                    return "I couldn't find a pending delivery order to update. Please share your order number so our team can help."
+                if len(rows) > 1:
+                    return "You have more than one pending delivery. Please contact the store with the order number to update its address."
+                row = rows[0]
+                delivery_status = db.execute(sql_text("SELECT status FROM deliveries WHERE store_id = CAST(:store_id AS uuid) AND tracking_number = :number FOR UPDATE"),
+                                             {"store_id": store_id, "number": row[1]}).scalar()
+                if delivery_status and str(delivery_status).lower() != "pending":
+                    return f"Order *{row[1]}* is already being handled. Please contact the store to change the delivery address."
+                db.execute(sql_text("UPDATE whatsapp_orders SET customer_address = :address WHERE id = :id"),
+                           {"address": address, "id": row[0]})
+                db.execute(sql_text("UPDATE deliveries SET delivery_address = :address, updated_at = NOW() WHERE store_id = CAST(:store_id AS uuid) AND tracking_number = :number AND status = 'PENDING'"),
+                           {"address": address, "store_id": store_id, "number": row[1]})
+                db.commit()
+                return f"I've updated the delivery address for order *{row[1]}* to *{address}*."
+            except Exception:
+                db.rollback()
+                logger.exception("Could not update confirmed delivery address")
+                return "I couldn't update the delivery address just now. Please contact the store with your order number."
         updates = {"customer_address": address}
         current = (state.get("current_state") or "")
         if current in ("delivery_step_name", "delivery_step_phone", "delivery_step_address"):
@@ -7281,6 +7327,11 @@ async def _generate_bot_reply(
         current_state = pharmacy_state.get("current_state", "") or ""
 
     if is_pharmacy_store and customer_phone and not image_urls:
+        if (not pharmacy_state.get("cart_items") and looks_like_address(user_text)
+                and (re.search(r"\b(?:address|deliver|delivery)\b", user_text, re.I)
+                     or "address" in last_assistant_message(history).lower())):
+            return await _execute_pharmacy_tool(db, store, customer_phone,
+                                                "update_delivery_address", {"address": user_text}, user_text)
         if (current_state == "awaiting_checkout"
                 and "proceed to checkout" in last_assistant_message(history).lower()
                 and not extract_sure_check_item(last_assistant_message(history))):
@@ -8877,6 +8928,15 @@ async def _handle_inbound_whatsapp(payload: dict):
                         # which is what the old silent path did instead.
                         no_knowledge = True
                         reply = _unanswered_query_reply(getattr(store, "store_name", None))
+
+            # The model may emit internal artifact identifiers in currency lines.
+            # At confirmation, reconstruct the summary from the saved cart instead.
+            if reply and "openai-templates:artifact-template-" in reply:
+                latest = _get_order_state(db, str(store.id), sender_phone) or {}
+                if latest.get("current_state") == "confirm" and latest.get("cart_items"):
+                    reply = await _resume_checkout(db, store, sender_phone, user_text)
+                else:
+                    reply = re.sub(r"openai-templates:artifact-template-[a-z0-9_-]+\s*", "", reply, flags=re.I)
 
             resp = None
             if reply is not None:

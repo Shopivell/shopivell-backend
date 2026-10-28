@@ -1025,8 +1025,9 @@ async def run():
         result = await router._execute_pharmacy_tool(
             db, STORE, empty_phone, tool, args)
         transcript(f"{tool} with an empty cart", tool, result)
-        check("7b", f"{tool} refuses an empty cart",
-              "cart is empty" in result.lower(), result[:200])
+        check("7b", f"{tool} refuses an empty cart without a pending order",
+              ("cart is empty" in result.lower() if tool != "update_delivery_address"
+               else "couldn't" in result.lower()), result[:200])
     empty_state = _mem_get_order_state(db, STORE_ID, empty_phone) or {}
     check("7b", "...and saves none of the details",
           not any(empty_state.get(key) for key in
