@@ -159,7 +159,7 @@ class KnowledgeService:
 
         products = db.query(Product).filter(
             Product.store_id == self.store_id,
-            Product.status == "active"
+            func.lower(Product.status) == "active"
         ).all()
 
         synced_count = 0
@@ -188,7 +188,7 @@ class KnowledgeService:
     def _format_product_for_knowledge(self, product) -> str:
         """Format product for knowledge base embedding"""
         parts = [
-            f"Product: {product.name}",
+            f"Product: {product.title}",
         ]
 
         if product.description:
@@ -225,7 +225,7 @@ class KnowledgeService:
 
                 if existing:
                     # Update
-                    existing.title = f"Product: {product.name}"
+                    existing.title = f"Product: {product.title}"
                     existing.content = texts[i]
                     existing.embedding = embeddings[i]
                     existing.embedding_model = active_embedding_model()
@@ -235,7 +235,7 @@ class KnowledgeService:
                     # Create
                     knowledge = CompanyKnowledge(
                         store_id=self.store_id,
-                        title=f"Product: {product.name}",
+                        title=f"Product: {product.title}",
                         content=texts[i],
                         category="product",
                         content_type="product",
