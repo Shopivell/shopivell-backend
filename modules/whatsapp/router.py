@@ -852,6 +852,48 @@ async def websocket_endpoint(websocket: WebSocket, account_id: uuid.UUID):
         db.close()
 
 # Webhook Endpoints
+async def _notify_payment_result(db: Session, order, result_status: str):
+    """Send a verified result to the same store's WhatsApp conversation."""
+    from modules.openclaw.router import _zernio, ZERNIO_SANDBOX_ACCOUNT_ID
+    from modules.stores.models import Store
+    conversation = (db.query(WhatsAppConversation)
+        .filter(WhatsAppConversation.store_id == order.store_id,
+                WhatsAppConversation.phone_number.in_([order.customer_phone, order.customer_phone.lstrip('+')]))
+        .order_by(WhatsAppConversation.last_message_at.desc()).first())
+    if not conversation:
+        raise RuntimeError('Customer conversation not found')
+    wa = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == conversation.whatsapp_account_id,
+                                         WhatsAppAccount.store_id == order.store_id).first()
+    store = db.query(Store).filter(Store.id == order.store_id).first()
+    if not wa or not store:
+        raise RuntimeError('Store WhatsApp account not found')
+    account_id = None
+    if wa.waba_id.startswith('zernio-sandbox-'):
+        account_id = ZERNIO_SANDBOX_ACCOUNT_ID
+    elif store.zernio_profile_id:
+        accounts = await _zernio('GET', '/accounts', params={'profileId': store.zernio_profile_id})
+        for account in accounts.get('accounts') or []:
+            meta = account.get('metadata') or {}
+            if account.get('platform') == 'whatsapp' and (meta.get('wabaId') == wa.waba_id or meta.get('phoneNumberId') == wa.phone_number_id):
+                account_id = account.get('_id') or account.get('id')
+                break
+    if not account_id:
+        raise RuntimeError('Store WhatsApp connection not found')
+    data = await _zernio('GET', '/inbox/conversations', params={'platform': 'whatsapp', 'limit': 50, 'accountId': account_id})
+    phone = order.customer_phone.lstrip('+').replace(' ', '')
+    target = next((c for c in (data.get('data') or []) if str(c.get('participantId') or c.get('participantUsername') or '').lstrip('+').replace(' ', '') == phone), None)
+    if not target:
+        raise RuntimeError('Customer conversation not found in connected inbox')
+    messages = {
+        'paid': 'Your payment has been confirmed as successful.',
+        'failed': 'Your payment failed. Please contact the store to retry or choose another payment method.',
+        'cancelled': 'Your payment was cancelled. Please contact the store to retry or choose another payment method.',
+        'refunded': 'Your payment has been refunded.',
+    }
+    await _zernio('POST', f"/inbox/conversations/{target['id']}/messages",
+                  json_body={'accountId': account_id, 'message': f"Order {order.order_number}: {messages[result_status]}"})
+
+
 @whatsapp_router.post('/paynow-callback')
 async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_db)):
     """Record verified Paynow updates for bot orders; never trust the status alone."""
@@ -902,6 +944,7 @@ async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_d
     elif not saved_reference or saved_reference != paynow_reference:
         raise HTTPException(status_code=400, detail='Payment reference does not match the order')
     status_value = data.get('status', '').strip().lower()
+    previous_status = order.payment_status
     if status_value in ('paid', 'awaiting delivery', 'delivered') and order.payment_status != 'refunded':
         order.payment_status = 'paid'
         if order.status == 'pending':
@@ -923,12 +966,26 @@ async def whatsapp_paynow_callback(request: Request, db: Session = Depends(get_d
                 db.rollback()
                 logger.exception('Payment recorded but customer linking failed for order %s', order_number)
                 raise HTTPException(status_code=500, detail='Customer linking will be retried')
+    elif status_value in ('failed', 'cancelled', 'canceled') and order.payment_status not in ('paid', 'completed', 'refunded'):
+        # A provider rejection is not a successful payment. Keep both order
+        # views in sync, and do not let a late failure overwrite a paid order.
+        order.payment_status = 'failed' if status_value == 'failed' else 'cancelled'
+        customer_order = db.query(CustomerOrder).filter(CustomerOrder.id == order.id).first()
+        if customer_order:
+            customer_order.payment_status = order.payment_status
+        db.commit()
     elif status_value == 'refunded':
         order.payment_status = 'refunded'
         customer_order = db.query(CustomerOrder).filter(CustomerOrder.id == order.id).first()
         if customer_order:
             customer_order.payment_status = 'refunded'
         db.commit()
+    if order.payment_status in ('paid', 'failed', 'cancelled', 'refunded') and order.payment_status != previous_status:
+        try:
+            await _notify_payment_result(db, order, order.payment_status)
+        except Exception:
+            # Payment records stay authoritative even when WhatsApp is down.
+            logger.exception('Could not notify customer of payment status for order %s', order_number)
     return {'received': True}
 
 

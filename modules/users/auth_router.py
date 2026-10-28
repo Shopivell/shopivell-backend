@@ -21,7 +21,7 @@ from modules.stores.models import Store, StoreSetupSession
 from utils.Verification_Codes_Services import VerificationCodeService
 from modules.referral.service import ReferralService
 from modules.referral.models import ReferralSource
-from utils.jwt_auth import jwt_auth, token_blacklist, get_current_user, CurrentUser
+from utils.jwt_auth import jwt_auth, token_blacklist, get_current_user, CurrentUser, verify_password
 
 
 def generate_unique_slug(db: Session, base_name: str) -> str:
@@ -52,6 +52,55 @@ def generate_unique_slug(db: Session, base_name: str) -> str:
     return f"{base_slug}-{uuid_module.uuid4().hex[:8]}"
 
 auth_router = APIRouter(prefix="/api/auth", tags=["authentication"])
+
+class PasswordLogin(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=72)
+
+
+@auth_router.post('/password-login', response_model=LoginResponse)
+def password_login(data: PasswordLogin, db: Session = Depends(get_db)):
+    """Optional password sign-in; email-code sign-in remains available."""
+    import hashlib
+    from sqlalchemy import text
+    from utils.cache import cache
+    # A shared Redis counter prevents unlimited guessing across workers. Fail
+    # closed if the limiter is unavailable rather than disabling protection.
+    try:
+        if not cache.is_connected:
+            raise RuntimeError('rate limiter unavailable')
+        key = 'auth:password:' + hashlib.sha256(str(data.email).lower().encode()).hexdigest()
+        attempts = cache._client.eval(
+            "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]); end; return n",
+            1, key, 900)
+    except Exception:
+        raise HTTPException(status_code=503, detail='Password sign-in is temporarily unavailable. Use an email code.')
+    if attempts > 10:
+        raise HTTPException(status_code=429, detail='Too many attempts. Try again later or use an email code.')
+    user = db.query(User).filter(func.lower(User.email) == str(data.email).lower()).first()
+    dummy = '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxdS8ZngCbHqI/t8wA9Zh7lr0qO'
+    matches = verify_password(data.password, user.password_hash if user and user.password_hash else dummy)
+    if not user or not user.password_hash or not user.is_active or not user.is_verified or not matches:
+        raise HTTPException(status_code=401, detail='Invalid email or password')
+    store = _active_store_for_user(db, user)
+    if user.role == UserRole.STAFF and not store:
+        raise HTTPException(status_code=403, detail='No active store access')
+    has_store = bool(store and store.is_setup_completed)
+    setup = db.query(StoreSetupSession).filter(StoreSetupSession.user_id == user.id,
+                                               StoreSetupSession.is_active.is_(True)).first()
+    agency = db.execute(text('SELECT id FROM agencies WHERE owner_id = :owner_id'),
+                        {'owner_id': str(user.id)}).fetchone()
+    agency_id = str(agency[0]) if agency else None
+    tokens = jwt_auth.create_tokens(user_id=str(user.id), email=user.email,
+        role=_store_role(user, store), store_id=str(store.id) if store else None, agency_id=agency_id)
+    return LoginResponse(user=UserResponse.model_validate(user).model_copy(update={'role': _store_role(user, store)}),
+        permissions=_member_permissions(db, user, store), store_id=store.id if store else None,
+        agency_id=agency_id, has_store=has_store, has_active_setup_session=bool(setup),
+        setup_session_id=setup.id if setup else None, setup_progress=setup.setup_progress if setup else 0,
+        current_setup_step=setup.current_step.value if setup else None,
+        user_status='has_store' if has_store else 'has_incomplete_setup' if setup else 'no_store',
+        redirect_to='/dashboard' if has_store else f'/setup/{setup.id}' if setup else '/setup/start',
+        access_token=tokens.access_token, refresh_token=tokens.refresh_token, token_type='bearer')
 
 
 def _accessible_stores(db: Session, user_id):

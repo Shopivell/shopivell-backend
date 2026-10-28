@@ -79,6 +79,7 @@ class WhatsAppPaymentService:
 
             if not self.paynow:
                 # A simulated request must never be reported as a real payment.
+                self._update_order_payment(order_id, payment_provider=provider, payment_status="failed")
                 return None, "Mobile payments are not configured."
 
             # Create PayNow payment
@@ -102,8 +103,12 @@ class WhatsAppPaymentService:
 
             logger.info(f"PayNow {provider} response - success: {response.success}")
 
-            if response.success:
-                poll_url = getattr(response, 'poll_url', None)
+            # SDK success indicates request acceptance, not settlement. Reject
+            # malformed/failed provider responses even if the SDK labels them
+            # successful, and require a poll URL to track the payment.
+            provider_status = str(getattr(response, 'status', '')).strip().lower()
+            poll_url = getattr(response, 'poll_url', None)
+            if response.success is True and provider_status == 'ok' and isinstance(poll_url, str) and poll_url:
                 paynow_ref = self._extract_reference(response)
                 instructions = self._get_instructions(response, provider)
 
@@ -183,7 +188,7 @@ class WhatsAppPaymentService:
         """
         try:
             result = self.db.execute(text("""
-                SELECT payment_status, payment_reference, payment_poll_url, total_amount
+                SELECT payment_status, payment_reference, payment_poll_url, total_amount, order_number
                 FROM whatsapp_orders
                 WHERE id = :order_id
             """), {"order_id": order_id}).fetchone()
@@ -197,15 +202,41 @@ class WhatsAppPaymentService:
             # If already completed or failed, return current status
             if current_status in ("completed", "paid"):
                 return {"status": "paid", "paid": True, "reference": result[1]}
-            if current_status == "failed":
-                return {"status": "failed", "paid": False, "reference": result[1]}
+            if current_status in ("failed", "cancelled", "canceled", "refunded"):
+                return {"status": current_status, "paid": False, "reference": result[1]}
 
             # Check with PayNow if we have a poll URL
             if poll_url and self.paynow:
                 try:
-                    status = self.paynow.check_transaction_status(poll_url)
+                    # The Paynow SDK's polling method does not verify the
+                    # response hash. Verify the raw provider response before
+                    # using it to change an order or tell a customer it paid.
+                    import hashlib, hmac, requests
+                    from decimal import Decimal
+                    from urllib.parse import parse_qsl, urlparse
+                    host = (urlparse(poll_url).hostname or '').lower()
+                    if urlparse(poll_url).scheme != 'https' or not (host == 'paynow.co.zw' or host.endswith('.paynow.co.zw')):
+                        raise ValueError('Invalid payment status URL')
+                    response = requests.post(poll_url, data={}, timeout=10, allow_redirects=False)
+                    response.raise_for_status()
+                    if response.status_code != 200:
+                        raise ValueError('Unexpected payment status response')
+                    fields = parse_qsl(response.text, keep_blank_values=True, strict_parsing=True)
+                    names = [name.lower() for name, _ in fields]
+                    if len(names) != len(set(names)) or names.count('hash') != 1:
+                        raise ValueError('Invalid payment status response')
+                    values = {name.lower(): value for name, value in fields}
+                    key = os.getenv('PAYNOW_INTEGRATION_KEY', '')
+                    signature = hashlib.sha512((''.join(value for name, value in fields if name.lower() != 'hash') + key).encode()).hexdigest().upper()
+                    if not key or not hmac.compare_digest(signature, values.get('hash', '').upper()):
+                        raise ValueError('Invalid payment status signature')
+                    if values.get('reference') != f'Order {result[4]}' or Decimal(values.get('amount', '')) != Decimal(str(result[3])).quantize(Decimal('0.01')):
+                        raise ValueError('Payment status does not match the order')
+                    if result[1] and not str(result[1]).startswith('PNW-') and values.get('paynowreference') != str(result[1]):
+                        raise ValueError('Payment reference does not match the order')
+                    paynow_status = values.get('status', '').strip().lower()
 
-                    if hasattr(status, 'paid') and status.paid:
+                    if paynow_status in ('paid', 'awaiting delivery', 'delivered'):
                         # Payment completed
                         self._update_order_payment(
                             order_id,
@@ -225,13 +256,14 @@ class WhatsAppPaymentService:
 
                         return {"status": "paid", "paid": True, "reference": result[1]}
 
-                    paynow_status = getattr(status, 'status', 'unknown').lower()
-                    if paynow_status in ('cancelled', 'failed'):
-                        self._update_order_payment(order_id, payment_status="failed")
-                        return {"status": "failed", "paid": False}
+                    if paynow_status in ('cancelled', 'canceled', 'failed'):
+                        final_status = 'failed' if paynow_status == 'failed' else 'cancelled'
+                        self._update_order_payment(order_id, payment_status=final_status)
+                        return {"status": final_status, "paid": False}
 
                 except Exception as e:
                     logger.error(f"Error checking PayNow status: {e}")
+                    return {"status": "unavailable", "paid": False, "reference": result[1]}
 
             # Still processing
             return {"status": "processing", "paid": False, "reference": result[1]}
@@ -259,6 +291,7 @@ class WhatsAppPaymentService:
                 payment_status = updates["payment_status"]
                 display_status = ("paid" if payment_status in ("paid", "completed")
                                   else "refunded" if payment_status == "refunded"
+                                  else payment_status if payment_status in ("failed", "cancelled")
                                   else "unpaid")
                 self.db.execute(text("""
                     UPDATE customer_orders SET payment_status = :status
@@ -299,6 +332,12 @@ class WhatsAppPaymentService:
 
     def _extract_error(self, response) -> str:
         """Extract error message from response."""
+        data = getattr(response, 'data', None)
+        if isinstance(data, dict):
+            for key in ('error', 'message', 'error_message'):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
         for attr in ['error', 'message', 'error_message']:
             if hasattr(response, attr):
                 val = getattr(response, attr)

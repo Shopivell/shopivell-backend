@@ -37,7 +37,7 @@ class DB:
     def filter(self, *args): return self
     def first(self): return None
 
-for status, expected in [('processing', 'unpaid'), ('failed', 'unpaid'), ('paid', 'paid'), ('refunded', 'refunded')]:
+for status, expected in [('processing', 'unpaid'), ('failed', 'failed'), ('cancelled', 'cancelled'), ('paid', 'paid'), ('refunded', 'refunded')]:
     db = DB()
     service = type('Service', (), {'db': db})()
     namespace['_update_order_payment'](service, str(uuid.uuid4()), payment_status=status)

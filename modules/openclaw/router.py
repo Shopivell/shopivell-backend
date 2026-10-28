@@ -5657,7 +5657,8 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         if order_number:
             payment_label = (mobile_provider.title() if is_mobile_money
                              else "Cash")
-            result = f"*ORDER CONFIRMED!*\n\n"
+            result = ("*ORDER PLACED — PAYMENT PENDING*\n\n" if is_mobile_money
+                      else "*ORDER CONFIRMED!*\n\n")
             result += f"Order #: {order_number}\n"
             result += f"Total: {format_price(total)}\n"
             result += f"Payment: {payment_label}\n"
@@ -5675,8 +5676,8 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
                                f"Amount: {format_price(total)}\n"
                                f"Number: {payment_phone}\n\n"
                                f"{instructions}\n\n"
-                               f"Approve the prompt on your phone. The payment is "
-                               f"confirmed once it goes through.\n")
+                               f"Approve the prompt on your phone. Your payment is "
+                               f"still pending until the provider confirms it.\n")
                 elif payment and payment.get("dry_run"):
                     result += f"\n{payment.get('instructions', 'DRY RUN - no prompt sent.')}\n"
                 else:
@@ -7352,6 +7353,31 @@ async def _generate_bot_reply(
     conv_id: Optional[str] = None,
     account_id: Optional[str] = None
 ) -> str:
+    # Payment status must come from the provider/order, never from the model's
+    # reading of an approval prompt or an order confirmation.
+    if customer_phone and not image_urls and re.search(
+        r'\b(?:payment|paynow|ecocash|onemoney|innbucks)\b', user_text, re.I
+    ) and re.search(r'\b(?:status|paid|successful|succeeded|failed|went through|confirmed|check)\b', user_text, re.I):
+        from modules.whatsapp.models import WhatsAppOrder
+        from modules.whatsapp.payment_service import WhatsAppPaymentService
+        order = (db.query(WhatsAppOrder).filter(
+            WhatsAppOrder.store_id == store.id,
+            WhatsAppOrder.customer_phone.in_([customer_phone, _normalize_state_phone(customer_phone)])
+        ).order_by(WhatsAppOrder.created_at.desc()).first())
+        if order:
+            state = WhatsAppPaymentService(db).check_payment_status(str(order.id))
+            status_value = state.get('status')
+            messages = {
+                'paid': 'Your payment was confirmed as successful.',
+                'failed': 'Your payment failed. No successful payment has been confirmed. Please contact the store to retry or choose another payment method.',
+                'cancelled': 'Your payment was cancelled. No successful payment has been confirmed. Please contact the store to retry or choose another payment method.',
+                'canceled': 'Your payment was cancelled. No successful payment has been confirmed. Please contact the store to retry or choose another payment method.',
+                'refunded': 'Your payment was refunded.',
+                'processing': 'Your payment is still pending. It has not been confirmed as successful.',
+                'unavailable': 'I could not check the payment provider right now. Your payment has not been confirmed; please try again shortly.',
+                'error': 'I could not check your payment status right now. Please try again shortly.',
+            }
+            return f"Order *{order.order_number}*: " + messages.get(status_value, 'Your payment has not been confirmed yet.')
     # Greetings are answered from code, before any model or product search runs.
     if not image_urls:
         greeting = _branded_greeting(db, store, customer_phone, user_text, returning=bool(history))
@@ -7399,7 +7425,7 @@ async def _generate_bot_reply(
     if is_pharmacy_store and customer_phone and not image_urls:
         if not pharmacy_state.get("cart_items"):
             last_reply = last_assistant_message(history)
-            if ("order confirmed" in last_reply.lower().replace("*", "")
+            if (any(marker in last_reply.lower().replace("*", "") for marker in ("order confirmed", "order placed"))
                     and is_affirmative(user_text)):
                 match = re.search(r"\b[A-Z]{2}-\d{8}-[A-Z0-9]{4}\b", last_reply, re.I)
                 reference = f" *{match.group(0)}*" if match else ""
@@ -8830,6 +8856,8 @@ async def _handle_inbound_whatsapp(payload: dict):
                 # Add to cart confirmation
                 "checkout_yes": "yes",
                 "checkout_no": "no",
+                "answer_yes": "yes",
+                "answer_no": "no",
                 "confirm_add_yes": "yes",
                 "confirm_add_no": "no, don't add it",
                 # Collection method
@@ -9048,7 +9076,6 @@ async def _handle_inbound_whatsapp(payload: dict):
                 if not interactive_sent and "just to confirm" in reply_lower and "to your cart" in reply_lower:
                     try:
                         # Extract product info for the list description
-                        import re
                         # Find ALL products in the message (could be multiple)
                         product_matches = re.findall(r'add\s+(.+?)\s*\(\$?([\d.]+)\)', reply, re.IGNORECASE)
 
@@ -9126,7 +9153,9 @@ async def _handle_inbound_whatsapp(payload: dict):
 
                 # Payment Method - send list
                 elif (not interactive_sent and checkout_step == "payment"
-                      and "payment method" in reply_lower):
+                      and ("payment method" in reply_lower
+                           or re.search(r'\b(?:how|which way)\b.{0,40}\bpay\b', reply_lower))
+                      and not re.search(r'\b(?:number|phone)\b', reply_lower)):
                     try:
                         action = build_list_action("Select Payment", [{
                             "title": "Payment Options",
@@ -9150,7 +9179,7 @@ async def _handle_inbound_whatsapp(payload: dict):
                         logger.warning("Failed to send interactive list, falling back to text: %s", ie)
 
                 # Order Confirmation - send list
-                elif "reply *yes* to confirm" in reply_lower or "reply yes to confirm" in reply_lower:
+                elif not interactive_sent and ("reply *yes* to confirm" in reply_lower or "reply yes to confirm" in reply_lower):
                     try:
                         action = build_list_action("Confirm", [{
                             "title": "Confirm Order",
@@ -9176,6 +9205,22 @@ async def _handle_inbound_whatsapp(payload: dict):
                         logger.info("Sent order confirmation list to %s", conv_id)
                     except Exception as ie:
                         logger.warning("Failed to send interactive list, falling back to text: %s", ie)
+
+                # Use WhatsApp's single-select list for explicit yes/no questions.
+                if not interactive_sent and (
+                    re.search(r'\byes\s*(?:/|or)\s*no\b', reply_lower)
+                    or re.search(r'(?:^|\n)\s*(?:would you like|do you want|is everything (?:correct|right))\b[^?\n]*\?', reply_lower)
+                ):
+                    try:
+                        action = build_list_action("Choose", [{"title": "Your answer", "rows": [
+                            {"id": "answer_yes", "title": "Yes"},
+                            {"id": "answer_no", "title": "No"},
+                        ]}])
+                        await _send_interactive_message(conv_id, account_id, "list", reply, action,
+                                                        recipient_phone=sender_phone)
+                        interactive_sent = True
+                    except Exception as ie:
+                        logger.warning("Failed to send yes/no options, falling back to text: %s", ie)
 
                 # Fall back to regular text message if no interactive was sent
                 if not interactive_sent:
