@@ -7327,6 +7327,17 @@ async def _generate_bot_reply(
         current_state = pharmacy_state.get("current_state", "") or ""
 
     if is_pharmacy_store and customer_phone and not image_urls:
+        if not pharmacy_state.get("cart_items"):
+            last_reply = last_assistant_message(history)
+            if ("order confirmed" in last_reply.lower().replace("*", "")
+                    and is_affirmative(user_text)):
+                match = re.search(r"\b[A-Z]{2}-\d{8}-[A-Z0-9]{4}\b", last_reply, re.I)
+                reference = f" *{match.group(0)}*" if match else ""
+                return (f"Your order{reference} has already been placed. "
+                        "Your payment is confirmed once it goes through.")
+            if (re.search(r"\b(?:change|update|correct)\b.*\baddress\b", user_text, re.I)
+                    and not looks_like_address(user_text)):
+                return "Please send the new delivery address for your order, including the street, suburb and city."
         if (not pharmacy_state.get("cart_items") and looks_like_address(user_text)
                 and (re.search(r"\b(?:address|deliver|delivery)\b", user_text, re.I)
                      or "address" in last_assistant_message(history).lower())):
