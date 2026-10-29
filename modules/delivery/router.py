@@ -250,6 +250,17 @@ def list_deliveries(
     )
 
 
+@delivery_router.get("/store/{store_id}/order/{order_id}", response_model=Optional[DeliveryResponse])
+def get_order_delivery(store_id: uuid.UUID, order_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Return the delivery linked to an order in the selected store, if any."""
+    return db.query(Delivery).options(
+        joinedload(Delivery.tracking_events)
+    ).filter(
+        Delivery.store_id == store_id,
+        Delivery.order_id == order_id,
+    ).order_by(Delivery.created_at.desc()).first()
+
+
 @delivery_router.get("/{delivery_id}", response_model=DeliveryResponse)
 def get_delivery(delivery_id: uuid.UUID, db: Session = Depends(get_db)):
     delivery = db.query(Delivery).options(
