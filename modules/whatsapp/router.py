@@ -2580,6 +2580,30 @@ def pharmacy_prescription_queue(store_id: uuid.UUID, branch: Optional[str] = Non
                                 "handoff_reason": row.handoff_reason} for row in rows]}
 
 
+class PrescriptionStatusInput(BaseModel):
+    status: str
+
+
+@whatsapp_router.patch("/stores/{store_id}/pharmacy/prescriptions/{conversation_id}/status")
+def update_pharmacy_prescription_status(store_id: uuid.UUID, conversation_id: uuid.UUID,
+                                        data: PrescriptionStatusInput, db: Session = Depends(get_db),
+                                        current_user=Depends(get_current_user)):
+    if data.status not in {"handoff", "closed"}:
+        raise HTTPException(status_code=400, detail="Status must be handoff or closed")
+    row = db.query(WhatsAppConversation).filter(
+        WhatsAppConversation.id == conversation_id,
+        WhatsAppConversation.store_id == store_id,
+        WhatsAppConversation.handoff_requested.is_(True),
+        WhatsAppConversation.handoff_reason.ilike("%prescription%")
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Prescription request not found")
+    _authorize_message_branch(db, current_user, row)
+    row.status = data.status
+    db.commit()
+    return {"id": str(row.id), "status": row.status}
+
+
 def _authorize_message_account(db, user, account_id):
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id:
