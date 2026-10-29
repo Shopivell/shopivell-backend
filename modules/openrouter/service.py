@@ -107,6 +107,49 @@ FACEBOOK_AD_TYPES = {
     }
 }
 
+CONTENT_ANALYSIS_SYSTEM_PROMPTS = {
+    "ad_generation": """You are a marketing analyst. Analyze the provided content and extract:
+- 5 compelling headlines (max 40 chars each)
+- 5 ad descriptions (max 125 chars each)
+- Target audience segments
+- Key value propositions
+- Recommended ad types from: facebook-ad, facebook-carousel, facebook-lead-gen, facebook-video-ad, facebook-story-ad
+
+Return as JSON with keys: headlines, descriptions, audiences, value_props, recommended_ad_types""",
+    "audience": """Analyze the content and identify target audience segments. Return JSON with:
+- demographics (age, gender, location)
+- interests
+- pain_points
+- desires
+- buying_triggers""",
+    "competitor": """Analyze the content from a competitive perspective. Return JSON with:
+- unique_selling_points
+- market_positioning
+- pricing_strategy
+- strengths
+- weaknesses""",
+}
+
+
+def facebook_ad_copy_system_prompt(ad_type: str, tone: str) -> str:
+    ad_config = FACEBOOK_AD_TYPES.get(ad_type, FACEBOOK_AD_TYPES["facebook-ad"])
+    return f"""You are an expert Facebook ad copywriter. Generate compelling ad copy for the following ad type:
+
+AD TYPE: {ad_type}
+PURPOSE: {ad_config['purpose']}
+FORMAT: {ad_config['format']}
+CHARACTERISTICS: {', '.join(ad_config['characteristics'])}
+
+TONE: {tone}
+
+Return your response as a JSON object with these fields:
+- headline (max 40 characters)
+- primary_text (125-500 characters)
+- description (max 125 characters)
+- call_to_action (e.g., \"Shop Now\", \"Learn More\", \"Sign Up\")
+- hook (attention-grabbing opening line)
+"""
+
 
 class OpenRouterClient:
     """
@@ -363,24 +406,7 @@ Key Characteristics:
         Returns:
             Dict with headline, primary_text, description, cta
         """
-        ad_config = FACEBOOK_AD_TYPES.get(ad_type, FACEBOOK_AD_TYPES["facebook-ad"])
-
-        system_prompt = f"""You are an expert Facebook ad copywriter. Generate compelling ad copy for the following ad type:
-
-AD TYPE: {ad_type}
-PURPOSE: {ad_config['purpose']}
-FORMAT: {ad_config['format']}
-CHARACTERISTICS: {', '.join(ad_config['characteristics'])}
-
-TONE: {tone}
-
-Return your response as a JSON object with these fields:
-- headline (max 40 characters)
-- primary_text (125-500 characters)
-- description (max 125 characters)
-- call_to_action (e.g., "Shop Now", "Learn More", "Sign Up")
-- hook (attention-grabbing opening line)
-"""
+        system_prompt = facebook_ad_copy_system_prompt(ad_type, tone)
 
         user_prompt = f"""Create ad copy for:
 Product: {product_info.get('product_name', 'Unknown Product')}
@@ -426,34 +452,9 @@ Key Benefits: {', '.join(product_info.get('benefits', []))}
         Returns:
             Analysis results as a dict
         """
-        system_prompts = {
-            "ad_generation": """You are a marketing analyst. Analyze the provided content and extract:
-- 5 compelling headlines (max 40 chars each)
-- 5 ad descriptions (max 125 chars each)
-- Target audience segments
-- Key value propositions
-- Recommended ad types from: facebook-ad, facebook-carousel, facebook-lead-gen, facebook-video-ad, facebook-story-ad
-
-Return as JSON with keys: headlines, descriptions, audiences, value_props, recommended_ad_types""",
-
-            "audience": """Analyze the content and identify target audience segments. Return JSON with:
-- demographics (age, gender, location)
-- interests
-- pain_points
-- desires
-- buying_triggers""",
-
-            "competitor": """Analyze the content from a competitive perspective. Return JSON with:
-- unique_selling_points
-- market_positioning
-- pricing_strategy
-- strengths
-- weaknesses"""
-        }
-
         result = await self.chat_completion(
             messages=[
-                {"role": "system", "content": system_prompts.get(analysis_type, system_prompts["ad_generation"])},
+                {"role": "system", "content": CONTENT_ANALYSIS_SYSTEM_PROMPTS.get(analysis_type, CONTENT_ANALYSIS_SYSTEM_PROMPTS["ad_generation"])},
                 {"role": "user", "content": f"Analyze this content:\n\n{content[:4000]}"}
             ],
             temperature=0.5,
