@@ -27,6 +27,8 @@ class StoreMember(Base):
     user_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     permissions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # null preserves legacy store-wide access; [] grants no branch access; names scope messages.
+    branch_names: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 

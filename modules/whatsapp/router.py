@@ -483,7 +483,14 @@ def mark_message_as_read(
         account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == message.whatsapp_account_id).first()
         if not account or not account.store_id:
             raise HTTPException(status_code=404, detail="WhatsApp account not found")
-        _authorize_message_store(db, current_user, account.store_id)
+        member = _authorize_message_store(db, current_user, account.store_id)
+        if member is not None and member.branch_names is not None:
+            conversation = db.query(WhatsAppConversation).filter(
+                WhatsAppConversation.whatsapp_account_id == account.id,
+                WhatsAppConversation.phone_number.in_([message.from_number, message.to_number])).first()
+            if not conversation:
+                raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+            _authorize_message_branch(db, current_user, conversation)
 
         message.read_at = datetime.utcnow()
         db.commit()
@@ -511,9 +518,16 @@ def mark_conversation_as_read(
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, account.store_id)
+    member = _authorize_message_store(db, current_user, account.store_id)
     try:
         phone_clean = phone_number.replace(" ", "").replace("+", "").strip()
+        if member is not None and member.branch_names is not None:
+            conversation = db.query(WhatsAppConversation).filter(
+                WhatsAppConversation.whatsapp_account_id == account_id,
+                WhatsAppConversation.phone_number.in_([phone_clean, "+" + phone_clean])).first()
+            if not conversation:
+                raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+            _authorize_message_branch(db, current_user, conversation)
 
         # Inbound messages are always stored with a "+" prefix on from_number
         # (see _persist_sandbox_message) - matching only the bare digits here
@@ -1841,7 +1855,9 @@ def get_conversation_summaries(account_id: uuid.UUID, db: Session = Depends(get_
                                current_user=Depends(get_current_user)):
     """Return the latest message and unread count per contact for this account."""
     from sqlalchemy import case, func
-    _authorize_message_account(db, current_user, account_id)
+    account = _authorize_message_account(db, current_user, account_id)
+    from modules.whatsapp.models import WhatsAppConversation
+    member = _authorize_message_store(db, current_user, account.store_id)
     phone = case((WhatsAppMessage.direction == 'inbound', WhatsAppMessage.from_number),
                  else_=WhatsAppMessage.to_number)
     # Stored numbers may have a leading plus or formatting separators.
@@ -1857,6 +1873,10 @@ def get_conversation_summaries(account_id: uuid.UUID, db: Session = Depends(get_
              WhatsAppMessage.direction.in_(['inbound', 'outbound']),
              phone.isnot(None), phone != '').subquery()
     rows = db.query(ranked).filter(ranked.c.rank == 1).order_by(ranked.c.timestamp.desc()).all()
+    rows = [row for row in rows if member is None or member.branch_names is None or
+            db.query(WhatsAppConversation.id).filter(WhatsAppConversation.whatsapp_account_id == account_id,
+                WhatsAppConversation.phone_number.in_([row.phone_number, '+' + row.phone_number]),
+                WhatsAppConversation.branch.in_(member.branch_names)).first()]
     return {'conversations': [{'phone_number': row.phone_number, 'last_message': row.message_text,
                                'last_message_at': row.timestamp, 'unread_count': int(row.unread_count or 0)}
                               for row in rows]}
@@ -1877,7 +1897,7 @@ def get_whatsapp_messages(
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, account.store_id)
+    member = _authorize_message_store(db, current_user, account.store_id)
     from sqlalchemy import or_
     query = db.query(WhatsAppMessage).filter(
         WhatsAppMessage.whatsapp_account_id == account_id
@@ -1894,6 +1914,14 @@ def get_whatsapp_messages(
             return func.replace(func.replace(func.replace(column, '+', ''), ' ', ''), '-', '')
         query = query.filter(or_(stripped(WhatsAppMessage.from_number).in_(variants),
                                  stripped(WhatsAppMessage.to_number).in_(variants)))
+        if member is not None and member.branch_names is not None:
+            from modules.whatsapp.models import WhatsAppConversation
+            conversation = db.query(WhatsAppConversation).filter(
+                WhatsAppConversation.whatsapp_account_id == account_id,
+                WhatsAppConversation.phone_number.in_(variants)).first()
+            if not conversation:
+                raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+            _authorize_message_branch(db, current_user, conversation)
 
     if direction:
         query = query.filter(WhatsAppMessage.direction == direction)
@@ -1923,9 +1951,16 @@ def get_conversation_messages(
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, account.store_id)
+    member = _authorize_message_store(db, current_user, account.store_id)
     # Clean phone number
     phone_clean = phone_number.replace(" ", "").replace("+", "").replace("-", "").strip()
+    if member is not None and member.branch_names is not None:
+        conv = db.query(WhatsAppConversation).filter(
+            WhatsAppConversation.whatsapp_account_id == account_id,
+            WhatsAppConversation.phone_number.in_([phone_clean, "+" + phone_clean])).first()
+        if not conv:
+            raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+        _authorize_message_branch(db, current_user, conv)
 
     # Get messages where this phone is either sender or recipient
     from sqlalchemy import or_
@@ -1963,11 +1998,15 @@ def get_conversations(
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, account.store_id)
+    member = _authorize_message_store(db, current_user, account.store_id)
     
     query = db.query(WhatsAppConversation).filter(
         WhatsAppConversation.whatsapp_account_id == account_id
     )
+    if member is not None and member.branch_names is not None:
+        if not member.branch_names:
+            return ConversationListResponse(conversations=[], total=0, page=page, page_size=page_size)
+        query = query.filter(WhatsAppConversation.branch.in_(member.branch_names))
     
     if status_filter:
         query = query.filter(WhatsAppConversation.status == status_filter)
@@ -2470,6 +2509,75 @@ def _authorize_message_store(db, user, store_id):
         StoreMember.is_active.is_(True)).first()
     if not member or 'messages' not in (member.permissions or []):
         raise HTTPException(status_code=403, detail="Not authorized to access messages for this store")
+    return member
+
+
+def _authorize_message_branch(db, user, conversation):
+    member = _authorize_message_store(db, user, conversation.store_id)
+    # Owners and legacy members (branch_names is NULL) retain their existing scope.
+    if member is not None and member.branch_names is not None and conversation.branch not in (member.branch_names or []):
+        raise HTTPException(status_code=403, detail="This conversation belongs to a branch you cannot manage")
+    return member
+
+
+@whatsapp_router.get("/stores/{store_id}/pharmacy/branches")
+def pharmacy_branches(store_id: uuid.UUID, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _authorize_message_store(db, current_user, store_id)
+    from modules.whatsapp.models import WhatsAppConversation
+    from sqlalchemy import distinct, or_
+    values = {row[0] for row in db.query(distinct(CompanyKnowledge.branch)).filter(
+        CompanyKnowledge.store_id == store_id, CompanyKnowledge.branch.isnot(None), CompanyKnowledge.branch != "").all()}
+    values.update(row[0] for row in db.query(distinct(WhatsAppConversation.branch)).filter(
+        WhatsAppConversation.store_id == store_id, WhatsAppConversation.branch.isnot(None), WhatsAppConversation.branch != "").all())
+    return {"branches": sorted(values)}
+
+
+class ConversationBranchInput(BaseModel):
+    branch: Optional[str] = None
+
+
+@whatsapp_router.patch("/stores/{store_id}/conversations/{conversation_id}/branch")
+def assign_conversation_branch(store_id: uuid.UUID, conversation_id: uuid.UUID, data: ConversationBranchInput,
+                               db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    from modules.whatsapp.models import WhatsAppConversation
+    member = _authorize_message_store(db, current_user, store_id)
+    row = db.query(WhatsAppConversation).filter(WhatsAppConversation.id == conversation_id,
+                                                WhatsAppConversation.store_id == store_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if member is not None:
+        raise HTTPException(status_code=403, detail="Only the store owner can route conversations between branches")
+    branch = data.branch.strip() if data.branch else None
+    if branch:
+        available = {item[0] for item in db.query(CompanyKnowledge.branch).filter(
+            CompanyKnowledge.store_id == store_id, CompanyKnowledge.branch == branch).distinct().all()}
+        if branch not in available:
+            raise HTTPException(status_code=400, detail="Choose a branch registered for this store")
+    row.branch = branch
+    db.commit()
+    return {"conversation_id": str(row.id), "branch": row.branch}
+
+
+@whatsapp_router.get("/stores/{store_id}/pharmacy/prescriptions")
+def pharmacy_prescription_queue(store_id: uuid.UUID, branch: Optional[str] = None,
+                                db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    from modules.whatsapp.models import WhatsAppConversation
+    member = _authorize_message_store(db, current_user, store_id)
+    query = db.query(WhatsAppConversation).filter(
+        WhatsAppConversation.store_id == store_id,
+        WhatsAppConversation.handoff_requested.is_(True),
+        WhatsAppConversation.handoff_reason.ilike("%prescription%"))
+    if member is not None and member.branch_names is not None:
+        if not member.branch_names:
+            return {"prescriptions": []}
+        query = query.filter(WhatsAppConversation.branch.in_(member.branch_names))
+    if branch:
+        query = query.filter(WhatsAppConversation.branch == branch)
+    rows = query.order_by(WhatsAppConversation.last_message_at.desc().nullslast()).limit(200).all()
+    return {"prescriptions": [{"id": str(row.id), "phone_number": row.phone_number,
+                                "customer_name": row.customer_name, "branch": row.branch,
+                                "last_message_at": row.last_message_at, "status": row.status,
+                                "handoff_reason": row.handoff_reason} for row in rows]}
 
 
 def _authorize_message_account(db, user, account_id):
@@ -2522,8 +2630,15 @@ async def send_attachment(account_id: uuid.UUID, to: str = Form(...), caption: s
         _persist_sandbox_message, ZERNIO_API_BASE, ZERNIO_API_KEY, ZERNIO_SANDBOX_ACCOUNT_ID)
     account = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not account or not account.store_id: raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, account.store_id)
+    member = _authorize_message_store(db, current_user, account.store_id)
     target = ''.join(c for c in to if c.isdigit())
+    if member is not None and member.branch_names is not None:
+        conversation = db.query(WhatsAppConversation).filter(
+            WhatsAppConversation.whatsapp_account_id == account_id,
+            WhatsAppConversation.phone_number.in_([target, '+' + target])).first()
+        if not conversation:
+            raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+        _authorize_message_branch(db, current_user, conversation)
     if is_whatsapp_service_number(target):
         raise HTTPException(status_code=403, detail='Replies to WhatsApp service notifications are disabled')
     if not target:
@@ -2591,8 +2706,15 @@ def send_whatsapp_direct_text_message(
     _sandbox_acct = db.query(WhatsAppAccount).filter(WhatsAppAccount.id == account_id).first()
     if not _sandbox_acct or not _sandbox_acct.store_id:
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
-    _authorize_message_store(db, current_user, _sandbox_acct.store_id)
+    member = _authorize_message_store(db, current_user, _sandbox_acct.store_id)
     to_clean = ''.join(c for c in message_data.to if c.isdigit())
+    if member is not None and member.branch_names is not None:
+        conversation = db.query(WhatsAppConversation).filter(
+            WhatsAppConversation.whatsapp_account_id == account_id,
+            WhatsAppConversation.phone_number.in_([to_clean, '+' + to_clean])).first()
+        if not conversation:
+            raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+        _authorize_message_branch(db, current_user, conversation)
     if is_whatsapp_service_number(to_clean):
         raise HTTPException(status_code=403, detail='Replies to WhatsApp service notifications are disabled')
     if consent.is_suppressed(db, account_id, to_clean):

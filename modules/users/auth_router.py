@@ -967,6 +967,7 @@ class StoreMemberInput(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     role: str
     permissions: list[str] = Field(default_factory=list)
+    branch_names: Optional[list[str]] = None
 
 
 @auth_router.get('/stores')
@@ -990,7 +991,8 @@ def _require_store_owner(db: Session, store_id: uuid.UUID, user: CurrentUser):
 def _member_payload(member, user):
     return {'id': str(member.id), 'user_id': str(user.id), 'name': user.name,
             'email': user.email, 'role': member.role,
-            'permissions': member.permissions, 'is_active': member.is_active}
+            'permissions': member.permissions, 'branch_names': member.branch_names,
+            'is_active': member.is_active}
 
 
 @auth_router.get('/stores/{store_id}/members')
@@ -1024,7 +1026,9 @@ def create_store_member(store_id: uuid.UUID, data: StoreMemberInput, db: Session
     if member:
         raise HTTPException(status_code=409, detail='This user is already assigned to the store')
     member = StoreMember(store_id=store_id, user_id=user.id, role=data.role,
-                         permissions=sorted(set(data.permissions)), is_active=True)
+                         permissions=sorted(set(data.permissions)),
+                         branch_names=sorted(set(data.branch_names)) if data.branch_names is not None else None,
+                         is_active=True)
     db.add(member)
     db.commit()
     db.refresh(member)
@@ -1035,6 +1039,7 @@ class StoreMemberUpdate(BaseModel):
     role: str
     permissions: list[str] = Field(default_factory=list)
     is_active: bool = True
+    branch_names: Optional[list[str]] = None
 
 
 @auth_router.put('/stores/{store_id}/members/{member_id}')
@@ -1047,6 +1052,8 @@ def update_store_member(store_id: uuid.UUID, member_id: uuid.UUID, data: StoreMe
     if not member:
         raise HTTPException(status_code=404, detail='Store user not found')
     member.role, member.permissions, member.is_active = data.role, sorted(set(data.permissions)), data.is_active
+    if data.branch_names is not None:
+        member.branch_names = sorted(set(data.branch_names))
     db.commit()
     user = db.query(User).filter(User.id == member.user_id).first()
     return _member_payload(member, user)

@@ -143,6 +143,17 @@ def run_column_migrations():
     from sqlalchemy import text
 
     with engine.connect() as conn:
+        # Index used to filter the pharmacy inbox by staff branch assignment.
+        try:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_whatsapp_conversations_branch "
+                "ON whatsapp_conversations (branch)"
+            ))
+            conn.commit()
+            print("[OK] Verified pharmacy conversation branch index exists")
+        except Exception as e:
+            print(f"[WARN] Could not add pharmacy conversation branch index: {e}")
+
         # Add screenshot_url to stores if missing
         try:
             conn.execute(text("""

@@ -213,6 +213,7 @@ class WhatsAppConversation(Base):
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True, index=True)  # Nullable until routed
     whatsapp_account_id = Column(UUID(as_uuid=True), ForeignKey("whatsapp_accounts.id"), nullable=False, index=True)
     phone_number = Column(String(50), nullable=False, index=True)
+    branch = Column(String(100), nullable=True, index=True)
 
     # Routing information
     routing_status = Column(String(50), default="pending")  # pending, routed, awaiting_selection
