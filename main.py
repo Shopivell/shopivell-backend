@@ -50,6 +50,7 @@ from modules.social.router import social_router
 from modules.business.router import business_router   
 from modules.payment.router import payment_router 
 # from modules.marketing.router import marketing_router  # REMOVED - Replaced by OpenClaw
+from modules.voice.router import voice_router
 from modules.whatsapp.router import whatsapp_router
 from modules.whatsapp.faq_router import faq_router
 from modules.whatsapp.embedded_signup_router import embedded_signup_router
@@ -156,6 +157,7 @@ app.include_router(business_router, prefix="/v1")
 app.include_router(payment_router, prefix="/v1")
 # app.include_router(marketing_router, prefix="/v1")  # REMOVED - Replaced by OpenClaw
 app.include_router(whatsapp_router, prefix="/v1")
+app.include_router(voice_router, prefix="/v1")
 app.include_router(faq_router, prefix="/v1")
 app.include_router(embedded_signup_router, prefix="/v1/api")
 app.include_router(flow_router, prefix="/v1")
