@@ -103,13 +103,6 @@ async def _authorize_openclaw_request(request: Request, db: Session = Depends(ge
 router = APIRouter(prefix="/openclaw", tags=["OpenClaw"],
                    dependencies=[Depends(_authorize_openclaw_request)])
 
-
-@router.get("/stores/{store_id}/marketing-agent-prompts")
-async def get_marketing_agent_prompts(store_id: str):
-    """Show advertising system prompts for this store; chatbot prompts are excluded."""
-    from modules.openclaw.prompt_catalog import marketing_agent_prompts
-    return {"prompts": marketing_agent_prompts()}
-
 # ---------------------------------------------------------------------------
 # Zernio REST integration
 #
