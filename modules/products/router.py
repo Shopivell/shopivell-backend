@@ -681,9 +681,19 @@ async def bulk_upload_products(
         existing_index[key] = None if key in existing_index else existing
 
     if filename.endswith('.csv'):
-        csv_content = io.StringIO(content.decode('utf-8'))
+        try:
+            csv_content = io.StringIO(content.decode('utf-8-sig'), newline='')
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="CSV file must be saved as UTF-8")
         csv_reader = csv.DictReader(csv_content)
+        if csv_reader.fieldnames:
+            csv_reader.fieldnames = [(name or '').strip().lower() for name in csv_reader.fieldnames]
         for row_num, row in enumerate(csv_reader, start=2):
+            if not any(value and str(value).strip() for value in row.values()):
+                continue
+            if (row.get('title') or '').strip() == 'Sample Product':
+                continue
             rows_to_process.append((row_num, row))
     else:
         try:
