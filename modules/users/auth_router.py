@@ -1053,8 +1053,8 @@ def update_store_member(store_id: uuid.UUID, member_id: uuid.UUID, data: StoreMe
     if not member:
         raise HTTPException(status_code=404, detail='Store user not found')
     member.role, member.permissions, member.is_active = data.role, sorted(set(data.permissions)), data.is_active
-    if data.branch_names is not None:
-        member.branch_names = sorted(set(data.branch_names))
+    if 'branch_names' in data.model_fields_set:
+        member.branch_names = sorted(set(data.branch_names)) if data.branch_names is not None else None
     db.commit()
     user = db.query(User).filter(User.id == member.user_id).first()
     return _member_payload(member, user)
