@@ -313,6 +313,56 @@ async def get_bot_config(
     return StoreBotConfigResponse.model_validate(config)
 
 
+@faq_router.get("/stores/{store_id}/pharmacy-bot-guidance")
+async def get_pharmacy_bot_guidance(
+    store_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Expose the code-enforced pharmacy assistant rules in store settings."""
+    if not check_store_access(db, current_user, store_id):
+        raise HTTPException(status_code=403, detail="Not authorized to access this store")
+
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    markers = ("pharmacy", "pharmacist", "chemist", "dispensary", "drugstore")
+    store_description = getattr(store, "store_description", "") or ""
+    identity = " ".join((
+        getattr(store, "store_name", "") or "",
+        getattr(store, "store_category", "") or "",
+        getattr(store, "business_type", "") or "",
+        store_description,
+    )).lower()
+    if not any(marker in identity for marker in markers):
+        return {"is_pharmacy": False, "instructions": []}
+
+    from modules.openclaw.pharmacy_rules import (
+        PHARMACIST_QUESTION_MESSAGE,
+        PHARMACIST_REVIEW_MESSAGE,
+        PHONE_ERROR_MESSAGE,
+    )
+
+    return {
+        "is_pharmacy": True,
+        "instructions": [
+            "Never provide medical advice, diagnosis, dosage, safety, interaction, side-effect, pregnancy or child-use guidance. Route clinical and prescription questions to a pharmacist before any AI answer or product search.",
+            "Never recommend medication when a customer is unsure or describes symptoms. Hand the request to the pharmacist for review.",
+            "When the customer names a medicine and is sure they want it, ask them to confirm before continuing the order. A yes continues; a no sends the request to the pharmacist.",
+            "Only offer products that are active and in stock. Use the store's catalogue for product names, prices, branches and availability; do not invent or approximate them.",
+            "Display prices rounded to whole numbers and correct likely product-name misspellings when matching the catalogue.",
+            "Require a valid 10-digit Zimbabwe phone number for checkout (local 0-prefix or +263 format).",
+        ],
+        "reply_templates": [
+            {"label": "Clinical or prescription question", "text": PHARMACIST_QUESTION_MESSAGE},
+            {"label": "Request needs pharmacist review", "text": PHARMACIST_REVIEW_MESSAGE},
+            {"label": "Invalid checkout phone number", "text": PHONE_ERROR_MESSAGE},
+            {"label": "Order confirmation", "text": "Just to confirm - are you really sure you want *[product name]*? Reply YES to continue with your order. Reply NO and our pharmacist will review your request first."},
+        ],
+    }
+
+
 @faq_router.put("/stores/{store_id}/bot-config", response_model=StoreBotConfigResponse)
 async def update_bot_config(
     store_id: UUID,
