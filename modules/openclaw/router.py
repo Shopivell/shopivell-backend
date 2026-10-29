@@ -8843,8 +8843,9 @@ def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: s
         db.flush()
     if customer_name and not conv.customer_name:
         conv.customer_name = customer_name
-    conv.last_message_at = ts
-    
+    if not conv.last_message_at or ts > conv.last_message_at:
+        conv.last_message_at = ts
+
     # Determine message type based on content
     msg_type = "text"
     media_url = None
@@ -8863,11 +8864,12 @@ def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: s
         else:
             msg_type = "image"  # Default to image for unknown media
     
+    business_phone = re.sub(r'\D', '', wa.phone_number or '') or SANDBOX_NUMBER_DIGITS
     db.add(WhatsAppMessage(
         whatsapp_account_id=wa.id,
         message_id=msg_id or f"zernio-{ts.timestamp()}",
-        from_number=("+" + other) if direction == "inbound" else ("+" + SANDBOX_NUMBER_DIGITS),
-        to_number=("+" + SANDBOX_NUMBER_DIGITS) if direction == "inbound" else ("+" + other),
+        from_number=("+" + other) if direction == "inbound" else ("+" + business_phone),
+        to_number=("+" + business_phone) if direction == "inbound" else ("+" + other),
         message_type=msg_type,
         direction=direction,
         status="delivered",
