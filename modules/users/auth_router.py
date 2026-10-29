@@ -9,6 +9,7 @@ import os
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 import requests
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
