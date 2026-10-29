@@ -72,6 +72,12 @@ assert contacts['0771234567']['unread_count'] == 210
 filtered = client.get(f'/v1/api/whatsapp/accounts/{account_id}/messages', params={'phone_number': '263771234567', 'limit': 1000}, headers=auth)
 assert filtered.status_code == 200 and filtered.json()['total_count'] == 210, filtered.text
 assert client.get(f'/v1/api/whatsapp/accounts/{other_account}/conversation-summaries', headers=auth).status_code == 403
+service_reply = client.post(f'/v1/api/whatsapp/accounts/{account_id}/send-text', headers=auth,
+                            json={'to': '+1 646 589 4168', 'body': 'Hello'})
+assert service_reply.status_code == 403, service_reply.text
+service_attachment = client.post(f'/v1/api/whatsapp/accounts/{account_id}/send-attachment', headers=auth,
+                                 data={'to': '+1 646 589 4168'}, files={'file': ('test.txt', b'test', 'text/plain')})
+assert service_attachment.status_code == 403, service_attachment.text
 assert client.get(f'/v1/api/whatsapp/accounts/{account_id}/messages').status_code == 401
 with Testing() as db:
     member = db.query(StoreMember).first(); member.permissions = []; db.commit()

@@ -24,6 +24,7 @@ from .models import CompanyKnowledge, WhatsAppAccount, WhatsAppMessage, WhatsApp
 from .store_router import StoreRouter
 from .profile_service import get_customer_name_from_contacts, generate_avatar_url, should_update_profile_picture
 from . import consent
+from .system_contacts import is_whatsapp_service_number
 from .schemas import (
     ChatRequest, ConversionsAPISettingsUpdate, KnowledgeCreateRequest, KnowledgeResponse, WhatsAppAccountCreate, WhatsAppAccountUpdate, WhatsAppAccountResponse, WhatsAppConversionEvent, WhatsAppMessageResponse,
     WhatsAppMessageSendResponse, WhatsAppTextMessage,
@@ -679,6 +680,12 @@ def send_bulk_whatsapp_messages(
             # Clean phone number
             to_clean = recipient.phone_number.replace(" ", "").replace("+", "").strip()
 
+            if is_whatsapp_service_number(to_clean):
+                results.append(BulkMessageResult(phone_number=to_clean, success=False,
+                                                 error="skipped: WhatsApp service number"))
+                skipped += 1
+                continue
+
             # Deduplicate within this batch
             if to_clean in seen_numbers:
                 results.append(BulkMessageResult(
@@ -1170,6 +1177,9 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
         message_id = message.get("id")
         message_type = message.get("type")
         timestamp = message.get("timestamp")
+        if is_whatsapp_service_number(from_number_clean):
+            logger.info("Skipping auto-response to WhatsApp service notification")
+            continue
 
         # Extract message text
         message_text = None
@@ -2514,6 +2524,8 @@ async def send_attachment(account_id: uuid.UUID, to: str = Form(...), caption: s
     if not account or not account.store_id: raise HTTPException(status_code=404, detail="WhatsApp account not found")
     _authorize_message_store(db, current_user, account.store_id)
     target = ''.join(c for c in to if c.isdigit())
+    if is_whatsapp_service_number(target):
+        raise HTTPException(status_code=403, detail='Replies to WhatsApp service notifications are disabled')
     if not target:
         raise HTTPException(status_code=400, detail="Customer phone number is required")
     if consent.is_suppressed(db, account_id, target):
@@ -2581,6 +2593,8 @@ def send_whatsapp_direct_text_message(
         raise HTTPException(status_code=404, detail="WhatsApp account not found")
     _authorize_message_store(db, current_user, _sandbox_acct.store_id)
     to_clean = ''.join(c for c in message_data.to if c.isdigit())
+    if is_whatsapp_service_number(to_clean):
+        raise HTTPException(status_code=403, detail='Replies to WhatsApp service notifications are disabled')
     if consent.is_suppressed(db, account_id, to_clean):
         return WhatsAppMessageSendResponse(success=False, message_id=None, wamid=None,
                                            message="Recipient has opted out and cannot be messaged.")

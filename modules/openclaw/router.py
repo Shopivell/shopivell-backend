@@ -8966,7 +8966,9 @@ async def _handle_inbound_whatsapp(payload: dict):
         if not user_text and media_urls:
             user_text = "What is this?"
         sender = msg.get("sender") or {}
-        sender_phone = sender.get("phoneNumber") or sender.get("id") or ""
+        sender_phone = (sender.get("phoneNumber") or msg.get("senderPhoneNumber")
+                        or (payload.get("conversation") or {}).get("participantId")
+                        or sender.get("id") or "")
         sender_name = sender.get("name") or ""
         in_msg_id = msg.get("platformMessageId") or msg.get("id")
         if not conv_id or not account_id:
@@ -9028,6 +9030,16 @@ async def _handle_inbound_whatsapp(payload: dict):
                         ]
             except Exception as we:
                 logger.warning("Could not resolve WhatsApp account/history before reply: %s", we)
+
+            # Keep service notices visible without treating them as customer requests.
+            from modules.whatsapp.system_contacts import is_whatsapp_service_number
+            if is_whatsapp_service_number(sender_phone):
+                if wa:
+                    _persist_sandbox_message(db, wa, sender_phone, sender_name,
+                                             "inbound", user_text, in_msg_id, media_urls=media_urls or None)
+                    db.commit()
+                logger.info("Skipping auto-response to WhatsApp service notification")
+                return
 
             # If the customer is explicitly asking for a human (Settings > WhatsApp
             # Business > Handoff Keywords), skip the AI reply entirely and send the
