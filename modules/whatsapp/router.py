@@ -1826,6 +1826,32 @@ def process_message_statuses(statuses: List[Dict[str, Any]], db: Session):
                 ))
 
 # Message History Endpoints
+@whatsapp_router.get("/accounts/{account_id}/conversation-summaries")
+def get_conversation_summaries(account_id: uuid.UUID, db: Session = Depends(get_db),
+                               current_user=Depends(get_current_user)):
+    """Return the latest message and unread count per contact for this account."""
+    from sqlalchemy import case, func
+    _authorize_message_account(db, current_user, account_id)
+    phone = case((WhatsAppMessage.direction == 'inbound', WhatsAppMessage.from_number),
+                 else_=WhatsAppMessage.to_number)
+    # Stored numbers may have a leading plus or formatting separators.
+    phone = func.replace(func.replace(func.replace(phone, '+', ''), ' ', ''), '-', '')
+    unread = case((WhatsAppMessage.direction == 'inbound',
+                   case((WhatsAppMessage.read_at.is_(None), 1), else_=0)), else_=0)
+    ranked = db.query(
+        phone.label('phone_number'), WhatsAppMessage.message_text.label('message_text'),
+        WhatsAppMessage.timestamp.label('timestamp'),
+        func.row_number().over(partition_by=phone, order_by=(WhatsAppMessage.timestamp.desc(), WhatsAppMessage.id.desc())).label('rank'),
+        func.sum(unread).over(partition_by=phone).label('unread_count'),
+    ).filter(WhatsAppMessage.whatsapp_account_id == account_id,
+             WhatsAppMessage.direction.in_(['inbound', 'outbound']),
+             phone.isnot(None), phone != '').subquery()
+    rows = db.query(ranked).filter(ranked.c.rank == 1).order_by(ranked.c.timestamp.desc()).all()
+    return {'conversations': [{'phone_number': row.phone_number, 'last_message': row.message_text,
+                               'last_message_at': row.timestamp, 'unread_count': int(row.unread_count or 0)}
+                              for row in rows]}
+
+
 @whatsapp_router.get("/accounts/{account_id}/messages", response_model=WhatsAppMessagesListResponse)
 def get_whatsapp_messages(
     account_id: uuid.UUID,
@@ -1849,15 +1875,15 @@ def get_whatsapp_messages(
 
     # Filter by phone number if provided
     if phone_number:
+        from sqlalchemy import func
         phone_clean = phone_number.replace(" ", "").replace("+", "").replace("-", "").strip()
-        query = query.filter(
-            or_(
-                WhatsAppMessage.from_number == phone_clean,
-                WhatsAppMessage.from_number == f"+{phone_clean}",
-                WhatsAppMessage.to_number == phone_clean,
-                WhatsAppMessage.to_number == f"+{phone_clean}"
-            )
-        )
+        variants = [phone_clean]
+        if phone_clean.startswith('263') and len(phone_clean) == 12:
+            variants.extend(['0' + phone_clean[3:], phone_clean[3:]])
+        def stripped(column):
+            return func.replace(func.replace(func.replace(column, '+', ''), ' ', ''), '-', '')
+        query = query.filter(or_(stripped(WhatsAppMessage.from_number).in_(variants),
+                                 stripped(WhatsAppMessage.to_number).in_(variants)))
 
     if direction:
         query = query.filter(WhatsAppMessage.direction == direction)

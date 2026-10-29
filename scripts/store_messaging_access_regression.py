@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 from uuid import uuid4
+from datetime import datetime
 
 os.environ['ALLOW_PLAINTEXT_TOKENS'] = 'true'  # Synthetic token in in-memory SQLite only.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,7 +29,7 @@ for table in (User.__table__, Store.__table__, StoreMember.__table__, FacebookBu
     table.create(engine)
 Testing = sessionmaker(bind=engine, autoflush=False)
 database.SessionLocal = Testing
-owner_id, user_id, store_id, business_id, account_id = [uuid4() for _ in range(5)]
+owner_id, user_id, store_id, business_id, account_id, other_store, other_account = [uuid4() for _ in range(7)]
 with Testing() as db:
     db.add_all([
         User(id=owner_id, email='owner@example.com', role=UserRole.OWNER, is_active=True),
@@ -38,6 +39,16 @@ with Testing() as db:
         FacebookBusinessAccount(id=business_id, business_account_id='f', business_name='x', access_token='test', user_id='u'),
         WhatsAppAccount(id=account_id, business_account_id=business_id, store_id=store_id,
                         waba_id='w', phone_number_id='p', phone_number='123', is_enabled=True),
+        Store(id=other_store, owner_id=owner_id, store_name='Other shop', store_phone='456'),
+        WhatsAppAccount(id=other_account, business_account_id=business_id, store_id=other_store,
+                        waba_id='w2', phone_number_id='p2', phone_number='456', is_enabled=True),
+        *[WhatsAppMessage(whatsapp_account_id=account_id, message_id=f'm{i}', from_number='0771234567',
+                          to_number='123', message_type='text', direction='inbound', message_text=f'message {i}')
+          for i in range(210)],
+        WhatsAppMessage(whatsapp_account_id=account_id, message_id='international', from_number='+442012345678',
+                        to_number='123', message_type='text', direction='inbound', message_text='international', timestamp=datetime(2020, 1, 1)),
+        WhatsAppMessage(whatsapp_account_id=other_account, message_id='other', from_number='447000000000',
+                        to_number='456', message_type='text', direction='inbound', message_text='private'),
     ])
     db.commit()
 app = FastAPI()
@@ -53,6 +64,14 @@ accounts = client.get(f'/v1/api/whatsapp/store/{store_id}/accounts', headers=aut
 assert accounts.status_code == 200, accounts.text
 messages = client.get(f'/v1/api/whatsapp/accounts/{account_id}/messages', headers=auth)
 assert messages.status_code == 200, messages.text
+summaries = client.get(f'/v1/api/whatsapp/accounts/{account_id}/conversation-summaries', headers=auth)
+assert summaries.status_code == 200, summaries.text
+contacts = {c['phone_number']: c for c in summaries.json()['conversations']}
+assert set(contacts) == {'0771234567', '442012345678'}, contacts.keys()
+assert contacts['0771234567']['unread_count'] == 210
+filtered = client.get(f'/v1/api/whatsapp/accounts/{account_id}/messages', params={'phone_number': '263771234567', 'limit': 1000}, headers=auth)
+assert filtered.status_code == 200 and filtered.json()['total_count'] == 210, filtered.text
+assert client.get(f'/v1/api/whatsapp/accounts/{other_account}/conversation-summaries', headers=auth).status_code == 403
 assert client.get(f'/v1/api/whatsapp/accounts/{account_id}/messages').status_code == 401
 with Testing() as db:
     member = db.query(StoreMember).first(); member.permissions = []; db.commit()

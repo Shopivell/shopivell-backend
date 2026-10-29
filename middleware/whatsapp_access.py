@@ -17,7 +17,7 @@ class WhatsAppAccessMiddleware(BaseHTTPMiddleware):
     })
     _staff_patterns = (
         r'/v1/api/whatsapp/store/[^/]+/(?:accounts|unread-count)',
-        r'/v1/api/whatsapp/accounts/[^/]+/(?:messages|conversations|leads|send-text|send-attachment|send-bulk)(?:/.*)?',
+        r'/v1/api/whatsapp/accounts/[^/]+/(?:messages|conversations|conversation-summaries|leads|send-text|send-attachment|send-bulk)(?:/.*)?',
         r'/v1/api/whatsapp/stores/[^/]+/saved-replies(?:/[^/]+)?',
         r'/v1/api/whatsapp/conversations/[^/]+/mark-read',
         r'/v1/api/whatsapp/messages/[^/]+/mark-read',
