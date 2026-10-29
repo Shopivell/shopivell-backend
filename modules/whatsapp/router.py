@@ -333,15 +333,15 @@ def create_whatsapp_account(
             detail="The selected Business Account does not have an access token linked."
         )
     
-    # 3. Check if WhatsApp account already exists for this WABA ID
+    # 3. Check whether this phone number is already connected
     existing_account = db.query(WhatsAppAccount).filter(
-        WhatsAppAccount.waba_id == account_data.waba_id
+        WhatsAppAccount.phone_number_id == account_data.phone_number_id
     ).first()
     
     if existing_account:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="WhatsApp account with this WABA ID already exists"
+            detail="WhatsApp account with this phone number ID already exists"
         )
     
     try:
@@ -874,7 +874,7 @@ async def _notify_payment_result(db: Session, order, result_status: str):
         accounts = await _zernio('GET', '/accounts', params={'profileId': store.zernio_profile_id})
         for account in accounts.get('accounts') or []:
             meta = account.get('metadata') or {}
-            if account.get('platform') == 'whatsapp' and (meta.get('wabaId') == wa.waba_id or meta.get('phoneNumberId') == wa.phone_number_id):
+            if account.get('platform') == 'whatsapp' and meta.get('phoneNumberId') == wa.phone_number_id:
                 account_id = account.get('_id') or account.get('id')
                 break
     if not account_id:

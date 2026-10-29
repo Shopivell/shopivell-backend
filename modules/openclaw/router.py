@@ -8747,18 +8747,16 @@ def _ensure_sandbox_wa_account(db: Session, store, account: Optional[dict] = Non
     is_real = bool(real_waba_id and real_phone_number_id)
 
     marker = real_phone_number_id if is_real else f"zernio-sandbox-{store.id}"
-    # waba_id is unique on this table and, unlike phone_number_id, stays stable across
-    # a reconnect (Meta/Zernio can issue a new phoneNumberId for the same WABA+number -
-    # confirmed live: this crashed on a duplicate-key IntegrityError before checking
-    # waba_id too, since it only looked up by the now-stale phone_number_id).
+    # A WABA can contain several numbers, potentially used by different stores.
+    # Only the phone-number ID identifies this connection.
     wa = db.query(WhatsAppAccount).filter(WhatsAppAccount.phone_number_id == marker).first()
-    if not wa and is_real:
-        wa = db.query(WhatsAppAccount).filter(WhatsAppAccount.waba_id == real_waba_id).first()
     if wa:
-        if wa.store_id != store.id:
-            wa.store_id = store.id  # number was re-connected under a different store
+        if wa.store_id and wa.store_id != store.id:
+            raise ValueError('WhatsApp phone number is already connected to another store')
+        if not wa.store_id:
+            wa.store_id = store.id
         if is_real:
-            wa.phone_number_id = real_phone_number_id
+            wa.waba_id = real_waba_id
             wa.phone_number = md.get("displayPhoneNumber") or wa.phone_number
             wa.is_enabled = True
         return wa
@@ -8793,24 +8791,22 @@ def _ensure_sandbox_wa_account(db: Session, store, account: Optional[dict] = Non
 
 
 async def _zernio_account_id_for_wa(wa) -> str:
-    """Resolve the Zernio connected-account id that owns a local WhatsAppAccount row,
-    by matching its waba_id against that store's connected accounts on Zernio. Works
-    for any tenant's own number, not just the shared sandbox - falls back to the
-    shared sandbox account only when no match is found (legacy sandbox rows have a
-    synthetic waba_id that never matches a real Zernio account)."""
+    """Resolve the exact phone-number connection within the store profile."""
+    if str(wa.waba_id or '').startswith('zernio-sandbox-'):
+        return ZERNIO_SANDBOX_ACCOUNT_ID
     db = SessionLocal()
     try:
         store = db.query(Store).filter(Store.id == wa.store_id).first() if wa.store_id else None
         if not store or not store.zernio_profile_id:
-            return ZERNIO_SANDBOX_ACCOUNT_ID
-        try:
-            res = await _zernio("GET", "/accounts", params={"profileId": store.zernio_profile_id})
-        except Exception:
-            return ZERNIO_SANDBOX_ACCOUNT_ID
-        for a in (res.get("accounts") or []):
-            if a.get("platform") == "whatsapp" and (a.get("metadata") or {}).get("wabaId") == wa.waba_id:
-                return a.get("_id") or a.get("id") or ZERNIO_SANDBOX_ACCOUNT_ID
-        return ZERNIO_SANDBOX_ACCOUNT_ID
+            raise RuntimeError('Store WhatsApp connection is not configured')
+        res = await _zernio("GET", "/accounts", params={"profileId": store.zernio_profile_id})
+        for account in (res.get("accounts") or []):
+            if (account.get("platform") == "whatsapp" and
+                    (account.get("metadata") or {}).get("phoneNumberId") == wa.phone_number_id):
+                account_id = account.get("_id") or account.get("id")
+                if account_id:
+                    return account_id
+        raise RuntimeError('Store WhatsApp phone number was not found in Zernio')
     finally:
         db.close()
 
@@ -9565,6 +9561,9 @@ async def sync_whatsapp_inbox(
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
 
+    from modules.whatsapp.router import _authorize_message_store
+    _authorize_message_store(db, current_user, store.id)
+
     account = None
     if store.zernio_profile_id:
         try:
@@ -9572,7 +9571,10 @@ async def sync_whatsapp_inbox(
             account = next((a for a in (accts_res.get("accounts") or []) if a.get("platform") == "whatsapp"), None)
         except Exception as e:
             logger.warning("Could not look up Zernio WhatsApp account for store %s: %s", store_id, e)
-    account_id = (account or {}).get("_id") or (account or {}).get("id") or ZERNIO_SANDBOX_ACCOUNT_ID
+    account_id = (account or {}).get("_id") or (account or {}).get("id")
+    metadata = (account or {}).get("metadata") or {}
+    if not account_id or not metadata.get("wabaId") or not metadata.get("phoneNumberId"):
+        raise HTTPException(status_code=400, detail="No connected WhatsApp phone number found for this store")
 
     wa = _ensure_sandbox_wa_account(db, store, account)
     if not wa:

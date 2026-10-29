@@ -14,7 +14,7 @@ class WhatsAppAccount(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     business_account_id = Column(UUID(as_uuid=True), ForeignKey("facebook_business_accounts.id"), nullable=False)
-    waba_id = Column(String(255), unique=True, index=True, nullable=False)
+    waba_id = Column(String(255), index=True, nullable=False)
     phone_number_id = Column(String(255), unique=True, index=True, nullable=False)
     phone_number = Column(String(50), nullable=False)
     display_name = Column(String(255), nullable=True)
