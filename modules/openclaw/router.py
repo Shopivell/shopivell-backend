@@ -3454,18 +3454,31 @@ def _bot_config(db: Session, store) -> tuple:
         return default_name, None
     try:
         from modules.whatsapp.models import StoreBotConfig
-        from modules.openclaw.pharmacy_rules import PHARMACY_BOT_INSTRUCTIONS
+        from modules.openclaw.pharmacy_rules import PHARMACY_BOT_INSTRUCTIONS, PHARMACY_REPLY_TEMPLATES
         config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store.id).first()
         name = (config.bot_name.strip() if config and config.bot_name and config.bot_name.strip()
                 else default_name)
         rule_parts = []
         if config and config.bot_personality and config.bot_personality.strip():
             rule_parts.append(config.bot_personality.strip())
-        if _is_pharmacy_store(store):
-            pharmacy_rules = (config.pharmacy_instructions if config and config.pharmacy_instructions is not None
-                              else PHARMACY_BOT_INSTRUCTIONS)
-            if pharmacy_rules:
-                rule_parts.append("PHARMACY STORE RULES:\n" + "\n".join(f"- {rule}" for rule in pharmacy_rules))
+        is_pharmacy = _is_pharmacy_store(store)
+        store_rules = (config.pharmacy_instructions if config and config.pharmacy_instructions is not None
+                       else PHARMACY_BOT_INSTRUCTIONS if is_pharmacy else [])
+        if store_rules:
+            rule_parts.append("STORE-SPECIFIC ASSISTANT RULES:\n" + "\n".join(f"- {rule}" for rule in store_rules))
+        templates = (config.reply_templates if config and config.reply_templates is not None
+                     else PHARMACY_REPLY_TEMPLATES if is_pharmacy else [])
+        if templates:
+            formatted_templates = "\n".join(
+                f"- {template.get('label', 'Reply template')}: {template.get('text', '')}"
+                for template in templates if isinstance(template, dict)
+            )
+            if formatted_templates:
+                rule_parts.append(
+                    "STORE REPLY TEMPLATES:\n" + formatted_templates +
+                    "\nUse a matching template when appropriate, filling in its placeholders. "
+                    "Do not use a template when it conflicts with mandatory safety or platform rules."
+                )
         return name, "\n\n".join(rule_parts) or None
     except Exception as e:
         logger.warning("Failed to load bot config for store %s: %s", store.id, e)

@@ -313,13 +313,14 @@ async def get_bot_config(
     return StoreBotConfigResponse.model_validate(config)
 
 
+@faq_router.get("/stores/{store_id}/assistant-guidance")
 @faq_router.get("/stores/{store_id}/pharmacy-bot-guidance")
 async def get_pharmacy_bot_guidance(
     store_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Expose the code-enforced pharmacy assistant rules in store settings."""
+    """Return this store's assistant rules and reply templates."""
     if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
@@ -335,31 +336,26 @@ async def get_pharmacy_bot_guidance(
         getattr(store, "business_type", "") or "",
         store_description,
     )).lower()
-    if not any(marker in identity for marker in markers):
-        return {"is_pharmacy": False, "instructions": []}
+    is_pharmacy = any(marker in identity for marker in markers)
 
     from modules.openclaw.pharmacy_rules import (
         PHARMACY_BOT_INSTRUCTIONS,
-        PHARMACIST_QUESTION_MESSAGE,
-        PHARMACIST_REVIEW_MESSAGE,
-        PHONE_ERROR_MESSAGE,
+        PHARMACY_REPLY_TEMPLATES,
     )
 
     config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
     instructions = (config.pharmacy_instructions if config and config.pharmacy_instructions is not None
-                    else PHARMACY_BOT_INSTRUCTIONS)
+                    else PHARMACY_BOT_INSTRUCTIONS if is_pharmacy else [])
+    templates = (config.reply_templates if config and config.reply_templates is not None
+                 else PHARMACY_REPLY_TEMPLATES if is_pharmacy else [])
     return {
-        "is_pharmacy": True,
+        "is_pharmacy": is_pharmacy,
         "instructions": instructions,
-        "reply_templates": [
-            {"label": "Clinical or prescription question", "text": PHARMACIST_QUESTION_MESSAGE},
-            {"label": "Request needs pharmacist review", "text": PHARMACIST_REVIEW_MESSAGE},
-            {"label": "Invalid checkout phone number", "text": PHONE_ERROR_MESSAGE},
-            {"label": "Order confirmation", "text": "Just to confirm - are you really sure you want *[product name]*? Reply YES to continue with your order. Reply NO and our pharmacist will review your request first."},
-        ],
+        "reply_templates": templates,
     }
 
 
+@faq_router.put("/stores/{store_id}/assistant-guidance")
 @faq_router.put("/stores/{store_id}/pharmacy-bot-guidance")
 async def update_pharmacy_bot_guidance(
     store_id: UUID,
@@ -367,7 +363,7 @@ async def update_pharmacy_bot_guidance(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Save this store's editable pharmacy shopping instructions."""
+    """Save this store's assistant instructions and reusable reply templates."""
     if not check_store_access(db, current_user, store_id):
         raise HTTPException(status_code=403, detail="Not authorized to access this store")
 
@@ -377,10 +373,16 @@ async def update_pharmacy_bot_guidance(
     markers = ("pharmacy", "pharmacist", "chemist", "dispensary", "drugstore")
     identity = " ".join(str(getattr(store, field, "") or "") for field in
                          ("store_name", "store_category", "business_type", "store_description")).lower()
-    if not any(marker in identity for marker in markers):
-        raise HTTPException(status_code=400, detail="Pharmacy instructions are only available for pharmacy stores")
+    is_pharmacy = any(marker in identity for marker in markers)
 
     instructions = [item.strip() for item in guidance.instructions]
+    templates = []
+    for template in guidance.reply_templates:
+        label = (template.get("label") or "").strip()
+        text = (template.get("text") or "").strip()
+        if not label or len(label) > 120 or not text or len(text) > 5000:
+            raise HTTPException(status_code=422, detail="Each template needs a name (up to 120 characters) and reply text (up to 5000 characters)")
+        templates.append({"label": label, "text": text})
     if any(not item or len(item) > 1000 for item in instructions):
         raise HTTPException(status_code=422, detail="Each rule must contain 1 to 1000 characters")
     config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
@@ -388,9 +390,10 @@ async def update_pharmacy_bot_guidance(
         config = StoreBotConfig(store_id=store_id)
         db.add(config)
     config.pharmacy_instructions = instructions
+    config.reply_templates = templates
     config.updated_at = datetime.utcnow()
     db.commit()
-    return {"is_pharmacy": True, "instructions": instructions}
+    return {"is_pharmacy": is_pharmacy, "instructions": instructions, "reply_templates": templates}
 
 
 @faq_router.put("/stores/{store_id}/bot-config", response_model=StoreBotConfigResponse)

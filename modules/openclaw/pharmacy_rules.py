@@ -41,6 +41,25 @@ PHARMACY_BOT_INSTRUCTIONS = [
     "Require a valid 10-digit Zimbabwe phone number for checkout (local 0-prefix or +263 format).",
 ]
 
+PHARMACY_REPLY_TEMPLATES = [
+    {
+        "label": "Clinical or prescription question",
+        "text": "Our pharmacist is reviewing your question and will reply here shortly.\n\nI'm the shop assistant, so I'll leave advice about medicines, dosages, prescriptions and side effects to them. Please wait for their advice before starting, stopping or changing any medication.",
+    },
+    {
+        "label": "Request needs pharmacist review",
+        "text": "Thank you for reaching out. Your request has been received and is under review by our pharmacist.\n\nOne of our pharmacists will come back to you shortly with the right guidance. Please do not start or change any medication until they respond.",
+    },
+    {
+        "label": "Invalid checkout phone number",
+        "text": PHONE_ERROR_MESSAGE,
+    },
+    {
+        "label": "Order confirmation",
+        "text": "Just to confirm - are you really sure you want *[product name]*? Reply YES to continue with your order. Reply NO and our pharmacist will review your request first.",
+    },
+]
+
 
 def normalize_phone(raw) -> Tuple[Optional[str], Optional[str]]:
     """Normalise a phone number and validate it as a 10-digit local number.

@@ -420,7 +420,8 @@ class StoreBotConfigUpdate(BaseModel):
 
 
 class PharmacyBotGuidanceUpdate(BaseModel):
-    instructions: List[str] = Field(..., min_length=1, max_length=30)
+    instructions: List[str] = Field(default_factory=list, max_length=30)
+    reply_templates: List[dict[str, str]] = Field(default_factory=list, max_length=30)
 
 
 class StoreBotConfigResponse(StoreBotConfigBase):
