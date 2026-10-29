@@ -376,6 +376,7 @@ class StoreBotConfigBase(BaseModel):
     """Base schema for bot configuration"""
     bot_name: str = Field("Sales Assistant", max_length=100)
     bot_personality: Optional[str] = None
+    pharmacy_instructions: Optional[List[str]] = None
     greeting_message: str = Field("Hello! Welcome to our store. How can I help you today?")
     fallback_message: str = Field("I'll connect you with a team member who can help you better.")
     handoff_message: str = Field("A team member will be with you shortly.")
@@ -401,6 +402,7 @@ class StoreBotConfigUpdate(BaseModel):
     """Schema for updating bot configuration"""
     bot_name: Optional[str] = None
     bot_personality: Optional[str] = None
+    pharmacy_instructions: Optional[List[str]] = None
     greeting_message: Optional[str] = None
     fallback_message: Optional[str] = None
     handoff_message: Optional[str] = None
@@ -415,6 +417,10 @@ class StoreBotConfigUpdate(BaseModel):
     notify_on_unanswered: Optional[bool] = None
     is_enabled: Optional[bool] = None
     auto_respond: Optional[bool] = None
+
+
+class PharmacyBotGuidanceUpdate(BaseModel):
+    instructions: List[str] = Field(..., min_length=1, max_length=30)
 
 
 class StoreBotConfigResponse(StoreBotConfigBase):

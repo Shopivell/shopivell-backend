@@ -30,6 +30,17 @@ PHONE_ERROR_MESSAGE = (
     "_Tip: say 'cart' to view your cart, or 'cancel' to go back._"
 )
 
+# Store-editable shopping guidance shown in WhatsApp settings. The separate
+# deterministic medication-safety checks in the chat flow remain mandatory.
+PHARMACY_BOT_INSTRUCTIONS = [
+    "Never provide medical advice, diagnosis, dosage, safety, interaction, side-effect, pregnancy or child-use guidance. Route clinical and prescription questions to a pharmacist before any AI answer or product search.",
+    "Never recommend medication when a customer is unsure or describes symptoms. Hand the request to the pharmacist for review.",
+    "When the customer names a medicine and is sure they want it, ask them to confirm before continuing the order. A yes continues; a no sends the request to the pharmacist.",
+    "Only offer products that are active and in stock. Use the store's catalogue for product names, prices, branches and availability; do not invent or approximate them.",
+    "Display prices rounded to whole numbers and correct likely product-name misspellings when matching the catalogue.",
+    "Require a valid 10-digit Zimbabwe phone number for checkout (local 0-prefix or +263 format).",
+]
+
 
 def normalize_phone(raw) -> Tuple[Optional[str], Optional[str]]:
     """Normalise a phone number and validate it as a 10-digit local number.

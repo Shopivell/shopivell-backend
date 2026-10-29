@@ -3454,11 +3454,19 @@ def _bot_config(db: Session, store) -> tuple:
         return default_name, None
     try:
         from modules.whatsapp.models import StoreBotConfig
+        from modules.openclaw.pharmacy_rules import PHARMACY_BOT_INSTRUCTIONS
         config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store.id).first()
-        if config:
-            name = config.bot_name.strip() if config.bot_name and config.bot_name.strip() else default_name
-            rules = config.bot_personality.strip() if config.bot_personality and config.bot_personality.strip() else None
-            return name, rules
+        name = (config.bot_name.strip() if config and config.bot_name and config.bot_name.strip()
+                else default_name)
+        rule_parts = []
+        if config and config.bot_personality and config.bot_personality.strip():
+            rule_parts.append(config.bot_personality.strip())
+        if _is_pharmacy_store(store):
+            pharmacy_rules = (config.pharmacy_instructions if config and config.pharmacy_instructions is not None
+                              else PHARMACY_BOT_INSTRUCTIONS)
+            if pharmacy_rules:
+                rule_parts.append("PHARMACY STORE RULES:\n" + "\n".join(f"- {rule}" for rule in pharmacy_rules))
+        return name, "\n\n".join(rule_parts) or None
     except Exception as e:
         logger.warning("Failed to load bot config for store %s: %s", store.id, e)
     return default_name, None

@@ -163,6 +163,7 @@ class StoreBotConfig(Base):
     # Bot identity
     bot_name = Column(String(100), default="Yamurai")
     bot_personality = Column(Text, nullable=True)  # Custom personality description
+    pharmacy_instructions = Column(JSON, nullable=True)  # Store-specific pharmacy bot rules
 
     # Messages
     greeting_message = Column(Text, default="Hello! Welcome to our store. How can I help you today?")

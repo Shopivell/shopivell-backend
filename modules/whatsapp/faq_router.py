@@ -40,7 +40,7 @@ from .schemas import (
     TaskType, TaskPriority, TaskStatus,
     # Conversations
     ConversationResponse, ConversationListResponse, ConversationAssign,
-    ConversationMessageResponse
+    ConversationMessageResponse, PharmacyBotGuidanceUpdate
 )
 from .knowledge_service import KnowledgeService
 
@@ -339,21 +339,18 @@ async def get_pharmacy_bot_guidance(
         return {"is_pharmacy": False, "instructions": []}
 
     from modules.openclaw.pharmacy_rules import (
+        PHARMACY_BOT_INSTRUCTIONS,
         PHARMACIST_QUESTION_MESSAGE,
         PHARMACIST_REVIEW_MESSAGE,
         PHONE_ERROR_MESSAGE,
     )
 
+    config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
+    instructions = (config.pharmacy_instructions if config and config.pharmacy_instructions is not None
+                    else PHARMACY_BOT_INSTRUCTIONS)
     return {
         "is_pharmacy": True,
-        "instructions": [
-            "Never provide medical advice, diagnosis, dosage, safety, interaction, side-effect, pregnancy or child-use guidance. Route clinical and prescription questions to a pharmacist before any AI answer or product search.",
-            "Never recommend medication when a customer is unsure or describes symptoms. Hand the request to the pharmacist for review.",
-            "When the customer names a medicine and is sure they want it, ask them to confirm before continuing the order. A yes continues; a no sends the request to the pharmacist.",
-            "Only offer products that are active and in stock. Use the store's catalogue for product names, prices, branches and availability; do not invent or approximate them.",
-            "Display prices rounded to whole numbers and correct likely product-name misspellings when matching the catalogue.",
-            "Require a valid 10-digit Zimbabwe phone number for checkout (local 0-prefix or +263 format).",
-        ],
+        "instructions": instructions,
         "reply_templates": [
             {"label": "Clinical or prescription question", "text": PHARMACIST_QUESTION_MESSAGE},
             {"label": "Request needs pharmacist review", "text": PHARMACIST_REVIEW_MESSAGE},
@@ -361,6 +358,39 @@ async def get_pharmacy_bot_guidance(
             {"label": "Order confirmation", "text": "Just to confirm - are you really sure you want *[product name]*? Reply YES to continue with your order. Reply NO and our pharmacist will review your request first."},
         ],
     }
+
+
+@faq_router.put("/stores/{store_id}/pharmacy-bot-guidance")
+async def update_pharmacy_bot_guidance(
+    store_id: UUID,
+    guidance: PharmacyBotGuidanceUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save this store's editable pharmacy shopping instructions."""
+    if not check_store_access(db, current_user, store_id):
+        raise HTTPException(status_code=403, detail="Not authorized to access this store")
+
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    markers = ("pharmacy", "pharmacist", "chemist", "dispensary", "drugstore")
+    identity = " ".join(str(getattr(store, field, "") or "") for field in
+                         ("store_name", "store_category", "business_type", "store_description")).lower()
+    if not any(marker in identity for marker in markers):
+        raise HTTPException(status_code=400, detail="Pharmacy instructions are only available for pharmacy stores")
+
+    instructions = [item.strip() for item in guidance.instructions]
+    if any(not item or len(item) > 1000 for item in instructions):
+        raise HTTPException(status_code=422, detail="Each rule must contain 1 to 1000 characters")
+    config = db.query(StoreBotConfig).filter(StoreBotConfig.store_id == store_id).first()
+    if not config:
+        config = StoreBotConfig(store_id=store_id)
+        db.add(config)
+    config.pharmacy_instructions = instructions
+    config.updated_at = datetime.utcnow()
+    db.commit()
+    return {"is_pharmacy": True, "instructions": instructions}
 
 
 @faq_router.put("/stores/{store_id}/bot-config", response_model=StoreBotConfigResponse)
