@@ -9327,6 +9327,7 @@ async def _handle_inbound_whatsapp(payload: dict):
                 # Use WhatsApp's single-select list for explicit yes/no questions.
                 if not interactive_sent and (
                     re.search(r'\byes\s*(?:/|or)\s*no\b', reply_lower)
+                    or re.search(r'reply\s+\*?yes\*?\s+to\s+continue\b', reply_lower)
                     or re.search(r'(?:^|\n)\s*(?:would you like|do you want|is everything (?:correct|right))\b[^?\n]*\?', reply_lower)
                 ):
                     try:
