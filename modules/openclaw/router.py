@@ -9173,8 +9173,12 @@ async def _handle_inbound_whatsapp(payload: dict):
                 saved_checkout = _get_order_state(db, str(store.id), sender_phone) or {}
                 checkout_step = saved_checkout.get("current_state")
 
-                if (checkout_step == "delivery_step_address"
-                        and not saved_checkout.get("customer_address")
+                wants_delivery_form = bool(re.search(
+                    r"\b(?:enter|add|provide|update|change)\b.{0,30}\b(?:delivery\s+)?details\b|\bdelivery\s+address\s+form\b",
+                    user_text, re.I))
+                if (not saved_checkout.get("customer_address")
+                        and (checkout_step == "delivery_step_address" or
+                             (wants_delivery_form and saved_checkout.get("collection_method") == "delivery"))
                         and _is_pharmacy_store(store)):
                     try:
                         from modules.whatsapp.models import WhatsAppFlow
