@@ -39,6 +39,9 @@ PHARMACY_BOT_INSTRUCTIONS = [
     "Only offer products that are active and in stock. Use the store's catalogue for product names, prices, branches and availability; do not invent or approximate them.",
     "Display prices rounded to whole numbers and correct likely product-name misspellings when matching the catalogue.",
     "Require a valid 10-digit Zimbabwe phone number for checkout (local 0-prefix or +263 format).",
+    "Answer each non-clinical customer question directly from the store profile, active FAQs, catalogue, order and delivery records. This includes branches, hours, Sunday opening, services, payment methods, medical aid, delivery areas and fees, prices, stock, promotions, order changes, cancellations, complaints and order status. If the requested fact is missing, say you cannot confirm it and offer a staff handoff; never invent store policies, availability, prices, expiry dates or delivery times.",
+    "For product searches, give the matching products and prices from the selected branch only. For quantity requests, check stock before promising it. For multi-item requests, keep the requested quantities together. Ask only for information the customer has not already supplied.",
+    "A request for a person, manager, complaint resolution, prescription review or clinical recommendation needs a human handoff. Never expose another customer's order or prescription without identity verification. For suspected overdose or severe allergic reaction, urge immediate emergency medical help and alert a pharmacist; do not give dosing advice.",
 ]
 
 PHARMACY_REPLY_TEMPLATES = [

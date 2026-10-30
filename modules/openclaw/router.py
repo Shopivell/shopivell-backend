@@ -8959,6 +8959,12 @@ async def _handle_inbound_whatsapp(payload: dict):
                 "confirm_no": "cancel order",
             }
             mapped_text = interactive_map.get(interactive_id)
+            if not mapped_text and interactive_id.startswith("menu_choice_"):
+                # Keep the same numeric choice the checkout and catalogue state
+                # machines already understand, even when the user taps a row.
+                choice = interactive_id.removeprefix("menu_choice_")
+                if choice.isdigit() and 1 <= int(choice) <= 10:
+                    mapped_text = choice
             if mapped_text:
                 user_text = mapped_text
                 logger.info("Mapped interactive button '%s' to text: '%s'", interactive_id, user_text)
@@ -9317,6 +9323,29 @@ async def _handle_inbound_whatsapp(payload: dict):
                         interactive_sent = True
                     except Exception as ie:
                         logger.warning("Failed to send yes/no options, falling back to text: %s", ie)
+
+                # Turn numbered branch, category and product menus into tappable
+                # rows. The row ID maps back to the original number above, so
+                # existing selection and cart handling remains authoritative.
+                if not interactive_sent and _is_pharmacy_store(store):
+                    options = re.findall(r"(?m)^\s*(\d{1,2})[.)]\s+([^\n]+)", reply)
+                    numbered = [(int(number), label.strip()) for number, label in options]
+                    if (2 <= len(numbered) <= 10
+                            and [n for n, _ in numbered] == list(range(1, len(numbered) + 1))):
+                        try:
+                            rows = [{"id": f"menu_choice_{n}", "title": label[:24],
+                                     "description": label[24:96]}
+                                    for n, label in numbered]
+                            action = build_list_action("Select an option", [
+                                {"title": "Available options", "rows": rows}
+                            ])
+                            await _send_interactive_message(
+                                conv_id, account_id, "list", reply, action,
+                                recipient_phone=sender_phone,
+                            )
+                            interactive_sent = True
+                        except Exception as ie:
+                            logger.warning("Failed to send numbered options, falling back to text: %s", ie)
 
                 # Fall back to regular text message if no interactive was sent
                 if not interactive_sent:
