@@ -9083,13 +9083,18 @@ async def _handle_inbound_whatsapp(payload: dict):
                     street, suburb, city = (str(form.get(k) or "").strip()
                                             for k in ("street", "suburb", "city"))
                     state = _get_order_state(db, str(store.id), sender_phone) or {}
-                    if street and suburb and city and state.get("cart_items"):
+                    if street and suburb and city:
                         address = f"{street}, {suburb}, {city}"
-                        next_step = _delivery_next_state(state, address=address)
-                        _update_order_state(db, str(store.id), sender_phone,
-                                            collection_method="delivery", customer_address=address,
-                                            current_state=next_step)
-                        reply = await _resume_checkout(db, store, sender_phone, address)
+                        if state.get("cart_items"):
+                            next_step = _delivery_next_state(state, address=address)
+                            _update_order_state(db, str(store.id), sender_phone,
+                                                collection_method="delivery", customer_address=address,
+                                                current_state=next_step)
+                            reply = await _resume_checkout(db, store, sender_phone, address)
+                        else:
+                            _update_order_state(db, str(store.id), sender_phone,
+                                                customer_address=address)
+                            reply = "I've saved your delivery address for your next order."
                     else:
                         reply = "I couldn't save those details. Please reopen the address form."
                     await _zernio("POST", f"/inbox/conversations/{conv_id}/messages",
@@ -9198,17 +9203,12 @@ async def _handle_inbound_whatsapp(payload: dict):
                 wants_delivery_form = bool(re.search(
                     r"\b(?:enter|add|provide|update|change)\b.{0,40}\b(?:delivery\s+)?(?:details|address)\b|\bdelivery\s+address\s+form\b",
                     user_text, re.I))
-                if (wants_delivery_form and saved_checkout.get("cart_items")
-                        and not saved_checkout.get("customer_address")):
+                if wants_delivery_form and saved_checkout.get("cart_items"):
                     _update_order_state(db, str(store.id), sender_phone,
-                                        collection_method="delivery",
-                                        current_state="delivery_step_address")
-                    saved_checkout = _get_order_state(db, str(store.id), sender_phone) or saved_checkout
+                                        collection_method="delivery", current_state="delivery_step_address")
                     checkout_step = "delivery_step_address"
-                if (not saved_checkout.get("customer_address")
-                        and (checkout_step == "delivery_step_address" or
-                             (wants_delivery_form and saved_checkout.get("collection_method") == "delivery"))
-                        and _is_pharmacy_store(store)):
+                if (((checkout_step == "delivery_step_address" and not saved_checkout.get("customer_address"))
+                     or wants_delivery_form) and _is_pharmacy_store(store)):
                     try:
                         from modules.whatsapp.models import WhatsAppFlow
                         from modules.whatsapp.flow_json_template import generate_delivery_address_flow_json
@@ -9253,6 +9253,9 @@ async def _handle_inbound_whatsapp(payload: dict):
                             interactive_sent = True
                     except Exception as ie:
                         logger.warning("Could not send delivery address form: %s", ie)
+                        if wants_delivery_form:
+                            reply = ("I couldn't open the delivery address form right now. "
+                                     "Please try again shortly or ask our team for help.")
 
                 if (checkout_step == "awaiting_checkout" and saved_checkout.get("cart_items")
                         and not extract_sure_check_item(reply)
