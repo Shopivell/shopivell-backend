@@ -5337,13 +5337,22 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
             # branch-scoped catalogue matcher before declaring it unavailable.
             search_result = _search_products_smart(db, store, product_name, limit=20,
                                                    branch=branch)
-            exact = [item for item in search_result.get("products", [])
-                     if _product_words(item.get("name")) == _product_words(product_name)]
+            exact = {item["name"].lower(): item
+                     for item in search_result.get("products", [])
+                     if _same_catalogue_product(item.get("name"), product_name)}
             if len(exact) == 1:
-                product_name = exact[0]["name"]
-                real_price = parse_price(exact[0].get("price"))
+                matched = next(iter(exact.values()))
+                product_name = matched["name"]
+                real_price = parse_price(matched.get("price"))
         if real_price is None:
-            available_branch = _branch_for_product(db, store_id, product_name)
+            # Search the same catalogue source used to show products. A strict
+            # substring check alone can miss a size range written differently.
+            elsewhere = _search_products_smart(db, store, product_name, limit=20)
+            elsewhere_exact = [item for item in elsewhere.get("products", [])
+                               if _same_catalogue_product(item.get("name"), product_name)]
+            available_branch = (_branch_for_product(db, store_id, elsewhere_exact[0]["name"])
+                                if len(elsewhere_exact) == 1 else None)
+            available_branch = available_branch or _branch_for_product(db, store_id, product_name)
             if available_branch and branch and available_branch.lower() != branch.lower():
                 return (f"NOT AT {branch}: '{product_name}' is not stocked at "
                         f"{branch}. It is available at {available_branch}. Ask the "
@@ -5353,9 +5362,10 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
             # The store sells only what its catalogue holds. Without this the
             # model could add an invented product ("Panado Syrup") at an
             # invented price just because the customer named it.
-            return (f"Could not add '{product_name}': it is not in this store's catalogue. "
-                    f"Search for the product first and use the EXACT name and price from "
-                    f"the results. Never invent a product or a price.")
+            return (f"Could not verify '{product_name}' in the online catalogue for "
+                    f"{branch or 'the selected branch'}, so it was NOT added to the cart. "
+                    "Do not quote a price or claim it is unavailable everywhere. "
+                    "Ask the customer if they would like the team to check availability.")
         if round_price(real_price) != price:
             logger.warning("Correcting invented price for %r: model=%s catalogue=%s",
                            product_name, price, round_price(real_price))
@@ -6316,6 +6326,19 @@ def _product_words(value: str) -> List[str]:
     text = str(value or "").lower().replace("&", " and ")
     text = re.sub(r"(?<=\d)(?=[a-z])|(?<=[a-z])(?=\d)", " ", text)
     return _PRODUCT_WORD_RE.findall(text)
+
+
+def _same_catalogue_product(left: str, right: str) -> bool:
+    """Compare a displayed product with a cart request without changing sizes.
+
+    A range written as ``5 to 9 kgs`` is the same as ``5-9kg``. Keep every
+    number and size code so S3/36s cannot be confused with S4/32s.
+    """
+    def words(value):
+        return ["kg" if word == "kgs" else word
+                for word in _product_words(value) if word != "to"]
+
+    return words(left) == words(right)
 
 
 def _product_query_tokens(query: str) -> List[str]:
@@ -8444,6 +8467,10 @@ async def _generate_bot_reply(
             "   result. Never return NO_KNOWLEDGE_MATCH for those.\n"
             "5. If a tool result is INCOMPLETE or INVALID, ask the customer for the missing\n"
             "   detail. Never fill the gap with a guess.\n"
+            "5b. If add_to_cart says it could not verify an item, do not present that\n"
+            "   item and its price as an order confirmation. Say it was not added and\n"
+            "   offer to have the team check availability. Do not say the item is\n"
+            "   unavailable everywhere.\n"
             "6. Never write a cart summary, subtotal or total from memory - call view_cart\n"
             "   (or use the cart numbers a tool just returned) and copy them. If the cart\n"
             "   is empty, say it is empty. Never ask the customer to supply a price.\n\n"
