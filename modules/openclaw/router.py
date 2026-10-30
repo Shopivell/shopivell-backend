@@ -644,7 +644,17 @@ def _catalogue_price(db, store_id, product_name, branch=None):
             LIMIT 1
         """), params).fetchone()
         if not row or not row[0]:
-            return None
+            normalized = re.sub(r"[^a-z0-9]", "", str(product_name or "").lower())
+            if normalized:
+                row = db.execute(sql_text(f"""
+                    SELECT content FROM company_knowledge
+                    WHERE store_id = :store_id AND is_active = true
+                      AND LOWER(regexp_replace(title, '[^a-z0-9]', '', 'g')) = :normalized
+                      {branch_filter}
+                    LIMIT 1
+                """), {**params, "normalized": normalized}).fetchone()
+            if not row or not row[0]:
+                return None
         match = re.search(r"price\s*:\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", str(row[0]), re.IGNORECASE)
         return float(match.group(1)) if match else None
     except Exception as e:
@@ -5321,6 +5331,17 @@ async def _execute_pharmacy_tool(db: Session, store, customer_phone: str, tool_n
         # Never let the model invent a price: if the catalogue knows this
         # product, its price wins (this is how "Benylin ... $6" got in).
         real_price = _catalogue_price(db, store_id, product_name, branch=branch)
+        if real_price is None:
+            # A product shown in search may differ only in punctuation or size
+            # spacing from the model's add_to_cart argument. Reuse the same
+            # branch-scoped catalogue matcher before declaring it unavailable.
+            search_result = _search_products_smart(db, store, product_name, limit=20,
+                                                   branch=branch)
+            exact = [item for item in search_result.get("products", [])
+                     if _product_words(item.get("name")) == _product_words(product_name)]
+            if len(exact) == 1:
+                product_name = exact[0]["name"]
+                real_price = parse_price(exact[0].get("price"))
         if real_price is None:
             available_branch = _branch_for_product(db, store_id, product_name)
             if available_branch and branch and available_branch.lower() != branch.lower():
