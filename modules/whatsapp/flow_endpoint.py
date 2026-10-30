@@ -22,6 +22,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from database import SessionLocal, get_db
+from dependencies import get_current_user
 from modules.products.models import Product
 from modules.stores.models import Store
 from .flow_crypto import decrypt_request, encrypt_response, get_private_key_pem
@@ -549,3 +550,35 @@ async def enable_ordering_flow(
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to create flow: {str(e)}")
+
+
+@flow_router.post("/store/{store_id}/enable-delivery-address-flow")
+async def enable_delivery_address_flow(
+    store_id: uuid_mod.UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Publish a standalone address form through the same Meta setup as ordering."""
+    if str(getattr(current_user, "store_id", "")) != str(store_id):
+        raise HTTPException(status_code=403, detail="Not authorized for this store")
+    existing = db.query(WhatsAppFlow).filter(
+        WhatsAppFlow.store_id == store_id,
+        WhatsAppFlow.flow_name.like("%Delivery Address"),
+        WhatsAppFlow.status == "published",
+    ).first()
+    if existing:
+        return {"flow_id": existing.flow_id, "status": "already_published"}
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    account = db.query(WhatsAppAccount).filter(WhatsAppAccount.store_id == store_id).first()
+    if not account or not account.waba_id or not account.permanent_access_token:
+        raise HTTPException(status_code=400, detail="A connected WhatsApp Business account with a Meta token is required")
+    from .flow_manager import WhatsAppFlowManager
+    try:
+        flow_id = WhatsAppFlowManager(account.waba_id, account.permanent_access_token).create_and_publish_delivery_flow(
+            store_id, store.store_name or "Pharmacy", db)
+    except Exception:
+        logger.exception("Failed to publish delivery address flow for store %s", store_id)
+        raise HTTPException(status_code=502, detail="Could not publish the delivery address form")
+    return {"flow_id": flow_id, "status": "published"}

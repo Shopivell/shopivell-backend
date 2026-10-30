@@ -9189,7 +9189,6 @@ async def _handle_inbound_whatsapp(payload: dict):
                         and _is_pharmacy_store(store)):
                     try:
                         from modules.whatsapp.models import WhatsAppFlow
-                        from modules.whatsapp.flow_manager import WhatsAppFlowManager
                         from modules.whatsapp.flow_token import encode_flow_token
                         from modules.whatsapp.interactive_messages import build_flow_message
                         delivery_flow = db.query(WhatsAppFlow).filter(
@@ -9197,14 +9196,6 @@ async def _handle_inbound_whatsapp(payload: dict):
                             WhatsAppFlow.flow_name.like("%Delivery Address"),
                             WhatsAppFlow.status == "published",
                         ).first()
-                        if not delivery_flow and wa and wa.waba_id and wa.permanent_access_token:
-                            manager = WhatsAppFlowManager(wa.waba_id, wa.permanent_access_token)
-                            manager.create_and_publish_delivery_flow(store.id, store.store_name or "Pharmacy", db)
-                            delivery_flow = db.query(WhatsAppFlow).filter(
-                                WhatsAppFlow.store_id == store.id,
-                                WhatsAppFlow.flow_name.like("%Delivery Address"),
-                                WhatsAppFlow.status == "published",
-                            ).first()
                         if delivery_flow:
                             flow_message = build_flow_message(
                                 flow_id=delivery_flow.flow_id,
