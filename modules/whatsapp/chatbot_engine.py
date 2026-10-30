@@ -240,7 +240,7 @@ Remember: It's better to say you don't have the information than to make somethi
 
         Returns:
             - Response text if knowledge match found
-            - None if no knowledge match (triggers silent + notification)
+            - None if no knowledge match (hands off after configured fallbacks)
         """
         # Get or create conversation
         conversation = self.crm_service.get_or_create_conversation(phone_number, whatsapp_account_id)
@@ -288,12 +288,11 @@ Remember: It's better to say you don't have the information than to make somethi
 
         # Check if we have sufficient context
         if context is None or confidence < self.similarity_threshold:
-            # NO HALLUCINATION POLICY: Stay silent and notify owner
+            # NO HALLUCINATION POLICY: Stay silent and hand off after repeated fallbacks
             logger.info(f"No knowledge match for query from {phone_number}: {user_message[:100]}")
 
             await self._handle_no_knowledge(
                 conversation=conversation,
-                phone_number=phone_number,
                 query_text=user_message
             )
 
@@ -442,7 +441,6 @@ Remember: It's better to say you don't have the information than to make somethi
     async def _handle_no_knowledge(
         self,
         conversation: WhatsAppConversation,
-        phone_number: str,
         query_text: str
     ):
         """Handle case when bot has no knowledge to answer"""
@@ -453,14 +451,6 @@ Remember: It's better to say you don't have the information than to make somethi
             content=f"[NO_KNOWLEDGE_MATCH] Query: {query_text}",
             fallback_triggered=True,
             confidence_score=0
-        )
-
-        # Notify store owner
-        await self.crm_service.notify_unanswered_query(
-            phone_number=phone_number,
-            query_text=query_text,
-            conversation_id=conversation.id,
-            config=self.config
         )
 
     async def _handle_handoff(

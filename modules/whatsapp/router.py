@@ -2520,13 +2520,19 @@ def _authorize_message_branch(db, user, conversation):
     return member
 
 
+def _configured_pharmacy_branches(db, store_id):
+    from modules.stores.models import Store
+    from modules.openclaw.router import _branches_for_store
+    store = db.query(Store).filter(Store.id == store_id).first()
+    return set(_branches_for_store(db, store))
+
+
 @whatsapp_router.get("/stores/{store_id}/pharmacy/branches")
 def pharmacy_branches(store_id: uuid.UUID, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     _authorize_message_store(db, current_user, store_id)
     from modules.whatsapp.models import WhatsAppConversation
-    from sqlalchemy import distinct, or_
-    values = {row[0] for row in db.query(distinct(CompanyKnowledge.branch)).filter(
-        CompanyKnowledge.store_id == store_id, CompanyKnowledge.branch.isnot(None), CompanyKnowledge.branch != "").all()}
+    from sqlalchemy import distinct
+    values = _configured_pharmacy_branches(db, store_id)
     values.update(row[0] for row in db.query(distinct(WhatsAppConversation.branch)).filter(
         WhatsAppConversation.store_id == store_id, WhatsAppConversation.branch.isnot(None), WhatsAppConversation.branch != "").all())
     return {"branches": sorted(values)}
@@ -2549,8 +2555,7 @@ def assign_conversation_branch(store_id: uuid.UUID, conversation_id: uuid.UUID, 
         raise HTTPException(status_code=403, detail="Only the store owner can route conversations between branches")
     branch = data.branch.strip() if data.branch else None
     if branch:
-        available = {item[0] for item in db.query(CompanyKnowledge.branch).filter(
-            CompanyKnowledge.store_id == store_id, CompanyKnowledge.branch == branch).distinct().all()}
+        available = _configured_pharmacy_branches(db, store_id)
         if branch not in available:
             raise HTTPException(status_code=400, detail="Choose a branch registered for this store")
     row.branch = branch

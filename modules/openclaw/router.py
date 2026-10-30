@@ -9129,10 +9129,8 @@ async def _handle_inbound_whatsapp(payload: dict):
                         )
                         no_knowledge = False
                     else:
-                        # Non-product query we have no answer for. Never leave the
-                        # customer on read: send a short, honest reply and still
-                        # alert the owner (notify_unanswered_query further down),
-                        # which is what the old silent path did instead.
+                        # Non-product query we have no answer for. Send an honest
+                        # handover reply and notify the owner to respond.
                         no_knowledge = True
                         reply = _unanswered_query_reply(getattr(store, "store_name", None))
 
@@ -9363,6 +9361,17 @@ async def _handle_inbound_whatsapp(payload: dict):
                     lead = crm.get_or_create_lead(other, wa.id)
                     conv = crm.get_or_create_conversation(other, wa.id)
 
+                    # A branch chosen during the bot flow lives in order state;
+                    # copy it to the conversation so prescription handoffs reach
+                    # staff assigned to that branch.
+                    if not conv.branch and (handoff_msg or pharmacist_handoff or no_knowledge):
+                        selected = (_get_order_state(db, str(store.id), other) or {}).get("selected_branch")
+                        branch = next((name for name in _branches_for_store(db, store)
+                                       if selected and name.casefold() == str(selected).casefold()), None)
+                        if branch:
+                            conv.branch = branch
+                            db.commit()
+
                     if handoff_msg or pharmacist_handoff:
                         reason = ("Medication/prescription question for a pharmacist"
                                   if pharmacist_handoff else
@@ -9370,7 +9379,9 @@ async def _handle_inbound_whatsapp(payload: dict):
                         crm.request_handoff(conv, reason)
                         await crm.notify_handoff(conv, reason, query_text=user_text)
                     elif no_knowledge:
-                        await crm.notify_unanswered_query(other, user_text, conversation_id=conv.id)
+                        reason = "Bot could not answer the customer's question"
+                        crm.request_handoff(conv, reason)
+                        await crm.notify_handoff(conv, reason, query_text=user_text)
 
                     history_rows = (
                         db.query(WhatsAppMessage)
