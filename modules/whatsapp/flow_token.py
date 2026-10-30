@@ -23,7 +23,7 @@ def _get_secret() -> bytes:
     return secret.encode("utf-8")
 
 
-def encode_flow_token(store_id: str, phone: str = "", conv_id: str = "") -> str:
+def encode_flow_token(store_id: str, phone: str = "", conv_id: str = "", purpose: str = "order") -> str:
     """
     Create a signed flow token.
 
@@ -34,6 +34,7 @@ def encode_flow_token(store_id: str, phone: str = "", conv_id: str = "") -> str:
         "s": str(store_id),
         "p": phone,
         "c": conv_id,
+        "u": purpose,
         "t": int(time.time()),
     }, separators=(",", ":"))
 
@@ -76,4 +77,5 @@ def decode_flow_token(token: str) -> Dict[str, str]:
         "store_id": data["s"],
         "phone": data.get("p", ""),
         "conv_id": data.get("c", ""),
+        "purpose": data.get("u", "order"),
     }

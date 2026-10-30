@@ -98,6 +98,9 @@ def _handle_init(payload: Dict[str, Any], db: Session) -> Dict[str, Any]:
     token_data = decode_flow_token(flow_token)
     store_id = token_data["store_id"]
 
+    if token_data.get("purpose") == "delivery_address":
+        return {"screen": "DELIVERY_ADDRESS", "data": {}}
+
     products, store_name = _get_products_and_store(db, store_id)
     categories = _get_categories(products)
 
@@ -125,6 +128,8 @@ def _handle_data_exchange(
     flow_token = payload.get("flow_token", "")
     token_data = decode_flow_token(flow_token)
     store_id = token_data["store_id"]
+    if token_data.get("purpose") == "delivery_address":
+        return {"screen": "DELIVERY_ADDRESS", "data": {}}
 
     data = payload.get("data", {})
     action_type = data.get("action_type", "")

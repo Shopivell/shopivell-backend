@@ -34,6 +34,25 @@ def generate_flow_json() -> dict:
     }
 
 
+def _delivery_address_screen() -> dict:
+    """Standalone address form used by the conversational checkout flow."""
+    fields = [("street", "Street and house number"), ("suburb", "Suburb or area"), ("city", "City")]
+    children = [{"type": "TextHeading", "text": "Delivery address"}]
+    children += [{"type": "TextInput", "name": key, "label": label, "required": True,
+                  "input-type": "text"} for key, label in fields]
+    children.append({"type": "Footer", "label": "Save address", "on-click-action": {
+        "name": "complete", "payload": {"form_type": "delivery_address",
+        "street": "${form.street}", "suburb": "${form.suburb}", "city": "${form.city}"}}})
+    return {"id": "DELIVERY_ADDRESS", "title": "Delivery address", "terminal": True,
+            "layout": {"type": "SingleColumnLayout", "children": [
+                {"type": "Form", "name": "address_form", "children": children}]}}
+
+
+def generate_delivery_address_flow_json() -> dict:
+    """A standalone terminal Flow; its completion only updates checkout state."""
+    return {"version": "6.0", "screens": [_delivery_address_screen()]}
+
+
 # ── Screens ───────────────────────────────────────────────
 
 

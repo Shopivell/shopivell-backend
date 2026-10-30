@@ -9157,6 +9157,43 @@ async def _handle_inbound_whatsapp(payload: dict):
                 saved_checkout = _get_order_state(db, str(store.id), sender_phone) or {}
                 checkout_step = saved_checkout.get("current_state")
 
+                if (checkout_step == "delivery_step_address"
+                        and not saved_checkout.get("customer_address")
+                        and _is_pharmacy_store(store)):
+                    try:
+                        from modules.whatsapp.models import WhatsAppFlow
+                        from modules.whatsapp.flow_manager import WhatsAppFlowManager
+                        from modules.whatsapp.flow_token import encode_flow_token
+                        from modules.whatsapp.interactive_messages import build_flow_message
+                        delivery_flow = db.query(WhatsAppFlow).filter(
+                            WhatsAppFlow.store_id == store.id,
+                            WhatsAppFlow.flow_name.like("%Delivery Address"),
+                            WhatsAppFlow.status == "published",
+                        ).first()
+                        if not delivery_flow and wa and wa.waba_id and wa.permanent_access_token:
+                            manager = WhatsAppFlowManager(wa.waba_id, wa.permanent_access_token)
+                            manager.create_and_publish_delivery_flow(store.id, store.store_name or "Pharmacy", db)
+                            delivery_flow = db.query(WhatsAppFlow).filter(
+                                WhatsAppFlow.store_id == store.id,
+                                WhatsAppFlow.flow_name.like("%Delivery Address"),
+                                WhatsAppFlow.status == "published",
+                            ).first()
+                        if delivery_flow:
+                            flow_message = build_flow_message(
+                                flow_id=delivery_flow.flow_id,
+                                flow_token=encode_flow_token(str(store.id), sender_phone, conv_id,
+                                                             purpose="delivery_address"),
+                                flow_cta="Enter address", header="Delivery address",
+                                body="Enter your street, suburb and city in the form.",
+                                first_screen="DELIVERY_ADDRESS",
+                            )
+                            resp = await _zernio("POST", f"/inbox/conversations/{conv_id}/messages",
+                                                 json_body={"accountId": account_id, "type": "interactive",
+                                                            **flow_message["data"]})
+                            interactive_sent = True
+                    except Exception as ie:
+                        logger.warning("Could not send delivery address form: %s", ie)
+
                 if (checkout_step == "awaiting_checkout" and saved_checkout.get("cart_items")
                         and not extract_sure_check_item(reply)
                         and ("proceed to checkout" in reply_lower or re.search(r"\badded\b.*\bcart\b", reply_lower, re.S))):

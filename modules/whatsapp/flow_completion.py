@@ -55,6 +55,26 @@ def handle_flow_completion(
 
     currency = getattr(store, "currency", "USD") or "USD"
 
+    if token_data.get("purpose") == "delivery_address":
+        street = str(response_json.get("street") or "").strip()
+        suburb = str(response_json.get("suburb") or "").strip()
+        city = str(response_json.get("city") or "").strip()
+        if not (street and suburb and city and token_data.get("phone")):
+            logger.warning("Delivery address form missing fields or customer phone")
+            return [build_text_message("Please reopen the delivery address form and complete all fields.")]
+        address = f"{street}, {suburb}, {city}"
+        from modules.openclaw.router import _get_order_state, _update_order_state, _delivery_next_state
+        state = _get_order_state(db, store_id, token_data["phone"]) or {}
+        if not state.get("cart_items") or state.get("collection_method") != "delivery":
+            return [build_text_message("Your checkout has changed. Please start checkout again.")]
+        next_step = _delivery_next_state(state, address=address)
+        _update_order_state(db, store_id, token_data["phone"], customer_address=address,
+                            current_state=next_step)
+        prompts = {"delivery_step_name": "Thanks, I've saved your address. What name should I use for delivery?",
+                   "delivery_step_phone": "Thanks, I've saved your address. What phone number should I use for delivery?",
+                   "payment": "Thanks, I've saved your address. How would you like to pay: Cash, EcoCash, OneMoney or InnBucks?"}
+        return [build_text_message(prompts.get(next_step, "Thanks, I've saved your delivery address."))]
+
     # Extract order data from the flow response
     cart = response_json.get("_cart", [])
     delivery_data = response_json.get("_delivery", {})

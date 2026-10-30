@@ -15,7 +15,7 @@ from uuid import UUID
 import requests
 from sqlalchemy.orm import Session
 
-from .flow_json_template import generate_flow_json
+from .flow_json_template import generate_flow_json, generate_delivery_address_flow_json
 
 logger = logging.getLogger(__name__)
 
@@ -142,4 +142,18 @@ class WhatsAppFlowManager:
         db.refresh(flow_record)
 
         logger.info(f"Store {store_id} flow created and published: {flow_id}")
+        return flow_id
+
+    def create_and_publish_delivery_flow(self, store_id: UUID, store_name: str, db: Session) -> str:
+        """Provision an address-only Flow, independently of the ordering Flow."""
+        from .models import WhatsAppFlow
+        endpoint_url = os.getenv("WHATSAPP_FLOWS_ENDPOINT_URL",
+                                 "https://api.shopivell.com/v1/api/whatsapp/flow-endpoint")
+        name = f"{store_name} Delivery Address"
+        flow_id = self.create_flow(name, endpoint_url)["id"]
+        self.upload_flow_json(flow_id, generate_delivery_address_flow_json())
+        self.publish_flow(flow_id)
+        db.add(WhatsAppFlow(store_id=store_id, waba_id=self.waba_id, flow_id=flow_id,
+                            flow_name=name, status="published", endpoint_uri=endpoint_url))
+        db.commit()
         return flow_id
