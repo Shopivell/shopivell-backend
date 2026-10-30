@@ -7439,6 +7439,22 @@ async def _generate_bot_reply(
     conv_id: Optional[str] = None,
     account_id: Optional[str] = None
 ) -> str:
+    # Customers often paste several questions in one WhatsApp message. Process
+    # each question separately so a product lookup cannot swallow store hours,
+    # delivery, payment or pharmacist requests earlier in the same message.
+    if store and _is_pharmacy_store(store) and not image_urls and user_text.count("?") >= 2:
+        questions = [part.strip() for part in re.split(r"(?<=\?)\s*", user_text)
+                     if part.strip()]
+        if 2 <= len(questions) <= 12:
+            answers = []
+            for question in questions:
+                answer = await _generate_bot_reply(
+                    db, question, store, history=history, customer_phone=customer_phone,
+                    conv_id=conv_id, account_id=account_id,
+                )
+                if answer:
+                    answers.append(f"*{question}*\n{answer}")
+            return "\n\n".join(answers)
     # Payment status must come from the provider/order, never from the model's
     # reading of an approval prompt or an order confirmation.
     if customer_phone and not image_urls and re.search(
@@ -9112,8 +9128,8 @@ async def _handle_inbound_whatsapp(payload: dict):
                 # A clinical question is answered with the pharmacist handover,
                 # so mark it as a real handoff (below) instead of leaving the
                 # customer's question sitting in an unassigned chat.
-                pharmacist_handoff = reply in (PHARMACIST_QUESTION_MESSAGE,
-                                               HEALTH_QUESTION_MESSAGE)
+                pharmacist_handoff = any(message in (reply or "") for message in
+                                         (PHARMACIST_QUESTION_MESSAGE, HEALTH_QUESTION_MESSAGE))
                 if "NO_KNOWLEDGE_MATCH" in reply.upper():
                     # Check if user is asking about products - provide helpful response instead of silence
                     user_lower = user_text.lower()
