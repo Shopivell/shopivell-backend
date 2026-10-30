@@ -9074,6 +9074,28 @@ async def _handle_inbound_whatsapp(payload: dict):
             except Exception as we:
                 logger.warning("Could not resolve WhatsApp account/history before reply: %s", we)
 
+            # Zernio delivers completed WhatsApp Forms in message metadata.
+            if metadata.get("interactiveType") == "nfm_reply":
+                form = metadata.get("flowResponseData") or {}
+                if isinstance(form, str):
+                    form = _safe_json(form)
+                if form.get("form_type") == "delivery_address":
+                    street, suburb, city = (str(form.get(k) or "").strip()
+                                            for k in ("street", "suburb", "city"))
+                    state = _get_order_state(db, str(store.id), sender_phone) or {}
+                    if street and suburb and city and state.get("cart_items"):
+                        address = f"{street}, {suburb}, {city}"
+                        next_step = _delivery_next_state(state, address=address)
+                        _update_order_state(db, str(store.id), sender_phone,
+                                            collection_method="delivery", customer_address=address,
+                                            current_state=next_step)
+                        reply = await _resume_checkout(db, store, sender_phone, address)
+                    else:
+                        reply = "I couldn't save those details. Please reopen the address form."
+                    await _zernio("POST", f"/inbox/conversations/{conv_id}/messages",
+                                  json_body={"accountId": account_id, "message": reply})
+                    return
+
             # Keep service notices visible without treating them as customer requests.
             from modules.whatsapp.system_contacts import is_whatsapp_service_number
             if is_whatsapp_service_number(sender_phone):
@@ -9189,25 +9211,45 @@ async def _handle_inbound_whatsapp(payload: dict):
                         and _is_pharmacy_store(store)):
                     try:
                         from modules.whatsapp.models import WhatsAppFlow
-                        from modules.whatsapp.flow_token import encode_flow_token
-                        from modules.whatsapp.interactive_messages import build_flow_message
+                        from modules.whatsapp.flow_json_template import generate_delivery_address_flow_json
                         delivery_flow = db.query(WhatsAppFlow).filter(
                             WhatsAppFlow.store_id == store.id,
                             WhatsAppFlow.flow_name.like("%Delivery Address"),
                             WhatsAppFlow.status == "published",
                         ).first()
-                        if delivery_flow:
-                            flow_message = build_flow_message(
-                                flow_id=delivery_flow.flow_id,
-                                flow_token=encode_flow_token(str(store.id), sender_phone, conv_id,
-                                                             purpose="delivery_address"),
-                                flow_cta="Enter address", header="Delivery address",
-                                body="Enter your street, suburb and city in the form.",
-                                first_screen="DELIVERY_ADDRESS",
+                        if not delivery_flow:
+                            created = await _zernio("POST", "/whatsapp/flows", json_body={
+                                "accountId": account_id,
+                                "name": f"{store.store_name or 'Pharmacy'} Delivery Address",
+                                "categories": ["OTHER"],
+                            })
+                            flow_id = ((created.get("flow") or {}).get("id"))
+                            if not flow_id:
+                                raise ValueError("Zernio did not return a Flow ID")
+                            uploaded = await _zernio("PUT", f"/whatsapp/flows/{flow_id}/json", json_body={
+                                "accountId": account_id,
+                                "flow_json": generate_delivery_address_flow_json(),
+                            })
+                            if uploaded.get("validation_errors"):
+                                raise ValueError(f"Invalid delivery Flow: {uploaded['validation_errors']}")
+                            await _zernio("POST", f"/whatsapp/flows/{flow_id}/publish",
+                                          json_body={"accountId": account_id})
+                            delivery_flow = WhatsAppFlow(
+                                store_id=store.id, waba_id=account_id, flow_id=flow_id,
+                                flow_name=f"{store.store_name or 'Pharmacy'} Delivery Address",
+                                status="published", endpoint_uri="zernio:navigate",
                             )
-                            resp = await _zernio("POST", f"/inbox/conversations/{conv_id}/messages",
-                                                 json_body={"accountId": account_id, "type": "interactive",
-                                                            **flow_message["data"]})
+                            db.add(delivery_flow)
+                            db.commit()
+                        if delivery_flow:
+                            resp = await _zernio("POST", "/whatsapp/flows/send", json_body={
+                                "accountId": account_id, "to": sender_phone,
+                                "flow_id": delivery_flow.flow_id,
+                                "flow_cta": "Enter address",
+                                "flow_action": "navigate",
+                                "flow_action_payload": {"screen": "DELIVERY_ADDRESS"},
+                                "body": "Enter your street, suburb and city in the form.",
+                            })
                             interactive_sent = True
                     except Exception as ie:
                         logger.warning("Could not send delivery address form: %s", ie)
