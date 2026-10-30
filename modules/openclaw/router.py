@@ -20,6 +20,8 @@ import time
 import httpx
 import os
 import logging
+import mimetypes
+from urllib.parse import urljoin, urlparse
 
 from database import get_db, SessionLocal
 from modules.stores.models import Store
@@ -8896,6 +8898,20 @@ async def _zernio_account_id_for_wa(wa) -> str:
         db.close()
 
 
+def _message_type_for_media_url(url: str, fallback: str = "image") -> str:
+    """Infer the inbox preview type from a media URL or filename."""
+    lower_url = (url or "").lower().split("?")[0]
+    if any(ext in lower_url for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".svg")):
+        return "image"
+    if any(ext in lower_url for ext in (".mp4", ".mov", ".avi", ".webm", ".m4v")):
+        return "video"
+    if any(ext in lower_url for ext in (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus")):
+        return "audio"
+    if any(ext in lower_url for ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".zip")):
+        return "document"
+    return fallback
+
+
 def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: str,
                              direction: str, text: str, msg_id: str, ts=None,
                              media_urls: Optional[List[str]] = None):
@@ -8936,18 +8952,7 @@ def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: s
     media_url = None
     if media_urls:
         media_url = media_urls[0]  # Store first media URL
-        # Detect media type from URL extension
-        lower_url = media_url.lower()
-        if any(ext in lower_url for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-            msg_type = "image"
-        elif any(ext in lower_url for ext in ['.pdf', '.doc', '.docx']):
-            msg_type = "document"
-        elif any(ext in lower_url for ext in ['.mp4', '.mov', '.avi']):
-            msg_type = "video"
-        elif any(ext in lower_url for ext in ['.mp3', '.wav', '.ogg']):
-            msg_type = "audio"
-        else:
-            msg_type = "image"  # Default to image for unknown media
+        msg_type = _message_type_for_media_url(media_url, "image")
     
     business_phone = re.sub(r'\D', '', wa.phone_number or '') or SANDBOX_NUMBER_DIGITS
     db.add(WhatsAppMessage(
@@ -8964,6 +8969,157 @@ def _persist_sandbox_message(db: Session, wa, other_phone: str, customer_name: s
     ))
 
 
+_INBOUND_MEDIA_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _absolute_asset_url(url: str) -> str:
+    """Turn a local upload path into a browser-usable API URL."""
+    if not url or url.startswith(("http://", "https://", "data:")):
+        return url
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        base = os.getenv("API_PUBLIC_URL", "https://api.shopivell.com/v1").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        return f"{base}{url}"
+    return url
+
+
+def _normalize_provider_media_url(url: str) -> str:
+    if not isinstance(url, str):
+        return ""
+    value = url.strip()
+    if value.startswith("//"):
+        return "https:" + value
+    if value.startswith("/"):
+        return "https://zernio.com" + value
+    return value
+
+
+def _provider_media_headers(url: str) -> dict:
+    """Zernio's WhatsApp media URLs are authenticated, unlike most CDN links."""
+    host = (urlparse(url).hostname or "").lower()
+    headers = {"User-Agent": "Shopivell/1.0", "Accept": "*/*"}
+    if host == "zernio.com" or host.endswith(".zernio.com"):
+        if ZERNIO_API_KEY:
+            headers["Authorization"] = f"Bearer {ZERNIO_API_KEY}"
+    return headers
+
+
+def _media_filename_for_download(url: str, content_type: str) -> str:
+    parsed = urlparse(url)
+    name = os.path.basename(parsed.path) or ""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    if not name:
+        name = f"whatsapp-media-{int(time.time())}"
+    if "." not in name:
+        ext = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ""
+        name = f"{name}{ext}"
+    return name[:180]
+
+
+def _sniff_media_content_type(data: bytes, content_type: str) -> str:
+    """Use magic bytes when WhatsApp/Zernio returns application/octet-stream."""
+    declared = (content_type or "").split(";")[0].strip().lower()
+    if declared and declared not in ("application/octet-stream", "binary/octet-stream"):
+        return declared
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if data[4:8] == b"ftyp":
+        return "video/mp4"
+    if data.startswith(b"OggS"):
+        return "audio/ogg"
+    if data.startswith(b"ID3"):
+        return "audio/mpeg"
+    return "application/octet-stream"
+
+
+async def _store_inbound_media(db: Session, store_id, media_url: str) -> Optional[str]:
+    """Copy provider-hosted media into permanent Shopivell storage.
+
+    Zernio's WhatsApp attachment URLs require the Zernio API key and point at
+    Meta's media store, which expires. Downloading at webhook time is the only
+    reliable way to keep the inbox attachment available. Best-effort: callers
+    fall back to the provider URL if the copy fails.
+    """
+    if not store_id or not isinstance(media_url, str) or not media_url:
+        return None
+
+    source_url = _normalize_provider_media_url(media_url)
+    if urlparse(source_url).scheme not in ("http", "https"):
+        return None
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(45.0, connect=10.0),
+            follow_redirects=False,
+        ) as client:
+            current_url = source_url
+            current_headers = _provider_media_headers(current_url)
+            response = None
+            for _ in range(4):
+                response = await client.get(current_url, headers=current_headers)
+                if not response.is_redirect:
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                current_url = urljoin(current_url, location)
+                # Never forward the Zernio API key to a different host (for
+                # example, if the provider redirects to object storage).
+                current_headers = _provider_media_headers(current_url)
+
+        if response is None or response.is_redirect or response.status_code >= 400:
+            logger.warning(
+                "Inbound media download failed (status %s, host %s)",
+                response.status_code if response is not None else "unknown",
+                (urlparse(source_url).hostname or "").lower(),
+            )
+            return None
+
+        data = response.content
+        if not data or len(data) > _INBOUND_MEDIA_MAX_BYTES:
+            logger.warning("Inbound media skipped: %s bytes", len(data))
+            return None
+
+        content_type = _sniff_media_content_type(
+            data, response.headers.get("content-type", ""),
+        )
+        if content_type in ("text/html", "application/json", "text/plain"):
+            logger.warning("Inbound media source returned %s instead of an attachment", content_type)
+            return None
+        filename = _media_filename_for_download(str(response.url), content_type)
+
+        from modules.assets.service import AssetService
+        saved, error = await asyncio.to_thread(
+            AssetService(db)._upload_file,
+            data,
+            filename,
+            store_id,
+            content_type,
+        )
+        stored_url = (saved or {}).get("secure_url") or (saved or {}).get("url")
+        if not stored_url:
+            logger.warning("Inbound media could not be stored: %s", error)
+            return None
+
+        stored_url = _absolute_asset_url(stored_url)
+        logger.info("Stored inbound media (%s, %s bytes)", content_type, len(data))
+        return stored_url
+    except Exception:
+        logger.exception("Inbound media could not be copied to permanent storage")
+        return None
+
+
 async def _handle_inbound_whatsapp(payload: dict):
     """Background task: read an inbound message and reply via Zernio."""
     try:
@@ -8976,13 +9132,13 @@ async def _handle_inbound_whatsapp(payload: dict):
             logger.info("Skipping duplicate message: %s", msg_id)
             return
 
-        # Log incoming message structure for debugging media/caption handling
+        # Log the shape, not the URL: provider media URLs carry credentials.
         logger.info("Inbound WhatsApp message keys: %s", list(msg.keys()))
         if msg.get("mediaUrl") or msg.get("media_url") or msg.get("attachments") or msg.get("media"):
-            logger.info("Media message details - text: %r, caption: %r, mediaUrl: %r, attachments: %r",
-                       msg.get("text"), msg.get("caption"),
-                       msg.get("mediaUrl") or msg.get("media_url"),
-                       msg.get("attachments") or msg.get("media"))
+            media_items = msg.get("attachments") or msg.get("media") or []
+            logger.info("Inbound media message: text=%r, caption=%r, attachments=%s",
+                        msg.get("text"), msg.get("caption"),
+                        len(media_items) if isinstance(media_items, list) else 1)
         # Zernio uses "incoming"/"outgoing"; only reply to customer messages so we
         # don't loop on our own outbound echoes.
         if msg.get("direction") in ("outgoing", "out", "outbound"):
@@ -9121,6 +9277,19 @@ async def _handle_inbound_whatsapp(payload: dict):
                         ]
             except Exception as we:
                 logger.warning("Could not resolve WhatsApp account/history before reply: %s", we)
+
+            # Zernio's WhatsApp attachment URL is authenticated and backed by
+            # Meta's short-lived media store. Copy it now, while it is still
+            # available, so the inbox can render the attachment later.
+            if media_urls and wa and getattr(store, "id", None):
+                unique_media_urls = list(dict.fromkeys(u for u in media_urls if u))
+                stored_media_url = None
+                if unique_media_urls:
+                    for candidate in unique_media_urls:
+                        stored_media_url = await _store_inbound_media(db, store.id, candidate)
+                        if stored_media_url:
+                            break
+                media_urls = [stored_media_url] if stored_media_url else unique_media_urls
 
             # Keep service notices visible without treating them as customer requests.
             from modules.whatsapp.system_contacts import is_whatsapp_service_number

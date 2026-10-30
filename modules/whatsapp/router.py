@@ -11,6 +11,7 @@ import uuid
 import requests
 import os
 import json
+import re
 from datetime import datetime, time, timedelta
 import logging 
 from sqlalchemy import text
@@ -1936,6 +1937,66 @@ def get_whatsapp_messages(
         messages=[WhatsAppMessageResponse.model_validate(msg) for msg in messages],
         total_count=total_count
     )
+
+
+@whatsapp_router.post("/messages/{message_id}/repair-media")
+async def repair_message_media(
+    message_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Copy an older provider-hosted attachment into permanent storage.
+
+    Inbox rows created before inbound-media persistence still point at Zernio's
+    authenticated, short-lived WhatsApp URL. Browsers cannot load those directly,
+    so the attachment viewer calls this endpoint when an image fails and retries
+    with the returned permanent URL.
+    """
+    message = db.query(WhatsAppMessage).filter(WhatsAppMessage.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    account = db.query(WhatsAppAccount).filter(
+        WhatsAppAccount.id == message.whatsapp_account_id
+    ).first()
+    if not account or not account.store_id:
+        raise HTTPException(status_code=404, detail="WhatsApp account not found")
+    member = _authorize_message_store(db, current_user, account.store_id)
+    if member is not None and member.branch_names is not None:
+        from modules.whatsapp.models import WhatsAppConversation
+        phone = message.from_number if message.direction == "inbound" else message.to_number
+        digits = re.sub(r"\D", "", phone or "")
+        variants = {digits, "+" + digits}
+        if digits.startswith("263") and len(digits) == 12:
+            variants.update({"0" + digits[3:], digits[3:]})
+        conversation = db.query(WhatsAppConversation).filter(
+            WhatsAppConversation.whatsapp_account_id == account.id,
+            WhatsAppConversation.phone_number.in_(variants),
+        ).first()
+        if not conversation:
+            raise HTTPException(status_code=403, detail="Conversation is not assigned to an accessible branch")
+        _authorize_message_branch(db, current_user, conversation)
+
+    if not message.media_url:
+        raise HTTPException(status_code=400, detail="This message has no media attachment")
+
+    from modules.openclaw.router import _message_type_for_media_url, _store_inbound_media
+    permanent_url = await _store_inbound_media(db, account.store_id, message.media_url)
+    if not permanent_url:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not retrieve the attachment. Try again or ask the customer to resend it.",
+        )
+
+    message.media_url = permanent_url
+    message.message_type = _message_type_for_media_url(
+        permanent_url, message.message_type or "document",
+    )
+    db.commit()
+    return {
+        "success": True,
+        "media_url": permanent_url,
+        "message_type": message.message_type,
+    }
 
 
 @whatsapp_router.get("/accounts/{account_id}/conversations/{phone_number}/messages", response_model=WhatsAppMessagesListResponse)
