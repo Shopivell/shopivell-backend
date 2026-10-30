@@ -30,7 +30,7 @@ from .models import (
     WhatsAppLead, CompanyKnowledge
 )
 from .knowledge_service import KnowledgeService
-from .lead_scorer import EnhancedLeadScorer, should_notify_hot_lead
+from .lead_scorer import EnhancedLeadScorer
 from .crm_service import CRMService, TaskType, TaskPriority
 
 load_dotenv()
@@ -513,16 +513,6 @@ Remember: It's better to say you don't have the information than to make somethi
         # Update interests
         if scoring_result.get("interests"):
             self.crm_service.update_lead_interests(lead, scoring_result["interests"])
-
-        # Check for hot lead
-        hot_lead_threshold = self.config.hot_lead_threshold if self.config else 80
-        if scoring_result["score"] >= hot_lead_threshold:
-            await self.crm_service.notify_hot_lead(
-                lead=lead,
-                score=scoring_result["score"],
-                config=self.config,
-                conversation_id=conversation.id
-            )
 
         logger.info(f"Updated lead score for {phone_number}: {scoring_result['score']}")
 

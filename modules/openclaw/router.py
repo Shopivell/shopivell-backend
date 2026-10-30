@@ -9349,8 +9349,8 @@ async def _handle_inbound_whatsapp(payload: dict):
                 db.rollback()
                 logger.warning("Failed to mirror sandbox message to UI tables: %s", pe)
 
-            # Score this lead off the exchange and alert the owner if it just
-            # went hot. Best-effort: never block the reply that already went out.
+            # Score this lead off the exchange. Best-effort: never block the
+            # reply that already went out. Human handoffs still alert the owner.
             try:
                 if wa:
                     from sqlalchemy import or_
@@ -9398,8 +9398,6 @@ async def _handle_inbound_whatsapp(payload: dict):
                     crm.update_lead_score(lead, result["score"], result.get("recommended_action"))
                     if result.get("interests"):
                         crm.update_lead_interests(lead, result["interests"])
-                    await crm.notify_hot_lead(lead, result["score"], conversation_id=conv.id)
-
                     # Report hot leads to Meta via Zernio's Conversions API, so ad
                     # delivery can learn from them. No-op (422, logged at info) until
                     # the tenant provisions a dataset (Settings > WhatsApp Business >
