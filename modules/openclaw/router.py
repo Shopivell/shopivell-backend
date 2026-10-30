@@ -9174,8 +9174,15 @@ async def _handle_inbound_whatsapp(payload: dict):
                 checkout_step = saved_checkout.get("current_state")
 
                 wants_delivery_form = bool(re.search(
-                    r"\b(?:enter|add|provide|update|change)\b.{0,30}\b(?:delivery\s+)?details\b|\bdelivery\s+address\s+form\b",
+                    r"\b(?:enter|add|provide|update|change)\b.{0,40}\b(?:delivery\s+)?(?:details|address)\b|\bdelivery\s+address\s+form\b",
                     user_text, re.I))
+                if (wants_delivery_form and saved_checkout.get("cart_items")
+                        and not saved_checkout.get("customer_address")):
+                    _update_order_state(db, str(store.id), sender_phone,
+                                        collection_method="delivery",
+                                        current_state="delivery_step_address")
+                    saved_checkout = _get_order_state(db, str(store.id), sender_phone) or saved_checkout
+                    checkout_step = "delivery_step_address"
                 if (not saved_checkout.get("customer_address")
                         and (checkout_step == "delivery_step_address" or
                              (wants_delivery_form and saved_checkout.get("collection_method") == "delivery"))
