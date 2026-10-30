@@ -9340,13 +9340,18 @@ async def _handle_inbound_whatsapp(payload: dict):
                     except Exception as ie:
                         logger.warning("Failed to send yes/no options, falling back to text: %s", ie)
 
-                # Turn numbered branch, category and product menus into tappable
-                # rows. The row ID maps back to the original number above, so
-                # existing selection and cart handling remains authoritative.
+                # Keep product lists as text: a WhatsApp list permits only one
+                # selection, while customers may request several products at once.
+                # Branches and other single-choice menus can remain tappable.
                 if not interactive_sent and _is_pharmacy_store(store):
                     options = re.findall(r"(?m)^\s*(\d{1,2})[.)]\s+([^\n]+)", reply)
                     numbered = [(int(number), label.strip()) for number, label in options]
+                    product_menu = any(re.search(r"(?:\$\s*\d|\b(?:price|per\s+pack)\b)", label, re.I)
+                                       for _, label in numbered)
+                    if product_menu:
+                        reply = reply.rstrip() + "\n\nType the products and quantities you want, e.g. '2 Panadol and 1 CeraVe lotion'."
                     if (2 <= len(numbered) <= 10
+                            and not product_menu
                             and [n for n, _ in numbered] == list(range(1, len(numbered) + 1))):
                         try:
                             rows = [{"id": f"menu_choice_{n}", "title": label[:24],
