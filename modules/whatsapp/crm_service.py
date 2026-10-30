@@ -20,7 +20,7 @@ from .models import (
     CRMTask, WhatsAppLead, WhatsAppConversation,
     StoreBotConfig, WhatsAppConversationMessage
 )
-from modules.notifications.service import NotificationService
+from modules.notifications.service import NotificationService, notification_manager
 from modules.notifications.models import Notification
 from modules.notifications.schemas import NotificationType, NotificationPriority
 
@@ -318,6 +318,18 @@ class CRMService:
                     "query": query_text
                 }
             )
+
+            # Persisting the alert alone does not update connected notification
+            # bells. Publish handoffs immediately; hot-lead alerts stay disabled.
+            try:
+                counts = self.notification_service.get_unread_count(self.db)
+                await notification_manager.send_notification(
+                    store_id=str(self.store_id),
+                    notification=notification,
+                    unread_count=counts["unread_count"],
+                )
+            except Exception:
+                logger.exception("Failed to broadcast handoff notification")
 
             logger.info(f"Sent handoff notification for {conversation.phone_number}")
 
