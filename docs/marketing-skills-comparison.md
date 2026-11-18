@@ -3,6 +3,21 @@
 Source revisions and copied file counts are recorded in
 [`modules/openclaw/skills/third_party/README.md`](../modules/openclaw/skills/third_party/README.md).
 
+## Replacement update
+
+The initial integration covered the separate ad-copy endpoint. The replacement
+now also covers campaign generation, angles, research, planning, evaluation,
+calibration and image direction. Old prompt blocks are commented out and old
+skill discovery files are disabled. Missing copy variations or model failures
+now stop generation instead of filling gaps with legacy templates.
+
+Run `python scripts/test_imported_marketing_skills.py` for six contract tests.
+The live Meta draft test is `python scripts/meta_brand_draft_probe.py
+https://www.reliabletech.co.zw/ --output-dir /tmp/reliabletech-meta`, run inside
+the backend environment with its existing `OPENAI_API_KEY`. It creates files
+only: three angles, nine copies, three images and an HTML preview. It does not
+publish ads. Its live execution still requires access to that environment.
+
 | Job | Corey Marketing Skills | Ryze AI Marketing Skills | Meta Ads Kit | Shopivell choice |
 | --- | --- | --- | --- | --- |
 | Positioning, customer language, copy | Detailed foundation and creative frameworks | Some ICP and ad-copy helpers | Brand-aware Meta copy | Corey foundation with Meta Ads Kit's visual/copy alignment |

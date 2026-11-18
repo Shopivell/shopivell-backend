@@ -21,7 +21,7 @@ ANGLE_FIELDS = ("angle_name", "customer_pain", "desired_outcome", "hook", "value
                 "leads_the_creative", "copy_variations")
 
 _VARIATION_SCHEMA = {
-    "approach": "which of the listed variation approaches this variation takes, e.g. 'loss aversion'",
+    "approach": "the distinct creative approach chosen from the imported skills for this evidence",
     "primary_text": "70-150 words, short paragraphs separated by blank lines, first line under 125 chars",
     "headline": "<=40 chars, a complete phrase that stops the scroll",
     "description": "<=30 chars, teaser that ADDS to the headline instead of repeating it",
@@ -36,18 +36,18 @@ _VARIATION_SCHEMA = {
     "optimization": "one of: conversions, leads, traffic, messages, awareness",
     "demographics": {"age_min": 18, "age_max": 65, "gender": "all — or 'male'/'female' only when the angle truly calls for it"},
     "image_direction": "one concrete scene for THIS variation's creative: subject, action, moment, in the customer's world",
-    "benefit_chips": ["2-4 short proof stats for the image's benefit pills, verbatim from the website: "
-                      "'500+ products', '10+ years', '2000+ clients', 'Same-day delivery in Harare', "
-                      "'EcoCash & bank transfer', 'Full manufacturer warranty'"],
+    "benefit_chips": ["short supported facts from the website; return an empty list if none"],
 }
 
 # Each angle gets 3 copy variations with DIFFERENT psychological approaches, so a campaign
 # tests how the same offer is framed rather than three paraphrases of one idea.
-_COPY_APPROACHES = (
-    ("loss aversion", "what the reader is already losing or risking by doing nothing — the cost of the status quo"),
-    ("aspiration", "the moment after it works: what their business or day looks like once the problem is solved"),
-    ("us-vs-them", "the old way vs the new way: what everyone else accepts vs what this business does differently"),
-)
+# Disabled legacy marketing instructions; imported library is active below.
+# _COPY_APPROACHES = (
+#     ("loss aversion", "what the reader is already losing or risking by doing nothing — the cost of the status quo"),
+#     ("aspiration", "the moment after it works: what their business or day looks like once the problem is solved"),
+#     ("us-vs-them", "the old way vs the new way: what everyone else accepts vs what this business does differently"),
+# )
+
 
 # Fields every copy variation must carry, and the enum sets Meta (or our publisher) accepts.
 _VARIATION_FIELDS = ("approach", "primary_text", "headline", "description", "call_to_action",
@@ -87,32 +87,34 @@ def _fit(text: Any, limit: int) -> str:
     return (cut.rsplit(" ", 1)[0] if " " in cut and text[limit] != " " else cut).rstrip(" ,;:-")
 
 
-def _fallback_variations(angle: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Three publishable copy variations built from the angle's own fields, used when the
-    model returns no (or malformed) copy_variations so every downstream consumer — saving,
-    the ad_set stream event, publishing — can assume they exist."""
-    hook = str(angle.get("hook") or angle.get("angle_name") or "")[:40]
-    outcome = str(angle.get("desired_outcome") or "")
-    vp = str(angle.get("value_proposition") or "")
-    proof = str(angle.get("proof") or angle.get("website_basis") or "")
-    audience = str(angle.get("target_audience") or "")
-    kws = [str(k) for k in (angle.get("keywords") or [])][:6]
-    bodies = (
-        ("loss aversion", f"Still struggling with {audience.lower() or 'this'}?", "facebook_feed"),
-        ("aspiration", outcome or vp, "instagram_feed"),
-        ("us-vs-them", vp, "facebook_feed"),
-    )
-    return [
-        {"approach": approach,
-         "primary_text": "\n".join(p for p in (opening, outcome or vp, proof) if p),
-         "headline": hook, "description": outcome[:30], "call_to_action": "Learn More",
-         "targeting_hint": {"interests": kws, "behaviors": []},
-         "placement": placement, "format": "single_image", "optimization": "conversions",
-         "demographics": {"age_min": 18, "age_max": 65, "gender": "all"},
-         "image_direction": str(angle.get("visual_direction") or "")[:400],
-         "benefit_chips": [str(angle.get("proof") or "")[:40]] if angle.get("proof") else []}
-        for approach, opening, placement in bodies
-    ]
+# Disabled legacy marketing instructions; imported library is active below.
+# def _fallback_variations(angle: Dict[str, Any]) -> List[Dict[str, Any]]:
+#     """Three publishable copy variations built from the angle's own fields, used when the
+#     model returns no (or malformed) copy_variations so every downstream consumer — saving,
+#     the ad_set stream event, publishing — can assume they exist."""
+#     hook = str(angle.get("hook") or angle.get("angle_name") or "")[:40]
+#     outcome = str(angle.get("desired_outcome") or "")
+#     vp = str(angle.get("value_proposition") or "")
+#     proof = str(angle.get("proof") or angle.get("website_basis") or "")
+#     audience = str(angle.get("target_audience") or "")
+#     kws = [str(k) for k in (angle.get("keywords") or [])][:6]
+#     bodies = (
+#         ("loss aversion", f"Still struggling with {audience.lower() or 'this'}?", "facebook_feed"),
+#         ("aspiration", outcome or vp, "instagram_feed"),
+#         ("us-vs-them", vp, "facebook_feed"),
+#     )
+#     return [
+#         {"approach": approach,
+#          "primary_text": "\n".join(p for p in (opening, outcome or vp, proof) if p),
+#          "headline": hook, "description": outcome[:30], "call_to_action": "Learn More",
+#          "targeting_hint": {"interests": kws, "behaviors": []},
+#          "placement": placement, "format": "single_image", "optimization": "conversions",
+#          "demographics": {"age_min": 18, "age_max": 65, "gender": "all"},
+#          "image_direction": str(angle.get("visual_direction") or "")[:400],
+#          "benefit_chips": [str(angle.get("proof") or "")[:40]] if angle.get("proof") else []}
+#         for approach, opening, placement in bodies
+#     ]
+
 
 
 def detect_conversion_signals(website_html: str) -> Dict[str, Any]:
@@ -376,125 +378,148 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
                        count: int = 3, website_excerpt: str = "", clean_text: str = "") -> List[Dict[str, Any]]:
     """Distinct customer-first ad angles grounded in the research and website. Returns []
     when there is no LLM or no usable profile, so callers fall back to one ad set."""
-    from modules.market_research.service import MarketResearchService
+    # from modules.market_research.service import MarketResearchService
+    #
+    # svc = MarketResearchService()
+    # if not svc._llm_ready() or not (profile.get("business_type") or profile.get("company_name")):
+    #     return []
+    #
+    # def as_list(value):
+    #     return ", ".join(str(v.get("name") if isinstance(v, dict) else v) for v in (value or []) if v)
+    #
+    # # The store's Brand DNA (Voice & Style + About + Buyer Profiles) is the voice of
+    # # truth for HOW to speak; the website excerpt remains the only source of facts.
+    # dna = profile.get("brand_dna") if isinstance(profile.get("brand_dna"), dict) else None
+    # dna_block = ""
+    # if dna:
+    #     vs = dna.get("voice_and_style") or {}
+    #     about = dna.get("about") or {}
+    #     profiles = [p for p in (dna.get("buyer_profiles") or []) if isinstance(p, dict)]
+    #     dna_block = (
+    #         "\nBRAND VOICE & STYLE (the copy must sound like this):\n"
+    #         f"Aesthetic: {vs.get('aesthetic_style', '')}\n"
+    #         f"Tone of voice: {vs.get('tone_of_voice', '')}\n"
+    #         f"Target demographic: {vs.get('target_demographic', '')}\n\n"
+    #         "ABOUT (use for framing, never invent beyond it):\n"
+    #         f"Problem solved: {about.get('problem_solved', '')}\n"
+    #         f"Differentiation: {about.get('differentiation', '')}\n"
+    #         f"#1 outcome: {about.get('number_one_outcome', '')}\n"
+    #     )
+    #     if profiles:
+    #         profile_lines = "\n".join(
+    #             f"- {p.get('name')}: {str(p.get('who_they_are', ''))[:220]}\n"
+    #             f"  Deep pain: {str(p.get('deep_pain', ''))[:220]}\n"
+    #             f"  Their words: {' | '.join(str(q) for q in (p.get('their_language') or [])[:4])}\n"
+    #             f"  Objections: {' | '.join(str(o) for o in (p.get('objections') or [])[:3])}\n"
+    #             f"  Targeting: {', '.join((p.get('targeting_hint') or {}).get('interests') or [])}"
+    #             for p in profiles)
+    #         dna_block += f"\nBUYER PROFILES (each angle should speak AS one of these people):\n{profile_lines}\n"
+    #
+    # location = profile.get("location") or profile.get("geographic_coverage") or ""
+    # excerpt = _prompt_excerpt(clean_text or website_excerpt)
+    #
+    # # What can this site actually convert on Meta? Detected from its own markup and turned
+    # # into media-buyer objective advice: the prompt recommends inside that reality, and the
+    # # same recommendation is stamped on every returned angle for the campaign builder.
+    # signals = detect_conversion_signals(website_excerpt or "")
+    # advice = recommend_campaign_objective(profile, signals)
+    # objective_block = (
+    #     "\nCAMPAIGN OBJECTIVE REALITY (Meta can only optimize toward what this site can actually do):\n"
+    #     f"Recommended objective: {advice['recommended_objective'].upper()} - {advice['rationale']}\n"
+    #     f"Fallback if the recommendation is unavailable: {advice['fallback_objective']}.\n"
+    #     f"Site signals: Meta pixel {'present' if signals['pixel'] else 'NOT found'}; "
+    #     f"on-site checkout {'present' if signals['checkout'] else 'not found'}; "
+    #     f"lead form {'present' if signals['lead_form'] else 'not found'}; "
+    #     f"WhatsApp link {'present' if signals['whatsapp'] else 'not found'}; "
+    #     f"Messenger {'present' if signals['messenger'] else 'not found'}.\n"
+    #     "Make every variation's optimization coherent with these capabilities: never optimize conversions "
+    #     "when no pixel was found; prefer leads (instant form, no pixel needed) or messages (chat flow); "
+    #     "traffic builds a retargeting pool; awareness is the weakest choice for a business that can transact.\n"
+    #     "Flag exactly ONE angle with leads_the_creative=true: the one whose pain is sharpest and proof "
+    #     "hardest; it leads the creative.\n"
+    # )
+    # comp_lines = "\n".join(
+    #     f"- {c.get('name', '')}"
+    #     + (f" ({c['rating']}★, {c.get('reviews') or 0} reviews)" if c.get("rating") else "")
+    #     + (f": {(c.get('description') or '')[:100]}" if c.get("description") else "")
+    #     for c in competitors[:12]) or "- none found"
+    # trend_lines = "\n".join(f"- {t.get('title', '')}" for t in trends[:6]) or "- none found"
+    #
+    # data = svc._llm_json(
+    #     f"You are a direct-response copywriter who deeply understands customers in {location or 'this market'}. "
+    #     "Plan Facebook/Instagram ad angles.\n\n"
+    #     f"BUSINESS: {profile.get('company_name') or 'unknown'} — {profile.get('business_type') or ''}\n"
+    #     f"Location: {location}\n"
+    #     f"Products/services: {as_list(profile.get('products') or profile.get('services_products'))}\n"
+    #     f"Value propositions: {as_list(profile.get('value_propositions'))}\n"
+    #     f"Audiences: {as_list(profile.get('target_audiences'))}\n\n"
+    #     f"WEBSITE EXCERPT (the only source of facts and proof):\n{excerpt or 'not available'}\n\n"
+    #     f"COMPETITORS:\n{comp_lines}\n\n"
+    #     f"CUSTOMER SEARCHES: {', '.join(k.get('keyword', '') for k in keywords[:25]) or 'none found'}\n\n"
+    #     f"MARKET TRENDS:\n{trend_lines}\n\n"
+    #     + dna_block
+    #     + objective_block
+    #     + "\n"
+    #     f"Return ONLY JSON shaped like:\n{json.dumps(_SCHEMA)}\n\n"
+    #     f"Create exactly {count} angles. Each angle carries exactly 3 copy_variations that sell the SAME angle "
+    #     "three different ways, in this order:\n"
+    #     + "\n".join(f"{i + 1}. {name}: {desc}" for i, (name, desc) in enumerate(_COPY_APPROACHES))
+    #     + "\n\n"
+    #     "WHAT MAKES AN AD WORK\n"
+    #     "1. The angles must be truly different from each other. List the different doors into this business: each "
+    #     "product or service line, each type of customer, each moment when someone needs it. Pick the "
+    #     f"{count} that are furthest apart, so no two angles sell the same product to the same person with the same "
+    #     "feeling. Buyer profiles tell you how these people think and talk. Use them for voice and emotion, "
+    #     "never as the only source of angles, and never paste their quotes in as hooks. If the business's "
+    #     "headline selling point is one idea (one supplier, low price, speed, quality), that idea may drive at "
+    #     "most one angle; the others must come from other products, customers or moments.\n"
+    #     "2. Stop the scroll. Think like a creative director, not a template filler: find the one surprising, "
+    #     "true-feeling observation about this customer's world that makes them stop and think 'that is me', and "
+    #     "open on it as a vivid scene, a startling number or a bold challenge. Invent your own hooks from this "
+    #     "business and its customers. Never open with the business name, a feature, or a generic question.\n"
+    #     "3. Persuade. One idea per ad. Make a clear claim, raise the stakes of doing nothing, show the way out, "
+    #     "then tell the reader exactly what to do. Be confident and state things as fact: no hedging, no "
+    #     "'may', 'can help' or 'we strive'.\n"
+    #     "4. Be bold, specific and creative. Anchor every ad in what this business really does, then go further: "
+    #     "invent the vivid, believable specifics a great copywriter would use (numbers, times, places, named "
+    #     "scenes, small details, the cost of waiting) so the ad feels real and concrete. Specific beats polished, "
+    #     "and a confident claim beats a cautious one.\n"
+    #     "5. Sound like a person. Mix short punchy lines with longer ones. 70 to 150 words, short paragraphs. "
+    #     "Speak to 'you'. Match the brand voice above.\n"
+    #     "6. Close with a direct instruction using an action this business really offers (call, WhatsApp, visit, "
+    #     "book, order, request a quote). call_to_action must match that action.\n"
+    #     "7. Never repeat a sentence, hook shape or proof point across the ads. Each ad leans on a different "
+    #     "detail.\n"
+    #     "8. No clichés, emojis, hashtags, em dashes or en dashes. Headline 40 characters or fewer and "
+    #     "description 30 characters or fewer, both complete phrases that are never cut off.\n"
+    #     "Pick keywords only from the searches listed. competitor_gap must name competitors from the list with "
+    #     "the evidence, or be an empty string. benefit_chips are short proof stats taken from the website.",
+    #     # Angles are customer-facing strategy, generated once per campaign: worth the
+    #     # stronger writer (Claude clearly beat gpt-4o-mini on reliabletech.co.zw).
+    #     model=os.getenv("AD_ANGLES_MODEL", "anthropic/claude-sonnet-4.6"))
+    #
 
-    svc = MarketResearchService()
-    if not svc._llm_ready() or not (profile.get("business_type") or profile.get("company_name")):
+    from modules.openclaw import gateway
+    from modules.openclaw.marketing_skill_library import marketing_system
+    import hashlib
+
+    if not (profile.get("business_type") or profile.get("company_name")):
         return []
-
-    def as_list(value):
-        return ", ".join(str(v.get("name") if isinstance(v, dict) else v) for v in (value or []) if v)
-
-    # The store's Brand DNA (Voice & Style + About + Buyer Profiles) is the voice of
-    # truth for HOW to speak; the website excerpt remains the only source of facts.
-    dna = profile.get("brand_dna") if isinstance(profile.get("brand_dna"), dict) else None
-    dna_block = ""
-    if dna:
-        vs = dna.get("voice_and_style") or {}
-        about = dna.get("about") or {}
-        profiles = [p for p in (dna.get("buyer_profiles") or []) if isinstance(p, dict)]
-        dna_block = (
-            "\nBRAND VOICE & STYLE (the copy must sound like this):\n"
-            f"Aesthetic: {vs.get('aesthetic_style', '')}\n"
-            f"Tone of voice: {vs.get('tone_of_voice', '')}\n"
-            f"Target demographic: {vs.get('target_demographic', '')}\n\n"
-            "ABOUT (use for framing, never invent beyond it):\n"
-            f"Problem solved: {about.get('problem_solved', '')}\n"
-            f"Differentiation: {about.get('differentiation', '')}\n"
-            f"#1 outcome: {about.get('number_one_outcome', '')}\n"
-        )
-        if profiles:
-            profile_lines = "\n".join(
-                f"- {p.get('name')}: {str(p.get('who_they_are', ''))[:220]}\n"
-                f"  Deep pain: {str(p.get('deep_pain', ''))[:220]}\n"
-                f"  Their words: {' | '.join(str(q) for q in (p.get('their_language') or [])[:4])}\n"
-                f"  Objections: {' | '.join(str(o) for o in (p.get('objections') or [])[:3])}\n"
-                f"  Targeting: {', '.join((p.get('targeting_hint') or {}).get('interests') or [])}"
-                for p in profiles)
-            dna_block += f"\nBUYER PROFILES (each angle should speak AS one of these people):\n{profile_lines}\n"
-
-    location = profile.get("location") or profile.get("geographic_coverage") or ""
-    excerpt = _prompt_excerpt(clean_text or website_excerpt)
-
-    # What can this site actually convert on Meta? Detected from its own markup and turned
-    # into media-buyer objective advice: the prompt recommends inside that reality, and the
-    # same recommendation is stamped on every returned angle for the campaign builder.
+    count = max(1, min(int(count), 6))
     signals = detect_conversion_signals(website_excerpt or "")
     advice = recommend_campaign_objective(profile, signals)
-    objective_block = (
-        "\nCAMPAIGN OBJECTIVE REALITY (Meta can only optimize toward what this site can actually do):\n"
-        f"Recommended objective: {advice['recommended_objective'].upper()} - {advice['rationale']}\n"
-        f"Fallback if the recommendation is unavailable: {advice['fallback_objective']}.\n"
-        f"Site signals: Meta pixel {'present' if signals['pixel'] else 'NOT found'}; "
-        f"on-site checkout {'present' if signals['checkout'] else 'not found'}; "
-        f"lead form {'present' if signals['lead_form'] else 'not found'}; "
-        f"WhatsApp link {'present' if signals['whatsapp'] else 'not found'}; "
-        f"Messenger {'present' if signals['messenger'] else 'not found'}.\n"
-        "Make every variation's optimization coherent with these capabilities: never optimize conversions "
-        "when no pixel was found; prefer leads (instant form, no pixel needed) or messages (chat flow); "
-        "traffic builds a retargeting pool; awareness is the weakest choice for a business that can transact.\n"
-        "Flag exactly ONE angle with leads_the_creative=true: the one whose pain is sharpest and proof "
-        "hardest; it leads the creative.\n"
-    )
-    comp_lines = "\n".join(
-        f"- {c.get('name', '')}"
-        + (f" ({c['rating']}★, {c.get('reviews') or 0} reviews)" if c.get("rating") else "")
-        + (f": {(c.get('description') or '')[:100]}" if c.get("description") else "")
-        for c in competitors[:12]) or "- none found"
-    trend_lines = "\n".join(f"- {t.get('title', '')}" for t in trends[:6]) or "- none found"
-
-    data = svc._llm_json(
-        f"You are a direct-response copywriter who deeply understands customers in {location or 'this market'}. "
-        "Plan Facebook/Instagram ad angles.\n\n"
-        f"BUSINESS: {profile.get('company_name') or 'unknown'} — {profile.get('business_type') or ''}\n"
-        f"Location: {location}\n"
-        f"Products/services: {as_list(profile.get('products') or profile.get('services_products'))}\n"
-        f"Value propositions: {as_list(profile.get('value_propositions'))}\n"
-        f"Audiences: {as_list(profile.get('target_audiences'))}\n\n"
-        f"WEBSITE EXCERPT (the only source of facts and proof):\n{excerpt or 'not available'}\n\n"
-        f"COMPETITORS:\n{comp_lines}\n\n"
-        f"CUSTOMER SEARCHES: {', '.join(k.get('keyword', '') for k in keywords[:25]) or 'none found'}\n\n"
-        f"MARKET TRENDS:\n{trend_lines}\n\n"
-        + dna_block
-        + objective_block
-        + "\n"
-        f"Return ONLY JSON shaped like:\n{json.dumps(_SCHEMA)}\n\n"
-        f"Create exactly {count} angles. Each angle carries exactly 3 copy_variations that sell the SAME angle "
-        "three different ways, in this order:\n"
-        + "\n".join(f"{i + 1}. {name}: {desc}" for i, (name, desc) in enumerate(_COPY_APPROACHES))
-        + "\n\n"
-        "WHAT MAKES AN AD WORK\n"
-        "1. The angles must be truly different from each other. List the different doors into this business: each "
-        "product or service line, each type of customer, each moment when someone needs it. Pick the "
-        f"{count} that are furthest apart, so no two angles sell the same product to the same person with the same "
-        "feeling. Buyer profiles tell you how these people think and talk. Use them for voice and emotion, "
-        "never as the only source of angles, and never paste their quotes in as hooks. If the business's "
-        "headline selling point is one idea (one supplier, low price, speed, quality), that idea may drive at "
-        "most one angle; the others must come from other products, customers or moments.\n"
-        "2. Stop the scroll. Think like a creative director, not a template filler: find the one surprising, "
-        "true-feeling observation about this customer's world that makes them stop and think 'that is me', and "
-        "open on it as a vivid scene, a startling number or a bold challenge. Invent your own hooks from this "
-        "business and its customers. Never open with the business name, a feature, or a generic question.\n"
-        "3. Persuade. One idea per ad. Make a clear claim, raise the stakes of doing nothing, show the way out, "
-        "then tell the reader exactly what to do. Be confident and state things as fact: no hedging, no "
-        "'may', 'can help' or 'we strive'.\n"
-        "4. Be bold, specific and creative. Anchor every ad in what this business really does, then go further: "
-        "invent the vivid, believable specifics a great copywriter would use (numbers, times, places, named "
-        "scenes, small details, the cost of waiting) so the ad feels real and concrete. Specific beats polished, "
-        "and a confident claim beats a cautious one.\n"
-        "5. Sound like a person. Mix short punchy lines with longer ones. 70 to 150 words, short paragraphs. "
-        "Speak to 'you'. Match the brand voice above.\n"
-        "6. Close with a direct instruction using an action this business really offers (call, WhatsApp, visit, "
-        "book, order, request a quote). call_to_action must match that action.\n"
-        "7. Never repeat a sentence, hook shape or proof point across the ads. Each ad leans on a different "
-        "detail.\n"
-        "8. No clichés, emojis, hashtags, em dashes or en dashes. Headline 40 characters or fewer and "
-        "description 30 characters or fewer, both complete phrases that are never cut off.\n"
-        "Pick keywords only from the searches listed. competitor_gap must name competitors from the list with "
-        "the evidence, or be an empty string. benefit_chips are short proof stats taken from the website.",
-        # Angles are customer-facing strategy, generated once per campaign: worth the
-        # stronger writer (Claude clearly beat gpt-4o-mini on reliabletech.co.zw).
-        model=os.getenv("AD_ANGLES_MODEL", "anthropic/claude-sonnet-4.6"))
+    evidence = {"profile": profile, "website_text": _prompt_excerpt(clean_text or website_excerpt),
+                "competitors": competitors[:12], "keywords": keywords[:25], "trends": trends[:6],
+                "conversion_signals": signals, "objective": advice}
+    contract = (f"Return JSON with exactly {count} angles in this shape: " + json.dumps(_SCHEMA)
+                + ". Each angle needs exactly three genuinely distinct copy_variations. "
+                "Choose approaches from the supplied evidence and imported guidance; there is no fixed "
+                "psychological template. Headline <=40 characters and description <=30. "
+                "Keep unsupported competitor_gap empty. benefit_chips must be supported facts, "
+                "never invented statistics. Audience interests are proposals, not validated Meta IDs.")
+    scope = hashlib.sha256(json.dumps(profile, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    data = gateway.ask_json_sync("research", "imported-marketing-angles:" + scope,
+        marketing_system("angles", contract), json.dumps(evidence, default=str), timeout=180.0)
 
     angles = data.get("angles") if isinstance(data, dict) else None
     if not isinstance(angles, list):
@@ -560,9 +585,9 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
             variation["image_direction"] = str(v.get("image_direction") or angle.get("visual_direction") or "")[:400]
             variation["benefit_chips"] = [str(c).strip()[:40] for c in (v.get("benefit_chips") or []) if str(c).strip()][:4]
             clean_vars.append(variation)
-        if 0 < len(clean_vars) < 3:
-            clean_vars += _fallback_variations(angle)[len(clean_vars):]
-        angle["copy_variations"] = clean_vars[:3] or _fallback_variations(angle)
+        if len(clean_vars) < 3:
+            raise ValueError("Imported marketing skills returned fewer than three copy variations")
+        angle["copy_variations"] = clean_vars[:3]
         # A gap naming no researched competitor is filler ("many competitors don't ...").
         gap = str(angle.get("competitor_gap") or "").lower()
         if not any(n.split()[0] in gap for n in names if n.split()):

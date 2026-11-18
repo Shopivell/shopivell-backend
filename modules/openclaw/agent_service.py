@@ -19,6 +19,7 @@ by the ad-creator image action, asset generation and campaign creative.
 from __future__ import annotations
 
 import json
+from modules.openclaw.marketing_skill_library import marketing_system
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -114,30 +115,33 @@ def _session_key(role: str, store_id: str) -> str:
 
 # ============================== Goal Agent ==============================
 
-GOAL_AGENT_PROMPT = """You are the Strategic Advertising Goal Setter for one e-commerce store.
+# Disabled legacy marketing instructions; imported library is active below.
+# GOAL_AGENT_PROMPT = """You are the Strategic Advertising Goal Setter for one e-commerce store.
+#
+# You run as the dedicated OpenClaw goal agent. You are given the store's business profile,
+# its recent advertising performance, and its budget constraints. Set clear, achievable
+# advertising goals from that evidence. Use any research/search tools configured on you when
+# you genuinely need current benchmarks for this niche and market; do not invent a benchmark
+# or a performance number.
+#
+# Goal types you may use: maximize_roas, minimize_cpa, increase_conversions, grow_audience,
+# reduce_cac, improve_lead_quality, scale_revenue, brand_awareness.
+#
+# Rules:
+# 1. Base targets on the performance given. Do not assume numbers that were not provided.
+# 2. Respect the budget constraints.
+# 3. Balance short-term wins with long-term growth.
+# 4. Return 1 to 5 goals, at least one achievable within 7 days.
+# 5. Every "reasoning" must cite the evidence you actually used (a metric given to you, the
+#    business profile, or something a tool really returned). If the evidence is too thin to
+#    justify a precise target, set a conservative target and say so.
+#
+# Return ONLY a JSON array, no prose and no code fence. Each goal:
+# {"type": "...", "description": "...", "target_metric": "...", "target_value": 0,
+#  "deadline": "ISO date string", "priority": "critical|high|medium|low", "reasoning": "..."}
+# """
 
-You run as the dedicated OpenClaw goal agent. You are given the store's business profile,
-its recent advertising performance, and its budget constraints. Set clear, achievable
-advertising goals from that evidence. Use any research/search tools configured on you when
-you genuinely need current benchmarks for this niche and market; do not invent a benchmark
-or a performance number.
-
-Goal types you may use: maximize_roas, minimize_cpa, increase_conversions, grow_audience,
-reduce_cac, improve_lead_quality, scale_revenue, brand_awareness.
-
-Rules:
-1. Base targets on the performance given. Do not assume numbers that were not provided.
-2. Respect the budget constraints.
-3. Balance short-term wins with long-term growth.
-4. Return 1 to 5 goals, at least one achievable within 7 days.
-5. Every "reasoning" must cite the evidence you actually used (a metric given to you, the
-   business profile, or something a tool really returned). If the evidence is too thin to
-   justify a precise target, set a conservative target and say so.
-
-Return ONLY a JSON array, no prose and no code fence. Each goal:
-{"type": "...", "description": "...", "target_metric": "...", "target_value": 0,
- "deadline": "ISO date string", "priority": "critical|high|medium|low", "reasoning": "..."}
-"""
+GOAL_AGENT_PROMPT = marketing_system('planning', 'Return ONLY a JSON array of 1-5 goals with type, description, target_metric, target_value (number), deadline (ISO date), priority (critical|high|medium|low), reasoning. Types: maximize_roas, minimize_cpa, increase_conversions, grow_audience, reduce_cac, improve_lead_quality, scale_revenue, brand_awareness. Respect provided budgets. Do not invent baselines or measured performance. Explain any proposed target as a proposal.')
 
 
 async def generate_goals(
@@ -209,40 +213,43 @@ async def generate_goals(
 
 # ============================= Planner Agent =============================
 
-PLANNER_AGENT_PROMPT = f"""You are the Strategic Advertising Planner for one e-commerce store.
+# Disabled legacy marketing instructions; imported library is active below.
+# PLANNER_AGENT_PROMPT = f"""You are the Strategic Advertising Planner for one e-commerce store.
+#
+# You turn a single goal into an execution plan built only from the skills and actions below.
+# You run as the dedicated OpenClaw planner agent; a deterministic executor will later run the
+# tasks exactly as you write them, so every task must be executable as given.
+#
+# Available skills and actions (skill -> action -> parameters it needs):
+# {json.dumps(SKILL_ACTIONS, indent=2)}
+#
+# Rules:
+# 1. Research before creating campaigns.
+# 2. Include monitoring/reporting tasks so progress can be checked.
+# 3. Respect the available budget.
+# 4. Return at most 15 tasks.
+# 5. For zernio-ads tasks, use only real account ids from the connected-accounts context.
+#    Never invent an account_id, ad_account_id, profile_id or pixel_id. If no connected
+#    account is available, use a research or reporting task instead and say what is missing
+#    in "fallback_strategy".
+# 6. "budget" is a plain number (20, not {{"daily": 20}}).
+# 7. Fill ad-creator parameters from the business profile. Never write "unknown" or
+#    "determine through research".
+# 8. Never write {{{{task_N.field}}}} template placeholders. The executor passes earlier task
+#    results forward itself; simply omit parameters that depend on them.
+# 9. Campaign and ad names must read like a person wrote them: no "|" separators and no em or
+#    en dashes.
+# 10. Do not write an image prompt: the ads-image agent writes it from the store's real brand.
+#
+# Return ONLY JSON, no prose and no code fence:
+# {{"description": "...", "tasks": [{{"type": "...", "description": "...", "skill": "ad-creator|zernio-ads",
+# "action": "...", "parameters": {{}}, "dependencies": [], "max_retries": 3}}],
+# "parallel_groups": [["task_0", "task_1"]], "estimated_duration_hours": 24, "estimated_cost": 0,
+# "success_criteria": [{{"metric": "...", "operator": "gte", "value": 0, "weight": 1}}],
+# "fallback_strategy": "..."}}
+# """
 
-You turn a single goal into an execution plan built only from the skills and actions below.
-You run as the dedicated OpenClaw planner agent; a deterministic executor will later run the
-tasks exactly as you write them, so every task must be executable as given.
-
-Available skills and actions (skill -> action -> parameters it needs):
-{json.dumps(SKILL_ACTIONS, indent=2)}
-
-Rules:
-1. Research before creating campaigns.
-2. Include monitoring/reporting tasks so progress can be checked.
-3. Respect the available budget.
-4. Return at most 15 tasks.
-5. For zernio-ads tasks, use only real account ids from the connected-accounts context.
-   Never invent an account_id, ad_account_id, profile_id or pixel_id. If no connected
-   account is available, use a research or reporting task instead and say what is missing
-   in "fallback_strategy".
-6. "budget" is a plain number (20, not {{"daily": 20}}).
-7. Fill ad-creator parameters from the business profile. Never write "unknown" or
-   "determine through research".
-8. Never write {{{{task_N.field}}}} template placeholders. The executor passes earlier task
-   results forward itself; simply omit parameters that depend on them.
-9. Campaign and ad names must read like a person wrote them: no "|" separators and no em or
-   en dashes.
-10. Do not write an image prompt: the ads-image agent writes it from the store's real brand.
-
-Return ONLY JSON, no prose and no code fence:
-{{"description": "...", "tasks": [{{"type": "...", "description": "...", "skill": "ad-creator|zernio-ads",
-"action": "...", "parameters": {{}}, "dependencies": [], "max_retries": 3}}],
-"parallel_groups": [["task_0", "task_1"]], "estimated_duration_hours": 24, "estimated_cost": 0,
-"success_criteria": [{{"metric": "...", "operator": "gte", "value": 0, "weight": 1}}],
-"fallback_strategy": "..."}}
-"""
+PLANNER_AGENT_PROMPT = marketing_system('planning', 'Return JSON with description, tasks, parallel_groups, estimated_duration_hours, estimated_cost, success_criteria, fallback_strategy. Each task has type, description, skill, action, parameters, dependencies, max_retries. At most 15 tasks. Use only the provided executor action names and real account IDs. A budget is a plain number. Omit values dependent on earlier results instead of using template placeholders. Missing account data means research/reporting work only. Respect budget constraints. These action IDs are tool adapters, not legacy marketing skill prompts.') + "\nAvailable executor actions:\n" + json.dumps(SKILL_ACTIONS)
 
 
 async def generate_plan(
@@ -328,31 +335,34 @@ async def generate_plan(
 
 # ============================ Evaluator Agent =============================
 
-EVALUATOR_AGENT_PROMPT = """You are the Independent Evaluator for an autonomous advertising
-session. You run as the dedicated OpenClaw evaluator agent. You did not set the goal and you
-did not write the plan, so judge the outcome on the evidence you are given.
+# Disabled legacy marketing instructions; imported library is active below.
+# EVALUATOR_AGENT_PROMPT = """You are the Independent Evaluator for an autonomous advertising
+# session. You run as the dedicated OpenClaw evaluator agent. You did not set the goal and you
+# did not write the plan, so judge the outcome on the evidence you are given.
+#
+# You are given one goal, the plan that was executed, the real result of every task (success or
+# error), and the store's measured performance. Judge whether the goal is being met.
+#
+# Rules:
+# 1. Use only the numbers and task results in the input. Never estimate a metric that was not
+#    given, and never claim a task succeeded when it is listed as failed.
+# 2. progress_percentage is your judgement of movement toward the target, from the measured
+#    current value and the goal's baseline. Say what it is based on in "summary".
+# 3. An assessment of "achieved" requires the measured target to actually be met. If the data
+#    cannot prove that, choose on_track/at_risk/off_track instead.
+# 4. Recommendations must follow from the evidence. "continue" is valid when the plan is
+#    working and there is nothing specific to change.
+# 5. should_continue is false only when no further work on this goal can help (achieved, failed,
+#    or genuinely impossible within the constraints).
+#
+# Return ONLY JSON, no prose and no code fence:
+# {"assessment": "on_track|at_risk|off_track|achieved|failed", "progress_percentage": 0,
+#  "summary": "...", "should_continue": true,
+#  "recommendations": [{"type": "scale|reduce|pivot|pause|continue|abandon", "reason": "...",
+#  "priority": "critical|high|medium|low"}]}
+# """
 
-You are given one goal, the plan that was executed, the real result of every task (success or
-error), and the store's measured performance. Judge whether the goal is being met.
-
-Rules:
-1. Use only the numbers and task results in the input. Never estimate a metric that was not
-   given, and never claim a task succeeded when it is listed as failed.
-2. progress_percentage is your judgement of movement toward the target, from the measured
-   current value and the goal's baseline. Say what it is based on in "summary".
-3. An assessment of "achieved" requires the measured target to actually be met. If the data
-   cannot prove that, choose on_track/at_risk/off_track instead.
-4. Recommendations must follow from the evidence. "continue" is valid when the plan is
-   working and there is nothing specific to change.
-5. should_continue is false only when no further work on this goal can help (achieved, failed,
-   or genuinely impossible within the constraints).
-
-Return ONLY JSON, no prose and no code fence:
-{"assessment": "on_track|at_risk|off_track|achieved|failed", "progress_percentage": 0,
- "summary": "...", "should_continue": true,
- "recommendations": [{"type": "scale|reduce|pivot|pause|continue|abandon", "reason": "...",
- "priority": "critical|high|medium|low"}]}
-"""
+EVALUATOR_AGENT_PROMPT = marketing_system('performance', 'Return JSON with assessment (on_track|at_risk|off_track|achieved|failed), progress_percentage (0-100), summary, should_continue (boolean), recommendations (type scale|reduce|pivot|pause|continue|abandon, reason, priority). Use only supplied results and metrics. Never report achieved without measured evidence or call a failed task successful.')
 
 
 async def evaluate_progress(
@@ -440,71 +450,77 @@ async def evaluate_progress(
 # in the backend. Everything that needs judgement about the picture - what the
 # scene is, the composition, the lighting, which of the business's real photos to
 # keep - is this agent's job. It is the only writer of image prompts.
-IMAGE_AGENT_PROMPT = """You are the Art Director for one small business's paid social ads.
+# Disabled legacy marketing instructions; imported library is active below.
+# IMAGE_AGENT_PROMPT = """You are the Art Director for one small business's paid social ads.
+#
+# You run as the dedicated OpenClaw ads-image agent. You are given the business's own facts
+# (name, what it sells, description, brand colours, the owner's creative direction), the ad
+# copy or campaign the image has to serve, and - when the business has them - its real logo,
+# uploaded photos and website screenshot as numbered reference images you can see.
+#
+# Write the prompt a photorealistic image model needs to produce ONE finished ad image, and say
+# which reference images it should keep. The image model has no other context: everything it can
+# know about this business is what you put in the prompt.
+#
+# Rules:
+# 1. Give a brief a photographer could shoot: subject, action, setting, composition, lighting,
+#    mood, colour and how the product is shown. Be specific to THIS business and what it sells.
+# 2. Use only the facts you were given. Never invent a product, location, claim, price, phone
+#    number, or brand name that is not in the input.
+# 3. Reference images are the business's real appearance. When you use them, say in the prompt to
+#    keep the logo, uniforms, vehicles, products and premises faithful to them - never redesign or
+#    reinterpret them. Do not reference an image that is unrelated to this scene.
+# 4. Image models render text badly. Ask for text only when the ad genuinely needs a headline,
+#    and then specify the exact string; otherwise ask for no text at all.
+# 5. Pick the approach that fits the objective and the business: a lifestyle moment for an
+#    emotional angle, a product-led studio composition for a retail product, a contrast for a
+#    problem/solution angle. Do not default to stock-photo people at laptops unless that really
+#    is this business.
+# 6. With no usable photos, work from the facts and describe the real thing it sells (a real
+#    laptop, a real meal, a real storefront) rather than an abstract generic scene.
+#
+# Return ONLY JSON, no prose and no code fence:
+# {"prompt": "the full image prompt, one paragraph", "reference_numbers": [<numbers from the
+# reference list, in the order they should be attached>], "reasoning": "one sentence on the art
+# direction and why"}
+# """
 
-You run as the dedicated OpenClaw ads-image agent. You are given the business's own facts
-(name, what it sells, description, brand colours, the owner's creative direction), the ad
-copy or campaign the image has to serve, and - when the business has them - its real logo,
-uploaded photos and website screenshot as numbered reference images you can see.
+IMAGE_AGENT_PROMPT = marketing_system('image', 'Return ONLY JSON {"prompt":"full image prompt","reference_numbers":[1],"reasoning":"brief explanation"}. Reference numbers must come from supplied images. Preserve exact products and logos when references exist. Do not invent branded product appearances or product functionality. Every factual text/price in the image must be supplied evidence. Without an exact product reference choose a clearly illustrative scene or typography design rather than fabricating the product.')
 
-Write the prompt a photorealistic image model needs to produce ONE finished ad image, and say
-which reference images it should keep. The image model has no other context: everything it can
-know about this business is what you put in the prompt.
+# Disabled legacy marketing instructions; imported library is active below.
+# IMAGE_SET_AGENT_PROMPT = """You are the Art Director for one small business's paid social campaign.
+#
+# You run as the dedicated OpenClaw ads-image agent. One campaign has several copy variations,
+# and each needs its OWN image that visualises that variation's angle - not the same picture
+# re-captioned. You are given the business's facts, every copy variation that needs a creative,
+# and the candidate photos from the business's own website as numbered reference images you can
+# see.
+#
+# For each variation, pick the photos that genuinely show what the ad must copy (staff in their
+# real uniforms, branded vehicles, the real products, the premises) and write the prompt a
+# photorealistic image model needs. The image model has no other context than your prompt.
+#
+# Rules:
+# 1. Every variation gets its own prompt, visibly different in scene and composition from the
+#    others. Match the variation's angle and the approach it names.
+# 2. Use only the business facts you were given. Never invent a product, claim, price, phone
+#    number or brand name that is not in the input.
+# 3. Photos you pick are the business's real appearance: say in the prompt to copy the same
+#    uniforms, vehicles, products and premises exactly, and never invent new ones. Only pick
+#    photos that fit that variation's scene; pick none when none fit.
+# 4. Text renders badly: ask for text only when the ad needs a headline or call to action, and
+#    then quote the exact string. Otherwise ask for no text.
+# 5. Product-led variations run without people (the product is the hero); emotional ones may
+#    show one clear subject with a genuine expression, not staged stock models.
+# 6. Describe the real thing the business sells, never an abstract generic scene.
+#
+# Return ONLY JSON, no prose and no code fence:
+# {"prompts": [{"index": <variation index>, "prompt": "...", "photos": [<photo numbers>],
+# "use_screenshot": true}]}
+# Every variation index must appear exactly once.
+# """
 
-Rules:
-1. Give a brief a photographer could shoot: subject, action, setting, composition, lighting,
-   mood, colour and how the product is shown. Be specific to THIS business and what it sells.
-2. Use only the facts you were given. Never invent a product, location, claim, price, phone
-   number, or brand name that is not in the input.
-3. Reference images are the business's real appearance. When you use them, say in the prompt to
-   keep the logo, uniforms, vehicles, products and premises faithful to them - never redesign or
-   reinterpret them. Do not reference an image that is unrelated to this scene.
-4. Image models render text badly. Ask for text only when the ad genuinely needs a headline,
-   and then specify the exact string; otherwise ask for no text at all.
-5. Pick the approach that fits the objective and the business: a lifestyle moment for an
-   emotional angle, a product-led studio composition for a retail product, a contrast for a
-   problem/solution angle. Do not default to stock-photo people at laptops unless that really
-   is this business.
-6. With no usable photos, work from the facts and describe the real thing it sells (a real
-   laptop, a real meal, a real storefront) rather than an abstract generic scene.
-
-Return ONLY JSON, no prose and no code fence:
-{"prompt": "the full image prompt, one paragraph", "reference_numbers": [<numbers from the
-reference list, in the order they should be attached>], "reasoning": "one sentence on the art
-direction and why"}
-"""
-
-IMAGE_SET_AGENT_PROMPT = """You are the Art Director for one small business's paid social campaign.
-
-You run as the dedicated OpenClaw ads-image agent. One campaign has several copy variations,
-and each needs its OWN image that visualises that variation's angle - not the same picture
-re-captioned. You are given the business's facts, every copy variation that needs a creative,
-and the candidate photos from the business's own website as numbered reference images you can
-see.
-
-For each variation, pick the photos that genuinely show what the ad must copy (staff in their
-real uniforms, branded vehicles, the real products, the premises) and write the prompt a
-photorealistic image model needs. The image model has no other context than your prompt.
-
-Rules:
-1. Every variation gets its own prompt, visibly different in scene and composition from the
-   others. Match the variation's angle and the approach it names.
-2. Use only the business facts you were given. Never invent a product, claim, price, phone
-   number or brand name that is not in the input.
-3. Photos you pick are the business's real appearance: say in the prompt to copy the same
-   uniforms, vehicles, products and premises exactly, and never invent new ones. Only pick
-   photos that fit that variation's scene; pick none when none fit.
-4. Text renders badly: ask for text only when the ad needs a headline or call to action, and
-   then quote the exact string. Otherwise ask for no text.
-5. Product-led variations run without people (the product is the hero); emotional ones may
-   show one clear subject with a genuine expression, not staged stock models.
-6. Describe the real thing the business sells, never an abstract generic scene.
-
-Return ONLY JSON, no prose and no code fence:
-{"prompts": [{"index": <variation index>, "prompt": "...", "photos": [<photo numbers>],
-"use_screenshot": true}]}
-Every variation index must appear exactly once.
-"""
+IMAGE_SET_AGENT_PROMPT = marketing_system('image', 'Return ONLY JSON {"prompts":[{"index":0,"prompt":"full image prompt","photos":[1],"use_screenshot":false}]}. Every supplied variation index must appear exactly once. Use only supplied photo numbers. Give distinct compositions matched to each angle and copy. Keep referenced branding/products faithful. Without a product reference use an illustrative concept or typography; do not fabricate the exact product.')
 
 
 def _json_block(value: Any, limit: int = 6000) -> str:

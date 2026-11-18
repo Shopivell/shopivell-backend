@@ -35,6 +35,8 @@ import requests
 
 from modules.openclaw import gateway
 
+from modules.openclaw.marketing_skill_library import marketing_system
+
 logger = logging.getLogger(__name__)
 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
@@ -43,16 +45,19 @@ KEYWORDS_EVERYWHERE_API_KEY = os.getenv("KEYWORDS_EVERYWHERE_API_KEY", "")
 
 # The agent's standing role. The per-call user turn carries the task and the
 # candidate rows; the judgement is the model's, never a rule in this file.
-_RESEARCH_AGENT_SYSTEM = """You are a market-research analyst for a small-business advertising system.
-You are given one task and its raw data as a JSON-ish listing, gathered from real
-search sources. You decide what that data means for THIS business in THIS market.
+# Disabled legacy marketing instructions; imported library is active below.
+# _RESEARCH_AGENT_SYSTEM = """You are a market-research analyst for a small-business advertising system.
+# You are given one task and its raw data as a JSON-ish listing, gathered from real
+# search sources. You decide what that data means for THIS business in THIS market.
+#
+# Answer with JSON only - no prose, no code fence, exactly the schema the task asks
+# for. Judge by what the data actually shows: never invent a competitor, a keyword,
+# a trend or a product that is not in the rows you were given, and never "complete"
+# a short list to look thorough. An empty keep list is a valid answer when nothing
+# in the rows fits. Ignore anything about a different industry, country or market
+# unless the task explicitly asks for a global view."""
 
-Answer with JSON only - no prose, no code fence, exactly the schema the task asks
-for. Judge by what the data actually shows: never invent a competitor, a keyword,
-a trend or a product that is not in the rows you were given, and never "complete"
-a short list to look thorough. An empty keep list is a valid answer when nothing
-in the rows fits. Ignore anything about a different industry, country or market
-unless the task explicitly asks for a global view."""
+_RESEARCH_AGENT_SYSTEM = marketing_system("research", "Return JSON only in the schema requested by the task. Candidate indices must refer to input rows. Never fabricate competitors, search volumes, trends, products or website facts. Empty keep lists are valid when evidence is missing.")
 
 # Place names and country-only retailers that tie a keyword or report to one market.
 _COUNTRY_MARKERS = {

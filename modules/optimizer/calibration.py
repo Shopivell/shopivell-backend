@@ -18,6 +18,9 @@ from typing import Any, Dict, Optional
 from modules.openclaw import gateway
 from modules.optimizer.rules import DEFAULT_RULES
 
+import json
+from modules.openclaw.marketing_skill_library import marketing_system
+
 logger = logging.getLogger(__name__)
 
 # (min, max, type) per rule field. The model's proposal is clamped into this range no
@@ -47,45 +50,48 @@ RULE_BOUNDS: Dict[str, Dict[str, tuple]] = {
     },
 }
 
-CALIBRATION_PROMPT = f"""You are tuning an ad optimizer for one specific business: both the
-targets it measures against, and the rule thresholds that decide when it scales, cuts, or
-pauses an ad set. This runs infrequently (roughly weekly) to set numbers a separate,
-fixed 15-minute engine then executes deterministically - you are not making live decisions,
-only choosing sensible numbers for that engine to use until you're asked again.
+# Disabled legacy marketing instructions; imported library is active below.
+# CALIBRATION_PROMPT = f"""You are tuning an ad optimizer for one specific business: both the
+# targets it measures against, and the rule thresholds that decide when it scales, cuts, or
+# pauses an ad set. This runs infrequently (roughly weekly) to set numbers a separate,
+# fixed 15-minute engine then executes deterministically - you are not making live decisions,
+# only choosing sensible numbers for that engine to use until you're asked again.
+#
+# Use any research/search tools configured on you to ground every number in REAL current
+# benchmarks for this business's niche, country and spend level - do not invent generic
+# numbers. If the store has too
+# little of its own performance history to be meaningful, rely more heavily on researched
+# category benchmarks; if it has real history, weigh that too.
+#
+# Rule mechanics you may tune (default shape and current values given below - change only
+# what you have an actual reason to change; leave a field out to keep its current value):
+# {DEFAULT_RULES}
+#
+# Guidance on the mechanics:
+# - A high-velocity, low-margin, impulse-buy niche can usually tolerate a more aggressive
+#   kill_loser (lower min_impressions/cooldown) and faster scale_winner than a considered,
+#   long-sales-cycle B2B niche, which needs more data before acting.
+# - Every value you return will be hard-clamped to a safe range in code regardless of what
+#   you propose, so there is no need to be conservative purely out of caution - propose what
+#   you actually think is right for this business; the system enforces the floor/ceiling.
+#
+# Rules:
+# 1. target_roas / target_cpa: conservative, realistic, grounded - see above. Return null for
+#    either if you genuinely cannot find or estimate a defensible number; the optimizer simply
+#    won't run that rule until a real target is set.
+# 2. "rules": only include a rule name / field if you have an actual reason to change it from
+#    its current value; omit anything you're not changing.
+# 3. "reasoning" must name the actual benchmark/signal used for the targets AND explain any
+#    rule-mechanic changes in terms of this business's niche - never write a reasoning that
+#    isn't grounded in something you actually looked at or reasoned about.
+#
+# Return ONLY JSON, no prose, no code fence:
+# {{"target_roas": 0 or null, "target_cpa": 0 or null,
+# "rules": {{"scale_winner": {{}}, "kill_loser": {{}}, "pause_no_spend": {{}}, "creative_fatigue": {{}}}},
+# "reasoning": "..."}}
+# """
 
-Use any research/search tools configured on you to ground every number in REAL current
-benchmarks for this business's niche, country and spend level - do not invent generic
-numbers. If the store has too
-little of its own performance history to be meaningful, rely more heavily on researched
-category benchmarks; if it has real history, weigh that too.
-
-Rule mechanics you may tune (default shape and current values given below - change only
-what you have an actual reason to change; leave a field out to keep its current value):
-{DEFAULT_RULES}
-
-Guidance on the mechanics:
-- A high-velocity, low-margin, impulse-buy niche can usually tolerate a more aggressive
-  kill_loser (lower min_impressions/cooldown) and faster scale_winner than a considered,
-  long-sales-cycle B2B niche, which needs more data before acting.
-- Every value you return will be hard-clamped to a safe range in code regardless of what
-  you propose, so there is no need to be conservative purely out of caution - propose what
-  you actually think is right for this business; the system enforces the floor/ceiling.
-
-Rules:
-1. target_roas / target_cpa: conservative, realistic, grounded - see above. Return null for
-   either if you genuinely cannot find or estimate a defensible number; the optimizer simply
-   won't run that rule until a real target is set.
-2. "rules": only include a rule name / field if you have an actual reason to change it from
-   its current value; omit anything you're not changing.
-3. "reasoning" must name the actual benchmark/signal used for the targets AND explain any
-   rule-mechanic changes in terms of this business's niche - never write a reasoning that
-   isn't grounded in something you actually looked at or reasoned about.
-
-Return ONLY JSON, no prose, no code fence:
-{{"target_roas": 0 or null, "target_cpa": 0 or null,
-"rules": {{"scale_winner": {{}}, "kill_loser": {{}}, "pause_no_spend": {{}}, "creative_fatigue": {{}}}},
-"reasoning": "..."}}
-"""
+CALIBRATION_PROMPT = marketing_system("performance", 'Return JSON with target_roas and target_cpa (number or null), rules (only justified changes to existing rule fields), reasoning. Never fabricate benchmarks. Respect these rule bounds: ' + json.dumps(RULE_BOUNDS, default=str))
 
 
 def _clamp_rule_overrides(proposed: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

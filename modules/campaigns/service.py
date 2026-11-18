@@ -76,6 +76,8 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+from modules.openclaw.marketing_skill_library import campaign_prompt
+
 logger = logging.getLogger(__name__)
 
 # Aliases for readability
@@ -89,29 +91,31 @@ AdContent = UrlAdContent
 # Hook tactics that dominate high-spend Meta accounts (Motion's 2026 creative
 # benchmarks). Each ad set gets a different one, so a campaign tests different ways of
 # stopping the scroll rather than three versions of the same opener.
-HOOK_TACTICS = [
-    ("Confession",
-     "admit a mistake, failure or wrong belief the customer has held, then resolve it; honest and "
-     "vulnerable, like talking to a friend, never salesy",
-     ['"I tried everything — [failed attempts] — then I found [product]."',
-      '"I have never tried [product] before, believe it or not..."']),
-    ("Bold claim",
-     "open with a big, hard-to-ignore promise that makes the reader think 'prove it', then prove it "
-     "immediately with a fact from the website — never a promise the site does not support",
-     ['"[Specific surprising fact from the website]. Here is how."', '"Most [customers] never [thing]. Ours do."']),
-    ("Relatability",
-     "describe one specific moment from the customer's life in their own words so they think "
-     "'that is literally me'; specific beats general",
-     ['"My [problem] was [bad situation]. [Product] literally saved me."']),
-    ("Contrast",
-     "set two things against each other: the old way vs the new way, before vs after, or how everyone "
-     "else does it vs how this business does it",
-     ['"[Old way] vs [new way] — the difference is [proof]."']),
-    ("Curiosity",
-     "open a loop: give the known (who and what this is about, so the right person self-selects) and "
-     "hold back the unknown, then resolve it later in the copy",
-     ['"My [person] has only been using it for [timeframe]..."']),
-]
+# Disabled legacy marketing instructions; imported library is active below.
+# HOOK_TACTICS = [
+#     ("Confession",
+#      "admit a mistake, failure or wrong belief the customer has held, then resolve it; honest and "
+#      "vulnerable, like talking to a friend, never salesy",
+#      ['"I tried everything — [failed attempts] — then I found [product]."',
+#       '"I have never tried [product] before, believe it or not..."']),
+#     ("Bold claim",
+#      "open with a big, hard-to-ignore promise that makes the reader think 'prove it', then prove it "
+#      "immediately with a fact from the website — never a promise the site does not support",
+#      ['"[Specific surprising fact from the website]. Here is how."', '"Most [customers] never [thing]. Ours do."']),
+#     ("Relatability",
+#      "describe one specific moment from the customer's life in their own words so they think "
+#      "'that is literally me'; specific beats general",
+#      ['"My [problem] was [bad situation]. [Product] literally saved me."']),
+#     ("Contrast",
+#      "set two things against each other: the old way vs the new way, before vs after, or how everyone "
+#      "else does it vs how this business does it",
+#      ['"[Old way] vs [new way] — the difference is [proof]."']),
+#     ("Curiosity",
+#      "open a loop: give the known (who and what this is about, so the right person self-selects) and "
+#      "hold back the unknown, then resolve it later in the copy",
+#      ['"My [person] has only been using it for [timeframe]..."']),
+# ]
+
 
 
 # Site images that are never useful as a photo of the business (logos, badges, certificates).
@@ -192,28 +196,30 @@ def fetch_photo_candidates(photos: List[str], limit: int = 16) -> List[Tuple[str
     logger.info(f"[SitePhotos] {len(candidates)} usable thumbnails from {len(photos or [])} photos")
     return candidates
 
-AD_COPYWRITING_RULES = """COPYWRITING RULES (these override everything else in this prompt):
-- GOAL: make the right person curious enough to stop scrolling and tap. Short and intriguing beats complete and informative - the ad starts the conversation, the website finishes it.
-- primary_text is SHORT: 3-4 short lines, 30-60 words in total - HARD LIMIT 60 words, count them before answering - a line break between lines. Never a paragraph, never a feature list.
-  Line 1 (the hook, under 125 characters so it shows before "See more"): a specific, surprising or uncomfortable moment the customer recognises, or a question they can't answer - it must open a loop that only reading on (or clicking) closes. It must NOT repeat the headline; the headline and line 1 are two different hooks for the same idea.
-  Line 2: twist or tension - the thing they didn't know, the cost of getting it wrong, or a hint at the answer without giving it all away.
-  Line 3: the proof - ONE concrete fact from the website that makes it believable.
-  Line 4: one short next step that matches the call_to_action.
-- title (headline): under 40 characters, specific to THIS business and THIS situation. Use a question, a surprising number from the website, a "why/how" loop, or a contrast. SWAP TEST: if a competitor could run the same headline unchanged, it is too generic - rewrite it. CURIOSITY TEST: the reader must be left with a question ("wait, why?", "is that me?", "what happened?"); a plain statement of what the business does fails.
-  The headline is about the READER's situation, never about the business: do NOT put the business name in the headline, and never "How [brand] beats...", "Why [brand]...", "[Brand] vs ...".
-  CLARITY FIRST: a busy person must understand it in one glance, with zero effort. Clever-but-confusing loses to plain-and-intriguing.
-  Generic (never): "Smart Security Solutions", "Quality Laptops Here", "Your Trusted Partner", "Protect What Matters", "Reliable Service You Can Trust".
-  Hooked (like this): "Is your night guard actually awake?", "Cash van late again?", "Bought a 'new' laptop that wasn't?", "Power cut mid-deadline again?".
-- descriptions: under 60 characters each, a teaser that adds to the headline (never repeats it) - e.g. "Most buyers only find out after the warranty ends."
-- Start from the customer, never the business: no "At [Business] we...", no "We are a leading...", no listing services.
-- Use only facts from the website; tease them, don't dump them. No invented numbers, prices, offers or guarantees.
-- Plain spoken words, like a local friend talking to one person. No hype, no fear-mongering.
-- Never use em dashes or en dashes. Use a full stop or a comma instead.
-- Every line must make sense on its own to someone skimming - no riddles, no abstract statements ("that is when a uniform stops being security", "monitoring changes the moment"). Concrete people, places, times and objects.
-- No semicolons, no dashes joining clauses, no "I used to think" openers. Mention the business name at most once, in the proof line.
-- Never use: "you deserve the best", "say goodbye to", "experience the difference", "look no further", "one-stop shop", "take it to the next level", "elevate", "unlock", "seamless", "cutting-edge", "solutions", "trusted partner", "peace of mind is just", "Enjoy ... today".
-- name is a specific persona in a situation (e.g. "Students buying a first laptop"), not a generic group ("Individuals", "Professionals").
-- emotion is the feeling the buyer wants (relief, confidence, pride, peace of mind), not a corporate value."""
+# Disabled legacy marketing instructions; imported library is active below.
+# AD_COPYWRITING_RULES = """COPYWRITING RULES (these override everything else in this prompt):
+# - GOAL: make the right person curious enough to stop scrolling and tap. Short and intriguing beats complete and informative - the ad starts the conversation, the website finishes it.
+# - primary_text is SHORT: 3-4 short lines, 30-60 words in total - HARD LIMIT 60 words, count them before answering - a line break between lines. Never a paragraph, never a feature list.
+#   Line 1 (the hook, under 125 characters so it shows before "See more"): a specific, surprising or uncomfortable moment the customer recognises, or a question they can't answer - it must open a loop that only reading on (or clicking) closes. It must NOT repeat the headline; the headline and line 1 are two different hooks for the same idea.
+#   Line 2: twist or tension - the thing they didn't know, the cost of getting it wrong, or a hint at the answer without giving it all away.
+#   Line 3: the proof - ONE concrete fact from the website that makes it believable.
+#   Line 4: one short next step that matches the call_to_action.
+# - title (headline): under 40 characters, specific to THIS business and THIS situation. Use a question, a surprising number from the website, a "why/how" loop, or a contrast. SWAP TEST: if a competitor could run the same headline unchanged, it is too generic - rewrite it. CURIOSITY TEST: the reader must be left with a question ("wait, why?", "is that me?", "what happened?"); a plain statement of what the business does fails.
+#   The headline is about the READER's situation, never about the business: do NOT put the business name in the headline, and never "How [brand] beats...", "Why [brand]...", "[Brand] vs ...".
+#   CLARITY FIRST: a busy person must understand it in one glance, with zero effort. Clever-but-confusing loses to plain-and-intriguing.
+#   Generic (never): "Smart Security Solutions", "Quality Laptops Here", "Your Trusted Partner", "Protect What Matters", "Reliable Service You Can Trust".
+#   Hooked (like this): "Is your night guard actually awake?", "Cash van late again?", "Bought a 'new' laptop that wasn't?", "Power cut mid-deadline again?".
+# - descriptions: under 60 characters each, a teaser that adds to the headline (never repeats it) - e.g. "Most buyers only find out after the warranty ends."
+# - Start from the customer, never the business: no "At [Business] we...", no "We are a leading...", no listing services.
+# - Use only facts from the website; tease them, don't dump them. No invented numbers, prices, offers or guarantees.
+# - Plain spoken words, like a local friend talking to one person. No hype, no fear-mongering.
+# - Never use em dashes or en dashes. Use a full stop or a comma instead.
+# - Every line must make sense on its own to someone skimming - no riddles, no abstract statements ("that is when a uniform stops being security", "monitoring changes the moment"). Concrete people, places, times and objects.
+# - No semicolons, no dashes joining clauses, no "I used to think" openers. Mention the business name at most once, in the proof line.
+# - Never use: "you deserve the best", "say goodbye to", "experience the difference", "look no further", "one-stop shop", "take it to the next level", "elevate", "unlock", "seamless", "cutting-edge", "solutions", "trusted partner", "peace of mind is just", "Enjoy ... today".
+# - name is a specific persona in a situation (e.g. "Students buying a first laptop"), not a generic group ("Individuals", "Professionals").
+# - emotion is the feeling the buyer wants (relief, confidence, pride, peace of mind), not a corporate value."""
+
 
 load_dotenv()
 
@@ -489,97 +495,83 @@ class CampaignService:
 
         return "\n\n".join(content_parts)
 
+    # Disabled legacy marketing instructions; imported library is active below.
+    # def _generate_ad_content_from_store(self, store_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    #     """Generate ad content using store data (no scraping needed)."""
+    #     store_name = store_context.get("store_name", "Business")
+    #     business_type = store_context.get("business_type", "")
+    #     description = store_context.get("store_description", "")
+    #     products = store_context.get("services_products", [])
+    #     #     products_str = ", ".join(products[:10]) if products else "various products and services"
+    #     #     prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
+    #     # E INFORMATION (USE THIS DATA - DO NOT MAKE UP INFORMATION):
+    # e Name: {store_name}
+    # ness Type: {business_type}
+    # ription: {description}
+    # ucts/Services: {products_str}
+    #     #  1 - ANALYZE THE BUSINESS:
+    # d on the store information above, identify:
+    # HAT does this business sell?
+    # HO are the target buyers? (industries, job titles, company types)
+    # hat PROBLEMS does this business solve?
+    #     #  2 - GENERATE 1 BUYER PERSONA:
+    # rate exactly 1 ad set targeting the PRIMARY buyer persona.
+    #     #  3 - GENERATE AD CONTENT:
+    #     # COPYWRITING_RULES}
+    #     # RTANT: Do NOT include any emojis. Keep all text clean and professional.
+    #     # EADLINES (2, max 40 chars each) - curiosity hooks that pass the SWAP TEST above
+    # ESCRIPTIONS (2, max 60 chars each) - short teasers that add to the headline
+    # D_SETS (1 buyer persona):
+    #     # the ad set, provide:
+    # me: The BUYER PERSONA (2-4 words)
+    # tle: curiosity headline for this buyer's situation (max 40 chars, NO emojis)
+    # dience_description: 2-3 sentences describing WHO this buyer is
+    # dience_tags: 15-20 Facebook targeting interests
+    # imary_text: SHORT hook-first ad copy, 3-4 lines, 30-60 words, per the COPYWRITING RULES - NO emojis
+    # atures: 5 specific features from the products/services listed
+    # shtags: 8-10 social media hashtags (lowercase, no spaces)
+    # lue_proposition: One sentence value statement
+    # otion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
+    # sual_direction: Specific scene description for ad image
+    #     # rn as JSON:
+    #     # "business_name": "{store_name}",
+    # "business_type": "{business_type}",
+    # "products_services": {json.dumps(products[:6])},
+    # "headlines": ["Headline 1", "Headline 2"],
+    # "descriptions": ["Description 1", "Description 2"],
+    # "ad_sets": [
+    #     {{
+    #         "name": "Buyer Persona Name",
+    #         "title": "Clear Headline",
+    #         "audience_description": "Description...",
+    #         "audience_tags": ["tag1", "tag2", "...15-20 tags"],
+    #         "primary_text": "Professional ad copy...",
+    #         "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
+    #         "hashtags": ["hashtag1", "hashtag2", "...8-10 tags"],
+    #         "value_proposition": "Value statement",
+    #         "emotion": "Primary emotion",
+    #         "visual_direction": "Scene description",
+    #         "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
+    #     }}
+    # ]
+    #     #     # rn ONLY valid JSON, no markdown, NO EMOJIS.
+    #     #     #     # Claude (via OpenRouter) first: in a side-by-side on securico.co.zw it wrote clear,
+    #     # human hooks where gpt-5.6-terra wrote stiff, riddle-like lines. OpenAI is the fallback.
+    #     if self.openrouter:
+    #         result = self._generate_with_openrouter(prompt)
+    #         if result:
+    #             return result
+    #         logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
+    #     #     if self.openai:
+    #         result = self._generate_with_openai(prompt)
+    #         if result:
+    #             return result
+    #     #     # Final fallback to mock data using store context
+    #     logger.warning("[CampaignService] No AI client available, using store-based mock data")
+    #     return self._mock_ad_content_from_store(store_context)
+
     def _generate_ad_content_from_store(self, store_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Generate ad content using store data (no scraping needed)."""
-        store_name = store_context.get("store_name", "Business")
-        business_type = store_context.get("business_type", "")
-        description = store_context.get("store_description", "")
-        products = store_context.get("services_products", [])
-
-        products_str = ", ".join(products[:10]) if products else "various products and services"
-
-        prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
-
-STORE INFORMATION (USE THIS DATA - DO NOT MAKE UP INFORMATION):
-Store Name: {store_name}
-Business Type: {business_type}
-Description: {description}
-Products/Services: {products_str}
-
-STEP 1 - ANALYZE THE BUSINESS:
-Based on the store information above, identify:
-1. WHAT does this business sell?
-2. WHO are the target buyers? (industries, job titles, company types)
-3. What PROBLEMS does this business solve?
-
-STEP 2 - GENERATE 1 BUYER PERSONA:
-Generate exactly 1 ad set targeting the PRIMARY buyer persona.
-
-STEP 3 - GENERATE AD CONTENT:
-
-{AD_COPYWRITING_RULES}
-
-IMPORTANT: Do NOT include any emojis. Keep all text clean and professional.
-
-1. HEADLINES (2, max 40 chars each) - curiosity hooks that pass the SWAP TEST above
-2. DESCRIPTIONS (2, max 60 chars each) - short teasers that add to the headline
-3. AD_SETS (1 buyer persona):
-
-For the ad set, provide:
-- name: The BUYER PERSONA (2-4 words)
-- title: curiosity headline for this buyer's situation (max 40 chars, NO emojis)
-- audience_description: 2-3 sentences describing WHO this buyer is
-- audience_tags: 15-20 Facebook targeting interests
-- primary_text: SHORT hook-first ad copy, 3-4 lines, 30-60 words, per the COPYWRITING RULES - NO emojis
-- features: 5 specific features from the products/services listed
-- hashtags: 8-10 social media hashtags (lowercase, no spaces)
-- value_proposition: One sentence value statement
-- emotion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
-- visual_direction: Specific scene description for ad image
-
-Return as JSON:
-{{
-    "business_name": "{store_name}",
-    "business_type": "{business_type}",
-    "products_services": {json.dumps(products[:6])},
-    "headlines": ["Headline 1", "Headline 2"],
-    "descriptions": ["Description 1", "Description 2"],
-    "ad_sets": [
-        {{
-            "name": "Buyer Persona Name",
-            "title": "Clear Headline",
-            "audience_description": "Description...",
-            "audience_tags": ["tag1", "tag2", "...15-20 tags"],
-            "primary_text": "Professional ad copy...",
-            "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
-            "hashtags": ["hashtag1", "hashtag2", "...8-10 tags"],
-            "value_proposition": "Value statement",
-            "emotion": "Primary emotion",
-            "visual_direction": "Scene description",
-            "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
-        }}
-    ]
-}}
-
-Return ONLY valid JSON, no markdown, NO EMOJIS.
-"""
-
-        # Claude (via OpenRouter) first: in a side-by-side on securico.co.zw it wrote clear,
-        # human hooks where gpt-5.6-terra wrote stiff, riddle-like lines. OpenAI is the fallback.
-        if self.openrouter:
-            result = self._generate_with_openrouter(prompt)
-            if result:
-                return result
-            logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
-
-        if self.openai:
-            result = self._generate_with_openai(prompt)
-            if result:
-                return result
-
-        # Final fallback to mock data using store context
-        logger.warning("[CampaignService] No AI client available, using store-based mock data")
-        return self._mock_ad_content_from_store(store_context)
+        return self._generate_imported_campaign(campaign_prompt(store_context))
 
     def _mock_ad_content_from_store(self, store_context: Dict[str, Any]) -> Dict[str, Any]:
         """Generate mock ad content from store data when AI is unavailable."""
@@ -936,200 +928,176 @@ Return ONLY valid JSON, no markdown, NO EMOJIS.
             print(f"[Scraping] Error: {e}")
             return self._mock_scrape_data(url)
 
+    # Disabled legacy marketing instructions; imported library is active below.
+    # def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str, store_context: Optional[Dict[str, Any]] = None,
+    #                          ad_angles: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    #     """Generate ad content using OpenRouter (preferred) or OpenAI.
+    #     #     Args:
+    #         scraped_data: Data scraped from the website
+    #         url: The source URL
+    #         store_context: Optional dict with store_name, business_type, store_description, services_products
+    #     """
+    #     content = scraped_data.get("content", "")
+    #     domain = scraped_data.get("domain", "")
+    #     pages_extracted = scraped_data.get("pages_extracted", 1)
+    #     #     # NOTE: We intentionally do NOT pass any store context to the AI
+    #     # The AI should determine business name, type, and everything else from SCRAPED CONTENT ONLY
+    #     # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
+    #     # for completely different businesses (e.g., Edgars clothing store)
+    #     store_info_section = ""  # Empty - AI derives everything from scraped content
+    #     #     if ad_angles:
+    #         # One ad set per research-backed angle instead of a single generic persona.
+    #         def hook_brief(index):
+    #             name, how, examples = HOOK_TACTICS[index % len(HOOK_TACTICS)]
+    #             return f"   HOOK TACTIC — {name}: {how}. Patterns: {' '.join(examples)}"
+    #     #         # Copy variations pre-written by the angles step (loss aversion / aspiration /
+    #         # us-vs-them). When present, the copywriter's job is to polish and verify rather
+    #         # than reinvent, so the three variations really do test different framings.
+    #         def variations_block(a):
+    #             vars_ = [v for v in (a.get("copy_variations") or []) if isinstance(v, dict) and v.get("primary_text")]
+    #             if not vars_:
+    #                 return ""
+    #             lines = "\n".join(
+    #                 f"     - approach {v.get('approach')}: primary_text: {v.get('primary_text')}\n"
+    #                 f"       headline: {v.get('headline')} | description: {v.get('description')} | "
+    #                 f"CTA: {v.get('call_to_action')}"
+    #                 for v in vars_)
+    #             return f"\n   PRE-DRAFTED COPY VARIATIONS (publishable drafts to refine, not to discard):\n{lines}"
+    #     #         angle_lines = "\n".join(
+    #             f"{i + 1}. {a.get('angle_name')} — audience: {a.get('target_audience')}\n"
+    #             f"{hook_brief(i)}\n"
+    #             f"   customer pain: {a.get('customer_pain')}\n"
+    #             f"   desired outcome: {a.get('desired_outcome')}\n"
+    #             f"   hook: {a.get('hook')} | how we solve it: {a.get('value_proposition')} | proof: {a.get('proof')}\n"
+    #             f"   emotion: {a.get('emotion')} | keywords: {', '.join(a.get('keywords') or [])} | "
+    #             f"visual: {a.get('visual_direction')}"
+    #             + variations_block(a)
+    #             for i, a in enumerate(ad_angles))
+    #         persona_block = (
+    #             f"STEP 2 - ONE AD SET PER AD ANGLE:\n\n"
+    #             f"Market research produced these {len(ad_angles)} customer-first ad angles:\n{angle_lines}\n\n"
+    #             f"Generate exactly {len(ad_angles)} ad sets, one per angle, in the same order. For each: name = the "
+    #             "angle's audience; title and the first line of primary_text use that angle's HOOK TACTIC (each ad "
+    #             "set uses a different tactic — do not repeat one); primary_text then acknowledges the customer's "
+    #             "situation with empathy, shows the desired outcome and how this business delivers it, backed by "
+    #             "the proof, and ends with one clear next step; use the keywords naturally; "
+    #             "emotion and visual_direction follow the angle. Only use facts from the website content — do not "
+    #             "invent offers, prices or statistics.\n\n"
+    #             "COPY VARIATIONS per ad set: when an angle carries PRE-DRAFTED COPY VARIATIONS, produce "
+    #             "copy_variations as a JSON array of 3 objects in the SAME order, each with: approach (copy it "
+    #             "verbatim), primary_text, headline (max 40 chars), description (max 30 chars, teases the "
+    #             "headline instead of repeating it), call_to_action. Fix only what breaks the rules: unsupported "
+    #             "claims, emojis, em dashes, generic phrasing, headlines about the business instead of the reader. "
+    #             "Keep each variation's distinct approach and first line — the three must remain genuinely "
+    #             "different framings, never three paraphrases of one idea. When an angle has no pre-drafted "
+    #             "variations, write 3 in the same JSON shape using three different hook tactics.\n\n"
+    #             f"CRITICAL: You MUST output exactly {len(ad_angles)} ad sets in the ad_sets array, one per angle."
+    #         )
+    #     else:
+    #         persona_block = """STEP 2 - GENERATE 1 BUYER PERSONA:
+    #     # MUST generate exactly 1 ad set targeting the PRIMARY buyer persona for this business.
+    #     # B2B BUSINESSES (technology, services, enterprise solutions):
+    # rate 1 ad set targeting the MOST LIKELY BUYER - choose the most relevant:
+    # e primary industry vertical that uses this product
+    #  the key decision-maker role
+    #  the main company type
+    #     # B2C BUSINESSES (retail, fashion, consumer products):
+    # rate 1 ad set targeting the PRIMARY CUSTOMER - choose the most relevant:
+    # e main demographic (e.g., young professionals, parents, fashion-forward consumers)
+    #  a specific shopping occasion
+    #  the core product category
+    #     # ICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set."""
+    #     #     prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
+    #     # ite URL: {url}
+    # in: {domain}
+    # s Scraped: {pages_extracted}
+    #     # ITE CONTENT:
+    # tent[:15000]}
+    #     #  1 - DEEP BUSINESS ANALYSIS:
+    # yze the scraped content to identify:
+    # HAT does this business sell? (products, services, technology, etc.)
+    # HO are the BUYERS? Think about:
+    #  What INDUSTRIES use this product? (property management, healthcare, retail, government, etc.)
+    #  What JOB TITLES make purchasing decisions? (managers, directors, executives, owners)
+    #  What COMPANY TYPES need this? (SMEs, enterprises, government agencies, residential)
+    #  What PROBLEMS does each buyer type have that this product solves?
+    # xtract any METRICS or STATISTICS mentioned (accuracy %, speed improvements, cost savings)
+    #     # sona_block}
+    #     #  3 - GENERATE AD CONTENT:
+    #     # COPYWRITING_RULES}
+    #     # RTANT: Do NOT include any emojis in any of the generated content. Keep all text clean and professional.
+    #     # EADLINES (one per ad set, max 40 chars each) - curiosity hooks that pass the SWAP TEST above
+    #     # ESCRIPTIONS (one per ad set, max 60 chars each) - a short teaser that adds to the headline, no emojis
+    #     # D_SETS (1 buyer persona):
+    #     # each ad set, provide:
+    # me: The BUYER PERSONA (industry or role-based, 2-4 words)
+    # amples: "Property Management Companies", "Corporate Security Directors", "Smart City Planners"
+    #     # tle: curiosity headline for this buyer's specific situation (max 40 chars, NO emojis) - follows the headline rules above
+    #     # dience_description: 2-3 sentences describing WHO this buyer is
+    #     # dience_tags: 15-20 Facebook/Meta targeting interests - these are INTERESTS and BEHAVIORS that Facebook uses for ad targeting, NOT hashtags
+    # amples of good audience tags: "Small business owners", "Property management", "Commercial real estate", "Security systems", "Business technology", "Fleet management", "Facility management", "Operations management"
+    # ese should be broad interest categories that exist in Facebook Ads Manager
+    #     # imary_text: SHORT hook-first ad copy, 3-4 lines, 30-60 words, exactly as the COPYWRITING RULES describe. NO emojis.
+    #     # py_variations: ONLY when pre-drafted copy variations were supplied for this angle (see STEP 2): a JSON array of 3 objects, each {"approach", "primary_text", "headline", "description", "call_to_action"}, refined per the COPY VARIATIONS rules above. When none were supplied, omit this field entirely.
+    #     # atures: 5 specific features from the website (kept for reference, NOT written into primary_text)
+    #     # shtags: 8-10 social media hashtags for discoverability (single words, no spaces, lowercase)
+    # ese are different from audience_tags - hashtags are for social media posts
+    # amples: "security", "business", "technology", "innovation", "smartcity", "proptech"
+    #     # lue_proposition: One sentence with specific metric
+    #     # otion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
+    #     # sual_direction: Specific scene description
+    #     # rn as JSON:
+    #     # "business_name": "The actual business name from the website",
+    # "business_type": "Industry/sector",
+    # "products_services": ["product1", "product2", "product3"],
+    # "key_metrics": ["99% accuracy", "85% faster"],
+    # "headlines": ["Clean headline without emojis", "Another headline"],
+    # "descriptions": ["Professional description without emojis", "Another description"],
+    # "ad_sets": [
+    #     {{
+    #         "name": "Buyer Persona Name",
+    #         "title": "Clear Headline Without Emojis",
+    #         "audience_description": "Description of the target buyer...",
+    #         "audience_tags": ["Small business owners", "Property management", "Commercial real estate", "Security systems", "15-20 Facebook interests"],
+    #         "primary_text": "Professional ad copy without emojis...",
+    #         "copy_variations": [{{"approach": "loss aversion", "primary_text": "...", "headline": "...", "description": "...", "call_to_action": "Sign Up"}}],
+    #         "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
+    #         "hashtags": ["business", "technology", "innovation", "security", "professional", "enterprise", "solutions", "industry"],
+    #         "value_proposition": "Clear value statement",
+    #         "emotion": "Primary emotion",
+    #         "visual_direction": "Scene description",
+    #         "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
+    #     }}
+    # ]
+    #     #     # rn ONLY valid JSON, no markdown, NO EMOJIS anywhere.
+    #     #     #     # Claude (via OpenRouter) first: in a side-by-side on securico.co.zw it wrote clear,
+    #     # human hooks where gpt-5.6-terra wrote stiff, riddle-like lines. OpenAI is the fallback.
+    #     if self.openrouter:
+    #         result = self._generate_with_openrouter(prompt)
+    #         if result:
+    #             return result
+    #         logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
+    #     #     if self.openai:
+    #         result = self._generate_with_openai(prompt)
+    #         if result:
+    #             return result
+    #     #     # Final fallback to mock data
+    #     logger.warning("[CampaignService] No AI client available, using mock data")
+    #     return self._mock_ad_content(url, store_context)
+
     def _generate_ad_content(self, scraped_data: Dict[str, Any], url: str, store_context: Optional[Dict[str, Any]] = None,
                              ad_angles: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
-        """Generate ad content using OpenRouter (preferred) or OpenAI.
+        evidence = {"url": url, "content": (scraped_data.get("content") or "")[:24000]}
+        return self._generate_imported_campaign(campaign_prompt(evidence, ad_angles))
 
-        Args:
-            scraped_data: Data scraped from the website
-            url: The source URL
-            store_context: Optional dict with store_name, business_type, store_description, services_products
-        """
-        content = scraped_data.get("content", "")
-        domain = scraped_data.get("domain", "")
-        pages_extracted = scraped_data.get("pages_extracted", 1)
-
-        # NOTE: We intentionally do NOT pass any store context to the AI
-        # The AI should determine business name, type, and everything else from SCRAPED CONTENT ONLY
-        # This prevents stale store data (e.g., "SecureSights") from appearing in campaigns
-        # for completely different businesses (e.g., Edgars clothing store)
-        store_info_section = ""  # Empty - AI derives everything from scraped content
-
-        if ad_angles:
-            # One ad set per research-backed angle instead of a single generic persona.
-            def hook_brief(index):
-                name, how, examples = HOOK_TACTICS[index % len(HOOK_TACTICS)]
-                return f"   HOOK TACTIC — {name}: {how}. Patterns: {' '.join(examples)}"
-
-            # Copy variations pre-written by the angles step (loss aversion / aspiration /
-            # us-vs-them). When present, the copywriter's job is to polish and verify rather
-            # than reinvent, so the three variations really do test different framings.
-            def variations_block(a):
-                vars_ = [v for v in (a.get("copy_variations") or []) if isinstance(v, dict) and v.get("primary_text")]
-                if not vars_:
-                    return ""
-                lines = "\n".join(
-                    f"     - approach {v.get('approach')}: primary_text: {v.get('primary_text')}\n"
-                    f"       headline: {v.get('headline')} | description: {v.get('description')} | "
-                    f"CTA: {v.get('call_to_action')}"
-                    for v in vars_)
-                return f"\n   PRE-DRAFTED COPY VARIATIONS (publishable drafts to refine, not to discard):\n{lines}"
-
-            angle_lines = "\n".join(
-                f"{i + 1}. {a.get('angle_name')} — audience: {a.get('target_audience')}\n"
-                f"{hook_brief(i)}\n"
-                f"   customer pain: {a.get('customer_pain')}\n"
-                f"   desired outcome: {a.get('desired_outcome')}\n"
-                f"   hook: {a.get('hook')} | how we solve it: {a.get('value_proposition')} | proof: {a.get('proof')}\n"
-                f"   emotion: {a.get('emotion')} | keywords: {', '.join(a.get('keywords') or [])} | "
-                f"visual: {a.get('visual_direction')}"
-                + variations_block(a)
-                for i, a in enumerate(ad_angles))
-            persona_block = (
-                f"STEP 2 - ONE AD SET PER AD ANGLE:\n\n"
-                f"Market research produced these {len(ad_angles)} customer-first ad angles:\n{angle_lines}\n\n"
-                f"Generate exactly {len(ad_angles)} ad sets, one per angle, in the same order. For each: name = the "
-                "angle's audience; title and the first line of primary_text use that angle's HOOK TACTIC (each ad "
-                "set uses a different tactic — do not repeat one); primary_text then acknowledges the customer's "
-                "situation with empathy, shows the desired outcome and how this business delivers it, backed by "
-                "the proof, and ends with one clear next step; use the keywords naturally; "
-                "emotion and visual_direction follow the angle. Only use facts from the website content — do not "
-                "invent offers, prices or statistics.\n\n"
-                "COPY VARIATIONS per ad set: when an angle carries PRE-DRAFTED COPY VARIATIONS, produce "
-                "copy_variations as a JSON array of 3 objects in the SAME order, each with: approach (copy it "
-                "verbatim), primary_text, headline (max 40 chars), description (max 30 chars, teases the "
-                "headline instead of repeating it), call_to_action. Fix only what breaks the rules: unsupported "
-                "claims, emojis, em dashes, generic phrasing, headlines about the business instead of the reader. "
-                "Keep each variation's distinct approach and first line — the three must remain genuinely "
-                "different framings, never three paraphrases of one idea. When an angle has no pre-drafted "
-                "variations, write 3 in the same JSON shape using three different hook tactics.\n\n"
-                f"CRITICAL: You MUST output exactly {len(ad_angles)} ad sets in the ad_sets array, one per angle."
-            )
-        else:
-            persona_block = """STEP 2 - GENERATE 1 BUYER PERSONA:
-
-You MUST generate exactly 1 ad set targeting the PRIMARY buyer persona for this business.
-
-FOR B2B BUSINESSES (technology, services, enterprise solutions):
-Generate 1 ad set targeting the MOST LIKELY BUYER - choose the most relevant:
-- The primary industry vertical that uses this product
-- OR the key decision-maker role
-- OR the main company type
-
-FOR B2C BUSINESSES (retail, fashion, consumer products):
-Generate 1 ad set targeting the PRIMARY CUSTOMER - choose the most relevant:
-- The main demographic (e.g., young professionals, parents, fashion-forward consumers)
-- OR a specific shopping occasion
-- OR the core product category
-
-CRITICAL: You MUST output exactly 1 ad set in the ad_sets array. Only 1 ad set."""
-
-        prompt = f"""You are an expert B2B/B2C digital marketing specialist creating high-converting Facebook/Instagram ad campaigns.
-
-Website URL: {url}
-Domain: {domain}
-Pages Scraped: {pages_extracted}
-
-WEBSITE CONTENT:
-{content[:15000]}
-
-STEP 1 - DEEP BUSINESS ANALYSIS:
-Analyze the scraped content to identify:
-1. WHAT does this business sell? (products, services, technology, etc.)
-2. WHO are the BUYERS? Think about:
-   - What INDUSTRIES use this product? (property management, healthcare, retail, government, etc.)
-   - What JOB TITLES make purchasing decisions? (managers, directors, executives, owners)
-   - What COMPANY TYPES need this? (SMEs, enterprises, government agencies, residential)
-   - What PROBLEMS does each buyer type have that this product solves?
-3. Extract any METRICS or STATISTICS mentioned (accuracy %, speed improvements, cost savings)
-
-{persona_block}
-
-STEP 3 - GENERATE AD CONTENT:
-
-{AD_COPYWRITING_RULES}
-
-IMPORTANT: Do NOT include any emojis in any of the generated content. Keep all text clean and professional.
-
-1. HEADLINES (one per ad set, max 40 chars each) - curiosity hooks that pass the SWAP TEST above
-
-2. DESCRIPTIONS (one per ad set, max 60 chars each) - a short teaser that adds to the headline, no emojis
-
-3. AD_SETS (1 buyer persona):
-
-For each ad set, provide:
-- name: The BUYER PERSONA (industry or role-based, 2-4 words)
-  Examples: "Property Management Companies", "Corporate Security Directors", "Smart City Planners"
-
-- title: curiosity headline for this buyer's specific situation (max 40 chars, NO emojis) - follows the headline rules above
-
-- audience_description: 2-3 sentences describing WHO this buyer is
-
-- audience_tags: 15-20 Facebook/Meta targeting interests - these are INTERESTS and BEHAVIORS that Facebook uses for ad targeting, NOT hashtags
-  Examples of good audience tags: "Small business owners", "Property management", "Commercial real estate", "Security systems", "Business technology", "Fleet management", "Facility management", "Operations management"
-  These should be broad interest categories that exist in Facebook Ads Manager
-
-- primary_text: SHORT hook-first ad copy, 3-4 lines, 30-60 words, exactly as the COPYWRITING RULES describe. NO emojis.
-
-- copy_variations: ONLY when pre-drafted copy variations were supplied for this angle (see STEP 2): a JSON array of 3 objects, each {"approach", "primary_text", "headline", "description", "call_to_action"}, refined per the COPY VARIATIONS rules above. When none were supplied, omit this field entirely.
-
-- features: 5 specific features from the website (kept for reference, NOT written into primary_text)
-
-- hashtags: 8-10 social media hashtags for discoverability (single words, no spaces, lowercase)
-  These are different from audience_tags - hashtags are for social media posts
-  Examples: "security", "business", "technology", "innovation", "smartcity", "proptech"
-
-- value_proposition: One sentence with specific metric
-
-- emotion: Primary emotion (Efficiency, Security, Control, Growth, Trust)
-
-- visual_direction: Specific scene description
-
-Return as JSON:
-{{
-    "business_name": "The actual business name from the website",
-    "business_type": "Industry/sector",
-    "products_services": ["product1", "product2", "product3"],
-    "key_metrics": ["99% accuracy", "85% faster"],
-    "headlines": ["Clean headline without emojis", "Another headline"],
-    "descriptions": ["Professional description without emojis", "Another description"],
-    "ad_sets": [
-        {{
-            "name": "Buyer Persona Name",
-            "title": "Clear Headline Without Emojis",
-            "audience_description": "Description of the target buyer...",
-            "audience_tags": ["Small business owners", "Property management", "Commercial real estate", "Security systems", "15-20 Facebook interests"],
-            "primary_text": "Professional ad copy without emojis...",
-            "copy_variations": [{{"approach": "loss aversion", "primary_text": "...", "headline": "...", "description": "...", "call_to_action": "Sign Up"}}],
-            "features": ["feature 1", "feature 2", "feature 3", "feature 4", "feature 5"],
-            "hashtags": ["business", "technology", "innovation", "security", "professional", "enterprise", "solutions", "industry"],
-            "value_proposition": "Clear value statement",
-            "emotion": "Primary emotion",
-            "visual_direction": "Scene description",
-            "call_to_action": "One of: Shop Now, Learn More, Contact Us, Send Message, Get Quote, Book Now, Order Now, Sign Up, Call Now"
-        }}
-    ]
-}}
-
-Return ONLY valid JSON, no markdown, NO EMOJIS anywhere.
-"""
-
-        # Claude (via OpenRouter) first: in a side-by-side on securico.co.zw it wrote clear,
-        # human hooks where gpt-5.6-terra wrote stiff, riddle-like lines. OpenAI is the fallback.
-        if self.openrouter:
-            result = self._generate_with_openrouter(prompt)
-            if result:
-                return result
-            logger.warning("[CampaignService] OpenRouter failed, trying OpenAI fallback")
-
-        if self.openai:
-            result = self._generate_with_openai(prompt)
-            if result:
-                return result
-
-        # Final fallback to mock data
-        logger.warning("[CampaignService] No AI client available, using mock data")
-        return self._mock_ad_content(url, store_context)
+    def _generate_imported_campaign(self, prompt: str) -> Optional[Dict[str, Any]]:
+        for client, generate in ((self.openrouter, self._generate_with_openrouter),
+                                 (self.openai, self._generate_with_openai)):
+            if client:
+                result = generate(prompt)
+                if result:
+                    return result
+        raise RuntimeError("Marketing generation failed: no model returned a valid campaign")
 
     # Specific promises ad copy tends to invent ("Same-Day Delivery", "100% genuine",
     # "full manufacturer warranty"); kept only when the website itself says them.
