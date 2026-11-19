@@ -32,7 +32,7 @@ class ImportedMarketingTests(unittest.TestCase):
         prompt = model.call_args.args[2]
         self.assertIn('[corey/', prompt)
         self.assertIn('[ryze/', prompt)
-        self.assertIn('[meta_ads_kit/', prompt)
+        self.assertNotIn('[meta_ads_kit/', prompt)
         self.assertNotIn('invent the vivid', prompt)
         self.assertIn('Canon PIXMA MG2541S', model.call_args.args[3])
 

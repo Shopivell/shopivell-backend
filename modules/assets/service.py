@@ -435,7 +435,7 @@ class AssetService:
                         "about": (brand.get("about") or "")[:600],
                         "products": brand.get("products"),
                         "country": brand.get("country"),
-                        "brand_colours": brand.get("color_theme"),
+                        "visual_brand_contract": brand.get("visual_brand_contract"),
                         "owner_creative_direction": brand.get("owner_creative_prompt"),
                     },
                     "headline": headline,

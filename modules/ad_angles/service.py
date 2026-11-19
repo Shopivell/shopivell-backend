@@ -22,9 +22,9 @@ ANGLE_FIELDS = ("angle_name", "customer_pain", "desired_outcome", "hook", "value
 
 _VARIATION_SCHEMA = {
     "approach": "the distinct creative approach chosen from the imported skills for this evidence",
-    "primary_text": "70-150 words, short paragraphs separated by blank lines, first line under 125 chars",
-    "headline": "<=40 chars, a complete phrase that stops the scroll",
-    "description": "<=30 chars, teaser that ADDS to the headline instead of repeating it",
+    "primary_text": "short persuasive ad copy with readable paragraphs",
+    "headline": "a complete phrase that stops the scroll",
+    "description": "a teaser that adds to the headline instead of repeating it",
     "call_to_action": "one of: Learn More, Sign Up, Shop Now, Get Quote, Contact Us, Book Now, Get Offer",
     # Per-variation delivery: how THIS framing should be aimed and rendered. The campaign
     # builder turns these into distinct ad sets / creatives, so variations differ in more
@@ -36,7 +36,7 @@ _VARIATION_SCHEMA = {
     "optimization": "one of: conversions, leads, traffic, messages, awareness",
     "demographics": {"age_min": 18, "age_max": 65, "gender": "all — or 'male'/'female' only when the angle truly calls for it"},
     "image_direction": "one concrete scene for THIS variation's creative: subject, action, moment, in the customer's world",
-    "benefit_chips": ["short supported facts from the website; return an empty list if none"],
+    "benefit_chips": ["short benefits to feature in the creative"],
 }
 
 # Each angle gets 3 copy variations with DIFFERENT psychological approaches, so a campaign
@@ -62,11 +62,11 @@ _SCHEMA = {"angles": [{
     "angle_name": "short name for the customer situation",
     "customer_pain": "the situation or worry, in the customer's own words",
     "desired_outcome": "what they want to feel or achieve",
-    "hook": "<=40 char headline speaking to the pain or outcome, never a feature name",
+    "hook": "headline speaking to the pain or outcome, never a feature name",
     "value_proposition": "how this business resolves it",
-    "proof": "a concrete fact from the website excerpt that makes it believable",
+    "proof": "the supporting proof or persuasive point",
     "website_basis": "the website value proposition or product this rests on",
-    "competitor_gap": "names competitors from the list and the evidence, e.g. X is rated 3.9 stars",
+    "competitor_gap": "the competitive distinction for this angle",
     "target_audience": "specific persona in a situation, e.g. students buying a first laptop",
     "emotion": "the feeling the buyer wants: relief, confidence, pride, peace of mind",
     "keywords": ["3-6 of the customer searches above"],
@@ -76,15 +76,6 @@ _SCHEMA = {"angles": [{
     # published; the other fields above remain the strategy the variations must stay true to.
     "copy_variations": [_VARIATION_SCHEMA] * 3,
 }]}
-
-
-def _fit(text: Any, limit: int) -> str:
-    """Trim to `limit` characters at a word boundary so a headline or description is never cut mid-word."""
-    text = str(text or "").strip()
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    return (cut.rsplit(" ", 1)[0] if " " in cut and text[limit] != " " else cut).rstrip(" ,;:-")
 
 
 # Disabled legacy marketing instructions; imported library is active below.
@@ -514,9 +505,7 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
     contract = (f"Return JSON with exactly {count} angles in this shape: " + json.dumps(_SCHEMA)
                 + ". Each angle needs exactly three genuinely distinct copy_variations. "
                 "Choose approaches from the supplied evidence and imported guidance; there is no fixed "
-                "psychological template. Headline <=40 characters and description <=30. "
-                "Keep unsupported competitor_gap empty. benefit_chips must be supported facts, "
-                "never invented statistics. Audience interests are proposals, not validated Meta IDs.")
+                "psychological template.")
     scope = hashlib.sha256(json.dumps(profile, sort_keys=True, default=str).encode()).hexdigest()[:16]
     data = gateway.ask_json_sync("research", "imported-marketing-angles:" + scope,
         marketing_system("angles", contract), json.dumps(evidence, default=str), timeout=180.0)
@@ -525,7 +514,6 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
     if not isinstance(angles, list):
         logger.warning("[AdAngles] no angles returned")
         return []
-    names = [str(c.get("name") or "").lower() for c in competitors if c.get("name")]
     clean = []
     for a in angles[:count]:
         if not (isinstance(a, dict) and a.get("angle_name") and a.get("value_proposition")):
@@ -539,9 +527,8 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
         clean_vars = []
         for v in raw_vars[:3]:
             variation = {k: v.get(k) for k in _VARIATION_FIELDS}
-            # Trim each field to Meta's practical limits so nothing gets cut off at publish time.
-            variation["headline"] = _fit(variation.get("headline") or angle_hook, 40)
-            variation["description"] = _fit(variation.get("description"), 30)
+            variation["headline"] = str(variation.get("headline") or angle_hook)
+            variation["description"] = str(variation.get("description") or "")
             variation["primary_text"] = str(variation.get("primary_text") or "")
             cta = str(variation.get("call_to_action") or "Learn More")
             variation["call_to_action"] = next(
@@ -588,10 +575,6 @@ def generate_ad_angles(profile: Dict[str, Any], competitors: List[Dict[str, Any]
         if len(clean_vars) < 3:
             raise ValueError("Imported marketing skills returned fewer than three copy variations")
         angle["copy_variations"] = clean_vars[:3]
-        # A gap naming no researched competitor is filler ("many competitors don't ...").
-        gap = str(angle.get("competitor_gap") or "").lower()
-        if not any(n.split()[0] in gap for n in names if n.split()):
-            angle["competitor_gap"] = ""
         clean.append(angle)
     # Per-angle objective tag: every ad set carries the recommended Meta objective so the
     # campaign builder (and the user) can see what the ads should optimize toward.

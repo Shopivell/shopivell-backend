@@ -485,7 +485,7 @@ async def evaluate_progress(
 # direction and why"}
 # """
 
-IMAGE_AGENT_PROMPT = marketing_system('image', 'Return ONLY JSON {"prompt":"full image prompt","reference_numbers":[1],"reasoning":"brief explanation"}. Reference numbers must come from supplied images. Preserve exact products and logos when references exist. Do not invent branded product appearances or product functionality. Every factual text/price in the image must be supplied evidence. Without an exact product reference choose a clearly illustrative scene or typography design rather than fabricating the product.')
+IMAGE_AGENT_PROMPT = marketing_system('image', 'The business input may contain visual_brand_contract. Treat it as the immutable visual system for the creative: repeat its exact palette hierarchy, typography, aesthetic, logo placement and reference-image treatment in the full image prompt. The contract signature identifies the saved brand version and must never be altered. Return ONLY JSON {"prompt":"full image prompt","reference_numbers":[1],"reasoning":"brief explanation"}. Reference numbers must come from supplied images. Preserve exact products and logos when references exist. Without an exact product reference choose a clearly illustrative scene or typography design rather than fabricating the product.')
 
 # Disabled legacy marketing instructions; imported library is active below.
 # IMAGE_SET_AGENT_PROMPT = """You are the Art Director for one small business's paid social campaign.
@@ -520,7 +520,7 @@ IMAGE_AGENT_PROMPT = marketing_system('image', 'Return ONLY JSON {"prompt":"full
 # Every variation index must appear exactly once.
 # """
 
-IMAGE_SET_AGENT_PROMPT = marketing_system('image', 'Return ONLY JSON {"prompts":[{"index":0,"prompt":"full image prompt","photos":[1],"use_screenshot":false}]}. Every supplied variation index must appear exactly once. Use only supplied photo numbers. Give distinct compositions matched to each angle and copy. Keep referenced branding/products faithful. Without a product reference use an illustrative concept or typography; do not fabricate the exact product.')
+IMAGE_SET_AGENT_PROMPT = marketing_system('image', 'The business input contains visual_brand_contract. Treat it as immutable across the entire image set. Every prompt must repeat the same exact palette hierarchy, typography, aesthetic, logo placement and reference-image treatment, while varying only the scene and composition needed by the ad angle. The contract signature identifies the saved brand version and must never be altered. Return ONLY JSON {"prompts":[{"index":0,"prompt":"full image prompt","photos":[1],"use_screenshot":false}]}. Every supplied variation index must appear exactly once. Use only supplied photo numbers. Give distinct compositions matched to each angle and copy. Keep referenced branding/products faithful. Without a product reference use an illustrative concept or typography; do not fabricate the exact product.')
 
 
 def _json_block(value: Any, limit: int = 6000) -> str:

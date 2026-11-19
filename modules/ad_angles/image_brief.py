@@ -54,6 +54,13 @@ def build_image_prompt(brand: Dict[str, Any], ad: Dict[str, Any], facts: List[Di
     button = str(ad.get("button_label") or ad.get("meta_cta") or "Learn More").strip()
     proof = proof_line(ad, facts)
     colors = ", ".join(brand.get("colors") or [])
+    heading_font = str(brand.get("font_heading") or "").strip()
+    body_font = str(brand.get("font_body") or "").strip()
+    typography = (
+        f"Use {heading_font} for headings and {body_font} for supporting text throughout."
+        if heading_font and body_font else
+        "Use one neutral sans-serif family for headings and supporting text, and keep it fixed across the campaign."
+    )
     text_items = [f'headline: "{headline}"'] + ([f'proof line: "{proof}"'] if proof else []) + [f'button: "{button}"']
     parts = [
         f"Design a finished square 1:1 social ad for {brand['name']}. It must look like agency-made work.",
@@ -63,7 +70,7 @@ def build_image_prompt(brand: Dict[str, Any], ad: Dict[str, Any], facts: List[Di
         f"THEME: brand colours {colors}; the first colour leads, the second is the accent, neutrals fill the rest. "
         + (f"Mood only: {brand['aesthetic']}. Where this mentions colours, people or places, ignore that and use the brand "
            "colours and the layout below. " if brand.get("aesthetic") else "")
-        + "One sans-serif family, high contrast, generous spacing.",
+        + typography + " High contrast, generous spacing.",
         f"LAYOUT: {LAYOUTS[layout]}.",
         "PHOTOS: " + (f"the {photo_count} attached real photos of the brand's own work are the imagery. Use them as "
                       "they are (crop and frame only); do not alter, repaint or add to what they show."

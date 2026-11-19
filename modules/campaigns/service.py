@@ -312,6 +312,12 @@ class CampaignService:
             scraped_data = self._scrape_website(url)
             if scraped_data and not scraped_data.get("error"):
                 scraped_data = self._apply_store_profile(scraped_data, store_id)
+                scraped_data["visual_brand_contract"] = self._build_campaign_visual_contract(
+                    scraped_data, store_id=store_id, source_url=url
+                )
+                scraped_data["brand_voice_contract"] = self._build_campaign_voice_contract(
+                    scraped_data, store_id=store_id, source_url=url
+                )
 
             if not scraped_data:
                 campaign.status = CampaignStatus.FAILED
@@ -407,6 +413,31 @@ class CampaignService:
                 "brand_colors": [store.color_theme] if store.color_theme else [],
                 "screenshot_url": store.screenshot_url,
             }
+            from modules.openclaw.brand_context import (
+                build_brand_voice_contract, build_visual_brand_contract, load_brand_context,
+            )
+            saved_brand = load_brand_context(str(store.id))
+            store_data["visual_brand_contract"] = (
+                saved_brand.get("visual_brand_contract")
+                or build_visual_brand_contract({
+                    "store_name": store.store_name,
+                    "about": store.store_description or store.store_voice,
+                    "brand_description": store.brand_description,
+                    "color_theme": store.color_theme,
+                    "secondary_colors": store.secondary_colors or [],
+                    "font_heading": store.font_heading,
+                    "font_body": store.font_body,
+                    "brand_dna": store.brand_dna or {},
+                    "store_tone": store.store_tone,
+                    "logo_url": store.logo_url,
+                    "screenshot_url": store.screenshot_url,
+                    "owner_creative_prompt": store.ai_creative_prompt,
+                })
+            )
+            store_data["brand_voice_contract"] = (
+                saved_brand.get("brand_voice_contract")
+                or build_brand_voice_contract(saved_brand)
+            )
 
             # Create campaign
             campaign = Campaign(
@@ -437,6 +468,8 @@ class CampaignService:
                 "services_products": store.products_or_services or [],
                 "logo_url": store.logo_url,
                 "color_theme": store.color_theme,
+                "brand_voice_contract": store_data.get("brand_voice_contract"),
+                "visual_brand_contract": store_data.get("visual_brand_contract"),
             }
 
             # Generate ad content using store context
@@ -623,6 +656,7 @@ class CampaignService:
             store = self.db.query(Store).filter(Store.id == store_id).first()
             if not store or not isinstance(scraped_data, dict):
                 return scraped_data
+
             about = store.store_description or store.store_voice
             products = store.products_or_services or []
             lines = [f"Business name: {store.store_name}"]
@@ -646,6 +680,77 @@ class CampaignService:
         except Exception as e:
             logger.warning(f"[CampaignService] could not apply store profile: {e}")
         return scraped_data
+
+    def _build_campaign_visual_contract(self, scraped_data: Dict[str, Any], store_id,
+                                        source_url: str) -> Dict[str, Any]:
+        """Snapshot one visual system for the lifetime of a campaign.
+
+        A saved Brand Kit is authoritative only when it belongs to the same host as
+        the campaign URL. Otherwise the scraped website branding is kept isolated so
+        a campaign for a different client cannot inherit stale colours or a logo.
+        """
+        from urllib.parse import urlparse
+        from modules.openclaw.brand_context import build_visual_brand_contract, load_brand_context
+
+        scraped_data = scraped_data if isinstance(scraped_data, dict) else {}
+        identity = scraped_data.get("business_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        colours = scraped_data.get("brand_colors") or []
+        primary = scraped_data.get("brand_color") or scraped_data.get("color_theme") or ""
+        base: Dict[str, Any] = {
+            "store_name": identity.get("business_name") or identity.get("name")
+                          or scraped_data.get("domain") or "",
+            "brand_description": identity.get("description") or scraped_data.get("style_prompt") or "",
+            "color_theme": primary,
+            "secondary_colors": [c for c in colours if str(c).lower() != str(primary).lower()],
+            "brand_dna": scraped_data.get("brand_dna") or {},
+            "aesthetic_style": scraped_data.get("style_prompt") or "",
+            "logo_url": scraped_data.get("logo_url") or "",
+            "screenshot_url": scraped_data.get("screenshot_url") or "",
+            "real_asset_urls": scraped_data.get("site_photos") or [],
+        }
+        saved = load_brand_context(str(store_id)) if store_id else {}
+
+        def _host(value: str) -> str:
+            raw = str(value or "").strip()
+            parsed = urlparse(raw if "://" in raw else "//" + raw)
+            host = (parsed.hostname or "").lower()
+            return host[4:] if host.startswith("www.") else host
+
+        if saved and _host(saved.get("link_url")) == _host(source_url):
+            for key, value in saved.items():
+                if value not in (None, "", [], {}):
+                    base[key] = value
+        return build_visual_brand_contract(base)
+
+    def _build_campaign_voice_contract(self, scraped_data: Dict[str, Any], store_id,
+                                       source_url: str) -> Dict[str, Any]:
+        """Snapshot one writing voice for every angle in the campaign."""
+        from urllib.parse import urlparse
+        from modules.openclaw.brand_context import build_brand_voice_contract, load_brand_context
+
+        scraped_data = scraped_data if isinstance(scraped_data, dict) else {}
+        identity = scraped_data.get("business_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        base: Dict[str, Any] = {
+            "store_name": identity.get("business_name") or identity.get("name")
+                          or scraped_data.get("domain") or "",
+            "brand_description": identity.get("description") or "",
+            "brand_dna": scraped_data.get("brand_dna") or {},
+        }
+        saved = load_brand_context(str(store_id)) if store_id else {}
+
+        def _host(value: str) -> str:
+            raw = str(value or "").strip()
+            parsed = urlparse(raw if "://" in raw else "//" + raw)
+            host = (parsed.hostname or "").lower()
+            return host[4:] if host.startswith("www.") else host
+
+        if saved and _host(saved.get("link_url")) == _host(source_url):
+            for key, value in saved.items():
+                if value not in (None, "", [], {}):
+                    base[key] = value
+        return build_brand_voice_contract(base)
 
     def _scrape_website(self, url: str) -> Optional[Dict[str, Any]]:
         """Scrape website content using Tavily - extracts from multiple pages for complete picture."""
@@ -1329,6 +1434,14 @@ class CampaignService:
         store_logo = str(getattr(getattr(campaign, "store", None), "logo_url", "") or "")
         brand_color = logo_brand_color(str(sd.get("logo_url") or store_logo)) or sd.get("brand_color") or ""
         store_id = str(getattr(campaign, "store_id", "") or "")
+        visual_brand_contract = sd.get("visual_brand_contract")
+        if not isinstance(visual_brand_contract, dict):
+            visual_brand_contract = self._build_campaign_visual_contract(
+                sd, store_id=store_id, source_url=campaign.source_url or ""
+            )
+        contract_assets = ((visual_brand_contract.get("imagery") or {}).get("real_reference_assets")
+                           if isinstance(visual_brand_contract, dict) else []) or []
+        site_photos = list(dict.fromkeys([str(url) for url in contract_assets + list(site_photos) if str(url)]))
 
         variations: List[Dict[str, Any]] = []
         contents: List[Any] = []
@@ -1377,8 +1490,7 @@ class CampaignService:
                     "type": kind,
                     "location": place,
                     "products": products,
-                    "brand_colours": brand_color,
-                    "aesthetic": aesthetic,
+                    "visual_brand_contract": visual_brand_contract,
                 },
                 "campaign": {
                     "name": campaign.name,

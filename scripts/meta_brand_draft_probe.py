@@ -42,8 +42,7 @@ def main():
         response = client.chat.completions.create(model=model,
             messages=[{'role':'user','content':prompt}], response_format={'type':'json_object'})
         return json.loads(response.choices[0].message.content or '{}')
-    try:
-        campaign = ask(campaign_prompt({'url':args.url, 'content':evidence[:24000]}))
+    def validate_campaign(campaign):
         sets = campaign.get('ad_sets')
         if not isinstance(sets, list) or len(sets) != 3:
             raise ValueError('Expected three draft ad angles')
@@ -54,15 +53,30 @@ def main():
             for variant in copies:
                 if not variant.get('primary_text') or not variant.get('headline'):
                     raise ValueError('Incomplete ad copy')
-                if len(variant['headline']) > 40 or len(variant.get('description','')) > 30:
-                    raise ValueError('Ad copy exceeds the requested character limit')
+        return sets
+    try:
+        campaign = ask(campaign_prompt({'url':args.url, 'content':evidence[:24000]}))
         result['campaign'] = campaign
         save()
+        try:
+            sets = validate_campaign(campaign)
+        except ValueError as validation_error:
+            campaign = ask(
+                'Repair the following campaign JSON so it passes this error: '
+                + str(validation_error)
+                + '. Return the complete campaign JSON only with exactly three ad sets and '
+                  'exactly three copy variations each.\n\nCAMPAIGN JSON:\n'
+                + json.dumps(campaign, ensure_ascii=False)
+            )
+            result['campaign'] = campaign
+            result['campaign_repaired'] = True
+            save()
+            sets = validate_campaign(campaign)
         contract = ('Return JSON {"prompts":[{"index":0,"prompt":"..."}]}, one prompt '
                     'for each of the three ad sets, indices 0,1,2. These are concept mockups. '
                     'No product or logo reference images were supplied. Use typographic designs '
                     'or clearly illustrative scenes; do not fabricate an exact branded product '
-                    'or logo. Use only factual text supported by the website. Match each first '
+                    'or logo. Match each first '
                     'copy variation. Square Meta feed composition.')
         directions = ask(marketing_system('image',contract)+'\nEVIDENCE:\n'+evidence[:24000]
                          +'\nCAMPAIGN JSON:\n'+json.dumps(campaign))
@@ -91,6 +105,7 @@ def main():
     except Exception as exc:
         result['status']='failed'
         result['error_type']=type(exc).__name__
+        result['error_message']=str(exc)
         result['http_status']=getattr(exc,'status_code',None)
         save()
         print('Draft test failed; see result.json for the completed stages and error type.',file=sys.stderr)

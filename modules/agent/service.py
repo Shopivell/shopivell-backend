@@ -412,16 +412,49 @@ class AgentService:
         prompt = args.get("prompt") or ""
         if not prompt:
             raise ValueError("need a prompt")
-        bits = []
-        if args.get("headline"):
-            bits.append(f'Headline EXACTLY: {args["headline"]}')
-        if args.get("subline"):
-            bits.append(f'Subline EXACTLY: {args["subline"]}')
-        if args.get("cta_text"):
-            bits.append(f'CTA pill EXACTLY: {args["cta_text"]}')
-        full = prompt + (" " + " ".join(bits) if bits else "") + \
-            " Square 1:1 premium advertisement, crisp rendered text, graphic-designer-made."
-        image_data, error = generate_image_bytes(full)
+        store = self._resolve_store(args.get("store_id"))
+        references = []
+        if store:
+            from modules.openclaw.agent_service import art_direct_image_sync
+            from modules.openclaw.brand_context import load_brand_context
+            brand = load_brand_context(str(store.id))
+            if brand.get("logo_url"):
+                references.append({"url": brand["logo_url"], "kind": "the business's real logo"})
+            for url in brand.get("real_asset_urls") or []:
+                references.append({"url": url, "kind": "a real owner-uploaded brand photo"})
+            if brand.get("screenshot_url"):
+                references.append({"url": brand["screenshot_url"],
+                                   "kind": "the business homepage and its visual system"})
+            direction = art_direct_image_sync(
+                {
+                    "business": {
+                        "name": brand.get("store_name"),
+                        "type": brand.get("business_type"),
+                        "visual_brand_contract": brand.get("visual_brand_contract"),
+                    },
+                    "creative_brief": prompt,
+                    "headline": args.get("headline"),
+                    "subline": args.get("subline"),
+                    "call_to_action": args.get("cta_text"),
+                    "channel": "square 1:1 advertisement",
+                },
+                references,
+                store_id=str(store.id),
+            )
+            full = direction["prompt"]
+            ref_urls = [references[i - 1]["url"] for i in direction["reference_indices"]]
+        else:
+            bits = []
+            if args.get("headline"):
+                bits.append(f'Headline EXACTLY: {args["headline"]}')
+            if args.get("subline"):
+                bits.append(f'Subline EXACTLY: {args["subline"]}')
+            if args.get("cta_text"):
+                bits.append(f'CTA pill EXACTLY: {args["cta_text"]}')
+            full = prompt + (" " + " ".join(bits) if bits else "") + \
+                " Square 1:1 premium advertisement, crisp rendered text, graphic-designer-made."
+            ref_urls = []
+        image_data, error = generate_image_bytes(full, ref_urls or None)
         if error or not image_data:
             raise ValueError(f"image generation failed: {error}")
 
@@ -429,7 +462,6 @@ class AgentService:
         asset_id = None
         try:
             from modules.assets.models import Asset, AssetType
-            store = self._resolve_store(args.get("store_id"))
             if store:
                 from PIL import Image
                 import io
