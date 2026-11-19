@@ -1478,7 +1478,9 @@ class CampaignService:
         if not variations:
             return []
 
-        candidates = fetch_photo_candidates(site_photos)
+        # OpenClaw's chat-completions endpoint accepts at most eight image_url
+        # parts in one user turn. Keep photos and thumbnails in the same order.
+        candidates = fetch_photo_candidates(site_photos, limit=8)
         photos = [{"url": url, "kind": f"photo {i} from {business}'s own website"}
                   for i, (url, _uri) in enumerate(candidates, 1)]
         thumbnails = [uri for _url, uri in candidates]
