@@ -146,13 +146,16 @@ def _target(role: str) -> tuple:
     return f"{gateway_url()}/v1/chat/completions", gateway_token(), agent_model(role)
 
 
-def _headers(session_key: str, token: str) -> dict:
+def _headers(session_key: str, token: str, role: str) -> dict:
     """Both session headers are sent: OpenClaw reads X-OpenClaw-Session-Key,
     Hermes uses X-Hermes-Session-Key, and each ignores the other's."""
+    # Recent OpenClaw gateways require an explicit owner when several agents
+    # exist. The model selector alone no longer selects the session's agent.
+    scoped_key = session_key if session_key.startswith("agent:") else f"agent:{agent_id(role)}:{session_key}"
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "X-OpenClaw-Session-Key": session_key,
+        "X-OpenClaw-Session-Key": scoped_key,
         "X-Hermes-Session-Key": session_key,
     }
 
@@ -252,7 +255,7 @@ async def ask(
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             resp = await client.post(
                 url,
-                headers=_headers(session_key, token),
+                headers=_headers(session_key, token, role),
                 json=_payload(model, system_prompt, user_text, images),
             )
     except httpx.RequestError as exc:
@@ -288,7 +291,7 @@ def ask_sync(
         with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
             resp = client.post(
                 url,
-                headers=_headers(session_key, token),
+                headers=_headers(session_key, token, role),
                 json=_payload(model, system_prompt, user_text, images),
             )
     except httpx.RequestError as exc:
