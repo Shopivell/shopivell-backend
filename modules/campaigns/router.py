@@ -991,6 +991,23 @@ def get_store_campaigns(
     )
 
 
+@campaign_router.get("/{campaign_id}/image-job")
+def get_campaign_image_job(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Report whether the background image job is pending, running or finished."""
+    from modules.jobs.models import BackgroundJob
+
+    if not db.query(Campaign.id).filter(Campaign.id == campaign_id).first():
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    job = (db.query(BackgroundJob)
+           .filter(BackgroundJob.job_type == "generate_campaign_images",
+                   BackgroundJob.payload["campaign_id"].as_string() == str(campaign_id))
+           .order_by(BackgroundJob.created_at.desc()).first())
+    if not job:
+        return {"status": "missing", "error": None}
+    return {"status": job.status,
+            "error": job.last_error if job.status == "failed" else None}
+
+
 @campaign_router.get("/{campaign_id}", response_model=CampaignResponse)
 def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Get a specific campaign with all its ad sets and content."""

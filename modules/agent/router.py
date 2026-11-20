@@ -51,6 +51,68 @@ class ChatRequest(BaseModel):
     store_id: Optional[str] = None
 
 
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    reference_image: Optional[str] = None
+    store_id: Optional[uuid.UUID] = None
+
+
+@agent_router.post("/generate-image")
+def generate_image(request: ImageGenerationRequest,
+                   current_user: CurrentUser = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Generate an image for the Create Image screen, with an optional image to edit."""
+    import base64
+    import json
+    from modules.assets.service import generate_image_bytes
+
+    prompt = request.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Enter an image prompt.")
+    if len(prompt) > 4000:
+        raise HTTPException(status_code=400, detail="Image prompt is too long.")
+    reference = request.reference_image
+    if reference and (not reference.startswith("data:image/") or len(reference) > 20_000_000):
+        raise HTTPException(status_code=400, detail="Upload a valid image under 15 MB.")
+
+    references = [reference] if reference else []
+    if request.store_id:
+        from modules.stores.models import Store
+        from modules.openclaw.brand_context import build_visual_brand_contract, load_brand_context
+
+        store = db.query(Store).filter(Store.id == request.store_id).first()
+        if not store or str(store.owner_id) != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Store access denied.")
+        brand = load_brand_context(str(store.id))
+        if not brand:
+            brand = {"store_name": store.store_name, "business_type": store.business_type,
+                     "brand_description": store.brand_description or store.store_description,
+                     "color_theme": store.color_theme, "secondary_colors": store.secondary_colors or [],
+                     "font_heading": store.font_heading, "font_body": store.font_body,
+                     "logo_url": store.logo_url, "brand_dna": store.brand_dna or {}}
+        contract = brand.get("visual_brand_contract") or build_visual_brand_contract(brand)
+        prompt = (
+            "Create an image that follows this store's visual identity. "
+            "Use the saved palette, typography, style, and real product references consistently. "
+            "Preserve the supplied logo and real products; do not invent a different brand. "
+            f"Brand contract: {json.dumps(contract, ensure_ascii=False, default=str)[:6000]}. "
+            f"User request: {prompt}"
+        )
+        for url in [brand.get("logo_url"), *(brand.get("real_asset_urls") or []),
+                    brand.get("screenshot_url")]:
+            if url and url not in references:
+                references.append(url)
+            if len(references) >= 4:
+                break
+
+    image_data, error = generate_image_bytes(
+        prompt, references or None, require_reference=bool(reference)
+    )
+    if error or not image_data:
+        raise HTTPException(status_code=502, detail=error or "The image model returned no image.")
+    return {"image_url": "data:image/png;base64," + base64.b64encode(image_data).decode("ascii")}
+
+
 class TopupRequest(BaseModel):
     package_id: str
 

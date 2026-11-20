@@ -120,6 +120,12 @@ def generate_campaign_images(payload: dict) -> dict:
         if not campaign:
             return {"error": f"campaign {campaign_id} not found"}
         created = CampaignService(db).generate_campaign_images(campaign)
+        if created == 0 and any(
+            c.primary_text or c.headline
+            for ad_set in campaign.ad_sets for c in ad_set.ad_contents
+            if not c.media_url and not c.generated_image_base64
+        ):
+            raise RuntimeError("Campaign image generation produced no images")
         return {"campaign_id": str(campaign_id), "images": created}
     finally:
         db.close()
