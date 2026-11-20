@@ -1,35 +1,17 @@
 # Shopivell Backend Dockerfile
-# Multi-stage build for optimized production image
+# Single-stage build keeps one copy of the large Python environment on small hosts.
 # Version: 2.1.0 - Platinum Pharmacy prescription flow
 
-# ============================================
-# Stage 1: Build stage
-# ============================================
-FROM python:3.12-slim as builder
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install build dependencies
+# Install Python packages and remove build-only packages in the same layer so
+# their files do not remain in the production image.
+COPY requirements.txt .
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt && \
-    pip install --no-cache-dir --user langchain-openai>=0.3.0 && \
-    pip install --no-cache-dir --user google-auth>=2.0.0
-
-# ============================================
-# Stage 2: Production stage
-# ============================================
-FROM python:3.12-slim as production
-
-WORKDIR /app
-
-# Install runtime dependencies including Playwright system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
     # Playwright dependencies for Chromium
@@ -51,14 +33,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libcairo2 \
     fonts-liberation \
+    && pip install --no-cache-dir --user -r requirements.txt \
+    && pip install --no-cache-dir --user 'langchain-openai>=0.3.0' 'google-auth>=2.0.0' \
+    && apt-get purge -y build-essential libpq-dev \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # Create non-root user for security
 RUN groupadd -r shopivell && useradd -r -g shopivell shopivell
 
-# Copy Python packages from builder
-COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Install Playwright browsers with system dependencies
