@@ -16,6 +16,7 @@ class AgentConversation(Base):
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.id"), nullable=True, index=True)
 
     title = Column(String(255), default="New chat")
+    memory_cleared_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

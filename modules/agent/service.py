@@ -38,6 +38,9 @@ import modules.users.models as _users_models  # noqa: F401
 import modules.stores.models as _stores_models  # noqa: F401
 import modules.assets.models as _assets_models  # noqa: F401
 from modules.agent.models import AgentConversation, AgentMessage
+from modules.openclaw.marketing_skill_library import (marketing_skill_guidance,
+                                                      marketing_skill_names,
+                                                      named_marketing_skill_guidance)
 from modules.campaigns.models import CampaignGoal, CampaignStatus, UrlAdContent, UrlAdSet, UrlCampaign
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,51 @@ _APP_RULES = """
 
 Rules for app actions: The app shows the results of look-up tools as a table card, so never repeat the rows as a markdown table in your reply: write one short summary line instead (for example how many there are and which is current). Elsewhere use light markdown only: short lists and **bold**; use a markdown table only for a comparison you wrote yourself. To show an image that has a URL, write it as ![description](url). Every action is about ONE store. Use the store the user names; if they name none, use the [CURRENT] store; if they have several stores and the request could be about any of them, ask which one. Always pass store_id (or store_name) and say which store you used in your reply. Anything that needs a screen (uploading a logo or banner, editing store details, Brand DNA) uses open_store_editor so the button opens that exact store. Connecting WhatsApp, Facebook, Instagram or an ad account never needs details from the user: call the connect_* tool at once and the user gets the button and steps. create_store makes a new store; create_campaign makes an ad campaign, never confuse them. Look things up with a read tool before changing them (ids come from list/get results). Tools marked "asks the user to confirm" are shown to the user as a card, so just call them. Tools marked "opens a screen" need the user's own login with Meta: call them and the user gets a button plus the steps. If an API error comes back, fix the arguments and retry once, otherwise tell the user plainly what is missing.
 """
+
+
+def _marketing_guidance(message: str) -> str:
+    """Give the chat the same Corey/Ryze methods used by the ad pipeline."""
+    named = named_marketing_skill_guidance(message)
+    if named:
+        return "\n\nCorey and Ryze methodology for this request:\n" + named
+    low = message.lower()
+    task = None
+    if any(word in low for word in ("image", "visual", "creative")):
+        task = "image"
+    elif any(word in low for word in ("copy", "headline", "caption")):
+        task = "ad_copy"
+    elif any(word in low for word in ("audit", "landing page", "website review", "conversion")):
+        task = "brand_url_audit"
+    elif any(word in low for word in ("research", "customer", "competitor")):
+        task = "research"
+    elif any(word in low for word in ("report", "performance", "roas", "cpa", "fatigue", "optimize")):
+        task = "performance"
+    elif any(word in low for word in ("budget", "plan", "strategy", "spend")):
+        task = "planning"
+    elif re.search(r"\b(ad|ads|campaign|angle)\b", low):
+        task = "angles"
+    return ("\n\nCorey and Ryze methodology for this request:\n" + marketing_skill_guidance(task)) if task else ""
+
+
+def _history_text(message: AgentMessage) -> str:
+    """Keep confirmed tool outcomes in memory without putting image bytes into prompts."""
+    lines = [message.content or ""]
+    for part in message.parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "action_proposal":
+            decision = part.get("decision") or "pending"
+            lines.append(f"Action {part.get('tool')}: {decision}")
+            for result in part.get("result_parts") or []:
+                if result.get("type") == "tool":
+                    lines.append(f"Tool {result.get('tool')} status: {result.get('status')}")
+                elif result.get("type") == "image":
+                    lines.append(f"Image saved as asset {result.get('asset_id')}")
+                elif result.get("type") == "ad_variations":
+                    lines.append(f"{len(result.get('variations') or [])} ad variations generated")
+        elif part.get("type") == "tool":
+            lines.append(f"Tool {part.get('tool')} status: {part.get('status')}")
+    return "\n".join(lines)[:4000]
 
 
 class AgentService:
@@ -585,25 +633,30 @@ class AgentService:
         self.db.add(user_msg)
         self.db.commit()
 
-        history = (self.db.query(AgentMessage)
-                   .filter(AgentMessage.conversation_id == conv.id)
-                   .order_by(AgentMessage.created_at.asc()).limit(40).all())
+        history_query = (self.db.query(AgentMessage)
+                   .filter(AgentMessage.conversation_id == conv.id,
+                           AgentMessage.id != user_msg.id))
+        if conv.memory_cleared_at:
+            history_query = history_query.filter(AgentMessage.created_at > conv.memory_cleared_at)
+        history = list(reversed(history_query
+                   .order_by(AgentMessage.created_at.desc()).limit(40).all()))
 
         store = self._resolve_store(self.default_store_id)
         store_block = json.dumps(self._store_context(store)) if store else "none (call list_stores)"
         llm_messages: List[Dict[str, str]] = [
             {"role": "system", "content": SYSTEM_HINT + "\n\n" + _TOOLS_DESCRIPTION + "\n" +
              tool_registry.catalogue_text(" ".join([message] + [(m.content or "") for m in history[-4:]])) +
-             _APP_RULES + f"\n\nCurrent store context: {store_block}\n\n{self._stores_block()}"}]
+             _APP_RULES + "\n\nAvailable Corey and Ryze methods: " +
+             json.dumps(marketing_skill_names()) + _marketing_guidance(message) +
+             f"\n\nCurrent store context: {store_block}\n\n{self._stores_block()}"}]
         for m in history:
-            text = m.content or " ".join(
-                str(p.get("summary") or p.get("text") or "") for p in (m.parts or []) if isinstance(p, dict))
+            text = _history_text(m)
             if not text:
                 continue
-            llm_messages.append({"role": m.role, "content": text[:4000]})
+            llm_messages.append({"role": m.role, "content": text})
         llm_messages.append({"role": "user", "content": message})
 
-        user_texts = [message] + [m.content or "" for m in reversed(history) if m.role == "user"][1:5]
+        user_texts = [message] + [m.content or "" for m in reversed(history) if m.role == "user"][:4]
         parts: List[Dict[str, Any]] = []
         reply = ""
         total_used = 0
@@ -615,7 +668,7 @@ class AgentService:
                 reply = reply or "I couldn't reach the AI service just now - try again in a minute."
                 break
             decision = self._parse_agent_json(raw)
-            reply = decision.get("reply") or reply
+            reply = decision.get("reply") or decision.get("need_more_info") or reply
             tool = decision.get("tool") if isinstance(decision.get("tool"), dict) else None
 
             # Expensive actions arrive as a proposal for the user to confirm

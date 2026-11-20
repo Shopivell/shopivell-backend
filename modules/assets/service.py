@@ -107,7 +107,8 @@ def _get_minio_url(object_name: str) -> str:
     return f"{API_PUBLIC_URL}/api/assets/file/{object_name}"
 
 
-def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] = None) -> Tuple[Optional[bytes], Optional[str]]:
+def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] = None,
+                         require_reference: bool = False) -> Tuple[Optional[bytes], Optional[str]]:
     """Image bytes from OpenAI's GPT-Image-2.5 (direct), falling back to the OpenRouter
     image model only when OPENAI_API_KEY isn't configured.
 
@@ -124,13 +125,17 @@ def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] 
                 files = []
                 for i, u in enumerate([u for u in reference_image_urls if u][:4]):
                     try:
-                        img = requests.get(u, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-                        if img.status_code == 200:
+                        if u.startswith("data:image/"):
+                            source = base64.b64decode(u.split(",", 1)[1], validate=True)
+                        else:
+                            img = requests.get(u, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+                            source = img.content if img.status_code == 200 else None
+                        if source:
                             # Site photos arrive as WebP/JPEG and the screenshot is a tall full-page
                             # PNG: re-encode each as a real PNG within the model's size limits.
                             import io
                             from PIL import Image
-                            ref = Image.open(io.BytesIO(img.content))
+                            ref = Image.open(io.BytesIO(source))
                             ref = ref.convert("RGBA" if ref.mode in ("RGBA", "LA", "P") else "RGB")
                             ref.thumbnail((2048, 4096))
                             buf = io.BytesIO()
@@ -140,6 +145,8 @@ def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] 
                         continue
             else:
                 files = []
+            if require_reference and not files:
+                return None, "Could not load the current image for editing"
             if files:
                 r = requests.post(
                     "https://api.openai.com/v1/images/edits",
@@ -172,6 +179,8 @@ def generate_image_bytes(prompt: str, reference_image_urls: Optional[List[str]] 
     key = os.getenv("OPENROUTER_API_KEY", "")
     if not key:
         return None, "No OPENAI_API_KEY / OPENROUTER_API_KEY configured"
+    if require_reference and not reference_image_urls:
+        return None, "No image provided to edit"
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",

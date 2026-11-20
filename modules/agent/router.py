@@ -68,6 +68,14 @@ class ConfirmActionRequest(BaseModel):
     tool: str
     args: Dict[str, Any] = {}
     conversation_id: Optional[str] = None
+    proposal_message_id: Optional[str] = None
+    proposal_index: Optional[int] = None
+
+
+class CancelActionRequest(BaseModel):
+    conversation_id: str
+    proposal_message_id: str
+    proposal_index: int
 
 
 @agent_router.get("/conversations", response_model=List[ConversationOut])
@@ -144,6 +152,41 @@ async def get_messages(conversation_id: uuid.UUID,
                        created_at=m.created_at.isoformat() if m.created_at else None) for m in msgs]
 
 
+@agent_router.get("/conversations/{conversation_id}/memory")
+async def get_conversation_memory(conversation_id: uuid.UUID,
+                                  current_user: CurrentUser = Depends(get_current_user),
+                                  db: Session = Depends(get_db)):
+    conv = db.query(AgentConversation).filter(
+        AgentConversation.id == conversation_id,
+        AgentConversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    q = db.query(AgentMessage).filter(AgentMessage.conversation_id == conv.id)
+    if conv.memory_cleared_at:
+        q = q.filter(AgentMessage.created_at > conv.memory_cleared_at)
+    messages = q.order_by(AgentMessage.created_at.desc()).limit(40).all()
+    return {"messages": [{"role": m.role, "content": (m.content or "")[:500]}
+                         for m in reversed(messages) if m.content],
+            "cleared_at": conv.memory_cleared_at.isoformat() if conv.memory_cleared_at else None}
+
+
+@agent_router.delete("/conversations/{conversation_id}/memory")
+async def clear_conversation_memory(conversation_id: uuid.UUID,
+                                    current_user: CurrentUser = Depends(get_current_user),
+                                    db: Session = Depends(get_db)):
+    from datetime import datetime
+    conv = db.query(AgentConversation).filter(
+        AgentConversation.id == conversation_id,
+        AgentConversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv.memory_cleared_at = datetime.utcnow()
+    db.commit()
+    return {"messages": [], "cleared_at": conv.memory_cleared_at.isoformat()}
+
+
 @agent_router.get("/credits")
 async def get_credits(current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     balance = get_balance(db, current_user.id)
@@ -206,6 +249,23 @@ async def confirm_action(req: ConfirmActionRequest, request: Request,
     from modules.agent.service import AgentService, TOOL_COSTS, _run_tool_standalone
     if req.tool not in TOOL_COSTS:
         raise HTTPException(status_code=400, detail=f"Unknown tool '{req.tool}'")
+    proposal_msg = None
+    proposal_parts = None
+    if req.conversation_id and req.proposal_message_id is not None and req.proposal_index is not None:
+        proposal_msg = (db.query(AgentMessage).join(AgentConversation)
+                        .filter(AgentMessage.id == uuid.UUID(req.proposal_message_id),
+                                AgentConversation.id == uuid.UUID(req.conversation_id),
+                                AgentConversation.user_id == current_user.id).first())
+        if not proposal_msg:
+            raise HTTPException(status_code=404, detail="Action proposal not found")
+        proposal_parts = list(proposal_msg.parts or [])
+        if req.proposal_index < 0 or req.proposal_index >= len(proposal_parts):
+            raise HTTPException(status_code=400, detail="Invalid action proposal")
+        proposal = proposal_parts[req.proposal_index]
+        if proposal.get("type") != "action_proposal" or proposal.get("tool") != req.tool or proposal.get("args") != req.args:
+            raise HTTPException(status_code=400, detail="Action proposal has changed")
+        if proposal.get("decision"):
+            raise HTTPException(status_code=409, detail="Action already decided")
     cost = TOOL_COSTS.get(req.tool, 0)
     # Hard gate: confirmed actions are the expensive ones, and the user is on a
     # paid action. Chat stays open system-wide, but this needs real credit.
@@ -221,6 +281,8 @@ async def confirm_action(req: ConfirmActionRequest, request: Request,
         })
     svc = AgentService(db, current_user.id, current_user.store_id, request.headers.get("authorization"))
     result, status = _run_tool_standalone(svc, req.tool, req.args or {})
+    if not status.startswith("ok"):
+        raise HTTPException(status_code=502, detail=f"Action failed: {status}")
     new_balance, _went_negative = (balance, False)
     if cost > 0:
         from modules.agent.credits import charge
@@ -241,14 +303,57 @@ async def confirm_action(req: ConfirmActionRequest, request: Request,
                 "packages": TOKEN_PACKAGES,
             })
     from modules.agent.service import _data_part
+    data_part = _data_part(req.tool, result) if result is not None and req.tool in tool_registry.BY_NAME else None
+    if proposal_msg is not None and proposal_parts is not None:
+        result_parts = [{"type": "tool", "tool": req.tool, "status": status}]
+        if req.tool == "generate_image" and isinstance(result, dict) and result.get("b64_png"):
+            result_parts.append({"type": "image", "b64_png": result["b64_png"],
+                                 "asset_id": result.get("asset_id"), "headline": result.get("headline")})
+        elif req.tool == "show_ad_variations" and isinstance(result, list):
+            result_parts.append({"type": "ad_variations", "variations": result,
+                                 "summary": f"{len(result)} copy variations"})
+        elif req.tool == "create_campaign" and isinstance(result, dict) and result.get("campaign_id"):
+            result_parts.append({"type": "links", "links": [
+                {"page": "Campaigns", "path": "/marketing/campaigns", "desc": "See your campaigns"}]})
+        elif data_part:
+            result_parts.append(data_part)
+        proposal_parts[req.proposal_index] = {**proposal_parts[req.proposal_index],
+                                               "decision": "confirmed", "result_parts": result_parts}
+        proposal_msg.parts = proposal_parts
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(proposal_msg, "parts")
+        db.commit()
     return {
         "tool": req.tool,
         "status": status,
-        "data_part": _data_part(req.tool, result) if result is not None and req.tool in tool_registry.BY_NAME else None,
+        "data_part": data_part,
         "result": result,
         "cost": cost,
         "balance": new_balance,
     }
+
+
+@agent_router.post("/actions/cancel")
+async def cancel_action(req: CancelActionRequest,
+                        current_user: CurrentUser = Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    msg = (db.query(AgentMessage).join(AgentConversation)
+           .filter(AgentMessage.id == uuid.UUID(req.proposal_message_id),
+                   AgentConversation.id == uuid.UUID(req.conversation_id),
+                   AgentConversation.user_id == current_user.id).first())
+    if not msg:
+        raise HTTPException(status_code=404, detail="Action proposal not found")
+    parts = list(msg.parts or [])
+    if req.proposal_index < 0 or req.proposal_index >= len(parts) or parts[req.proposal_index].get("type") != "action_proposal":
+        raise HTTPException(status_code=400, detail="Invalid action proposal")
+    if parts[req.proposal_index].get("decision"):
+        raise HTTPException(status_code=409, detail="Action already decided")
+    parts[req.proposal_index] = {**parts[req.proposal_index], "decision": "cancelled"}
+    msg.parts = parts
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(msg, "parts")
+    db.commit()
+    return {"ok": True}
 
 
 @agent_router.post("/conversations/{conversation_id}/chat", response_model=MessageOut)

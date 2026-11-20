@@ -210,67 +210,35 @@ async def classify_ad_category(req: ClassifyAdCategoryRequest):
 
 
 @campaign_router.post("/edit-image")
-async def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
+def edit_ad_image(req: EditAdImageRequest, db: Session = Depends(get_db)):
     """Edit an existing adset image with an AI prompt (campaign review step).
 
-    Feeds the current image + the owner's instruction to OpenAI gpt-image-2's image
-    edit API, saves the result with a proper branded filename, and returns the new
-    image URL. The owner sees the result and chooses whether to use it (the review
-    step), so it publishes nothing on its own.
+    Render an edit using the current image as a reference, then save a draft asset.
     """
-    # AI ad-image generation/editing was removed in the OpenClaw migration and now
-    # lives in OpenClaw. This endpoint is retired.
-    raise HTTPException(
-        status_code=status.HTTP_410_GONE,
-        detail="Ad image editing has moved to OpenClaw.",
-    )
-    import httpx as _httpx
-    import base64 as _b64
-    from modules.agents.media_generator_agent import MediaGeneratorAgent
+    from modules.assets.service import AssetService, generate_image_bytes
 
-    # Prefer inline base64 (generated images are data-URIs); else fetch the URL.
-    image_bytes = None
-    if req.image_base64:
-        try:
-            raw = req.image_base64.split(",", 1)[-1]  # strip any data-URI prefix
-            image_bytes = _b64.b64decode(raw)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid image data.")
-    elif req.image_url:
-        try:
-            async with _httpx.AsyncClient(timeout=30.0) as c:
-                r = await c.get(req.image_url)
-                r.raise_for_status()
-                image_bytes = r.content
-        except Exception:
-            raise HTTPException(status_code=400, detail="Could not load the current image.")
-    if not image_bytes:
+    if not req.store_id or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Store and edit instruction are required.")
+    reference = req.image_base64 or req.image_url
+    if not reference:
         raise HTTPException(status_code=400, detail="No image provided to edit.")
-
-    base_name = None
-    if req.store_id:
-        from modules.stores.models import Store
-        store = db.query(Store).filter(Store.id == req.store_id).first()
-        base_name = store.store_name if store else None
-
+    if req.image_base64 and not reference.startswith("data:image/"):
+        reference = f"data:image/png;base64,{reference}"
     edit_prompt = (
-        f"Edit this advertising image: {req.prompt}. Keep the main product/subject and "
-        f"the overall layout; apply only the requested change. Keep it appropriate for ads."
+        f"Edit the supplied advertising image: {req.prompt.strip()}. "
+        "Keep the main subject and layout unless the instruction asks to change them. "
+        "Preserve legible brand details and make only the requested edit."
     )
-    agent = MediaGeneratorAgent()
-    try:
-        result = await agent.edit_image_gpt(image_bytes, edit_prompt, req.aspect_ratio)
-    except Exception as e:
-        logger.error(f"[edit-image] gpt-image edit failed: {e}")
-        raise HTTPException(status_code=400, detail="Could not edit the image. Try a simpler instruction.")
-
-    if not result.get("image_base64"):
-        raise HTTPException(status_code=400, detail="No edited image was produced.")
-
-    upload = agent.upload_to_cloudinary(result["image_base64"], base_name=base_name)
-    if not upload.get("uploaded"):
-        raise HTTPException(status_code=400, detail="Edited image could not be saved.")
-    return {"success": True, "image_url": upload.get("secure_url")}
+    image_data, error = generate_image_bytes(edit_prompt, [reference], require_reference=True)
+    if error or not image_data:
+        raise HTTPException(status_code=502, detail=error or "No edited image was produced.")
+    asset, error = AssetService(db).save_generated_image(
+        req.store_id, image_data, f"Edited ad image: {req.prompt.strip()[:40]}"
+    )
+    if error or not asset:
+        raise HTTPException(status_code=502, detail="Edited image could not be saved.")
+    return {"success": True, "image_url": asset.cloudinary_secure_url or asset.cloudinary_url,
+            "asset_id": str(asset.id)}
 
 
 @campaign_router.post("/scrape", response_model=ScrapeUrlResponse)
