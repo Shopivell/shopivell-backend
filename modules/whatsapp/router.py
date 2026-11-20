@@ -1335,7 +1335,7 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                 if active_conv and active_conv.order_flow_state:
                     state = active_conv.order_flow_state
 
-                    # Handle order choice: "Order on Website" vs "Order in WhatsApp"
+                    # Handle store browsing or WhatsApp ordering.
                     if state.get("awaiting_order_choice"):
                         btn_id = None
                         if message_type == "interactive":
@@ -1353,7 +1353,7 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                                 phone_number_id=whatsapp_account.phone_number_id,
                                 access_token=access_token, to=from_number_clean,
                                 message_type="text",
-                                message_data={"text": {"body": f"Here's your order link 🛒\n{order_link}\n\nBrowse our products and place your order!", "preview_url": True}},
+                                message_data={"text": {"body": f"Browse our products here:\n{order_link}\n\nContact the store from the product page to order.", "preview_url": True}},
                             )
                             continue
 
@@ -1393,7 +1393,7 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                                     phone_number_id=whatsapp_account.phone_number_id,
                                     access_token=access_token, to=from_number_clean,
                                     message_type="text",
-                                    message_data={"text": {"body": f"WhatsApp ordering isn't set up yet, but you can order here 🛒\n{order_link}", "preview_url": True}},
+                                    message_data={"text": {"body": f"WhatsApp ordering isn't set up yet. Browse the store and contact them from a product page:\n{order_link}", "preview_url": True}},
                                 )
                             continue
 
@@ -1415,7 +1415,7 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                             choice_msg = build_button_message(
                                 body="Please choose how I can help you:",
                                 buttons=[
-                                    {"id": "order_website", "title": "Order on Website"},
+                                    {"id": "order_website", "title": "Browse Store"},
                                     {"id": "order_whatsapp", "title": "Order in WhatsApp"},
                                     {"id": "get_more_info", "title": "Get More Info"},
                                 ],
@@ -1717,13 +1717,13 @@ def process_incoming_messages(value: Dict[str, Any], db: Session):
                     logger.info(f"ORDER CHOICE: Purchase intent detected for {from_number_clean}, asking preference")
                     try:
                         storefront_url = os.getenv('STOREFRONT_URL', 'https://shopivell.com')
-                        order_link = f"{storefront_url}/store/{store_id}/order"
+                        order_link = f"{storefront_url.rstrip('/')}/store/{store_id}"
 
                         # Send button message asking what they'd like to do
                         choice_msg = build_button_message(
                             body="Great! How can I help you today?",
                             buttons=[
-                                {"id": "order_website", "title": "Order on Website"},
+                                {"id": "order_website", "title": "Browse Store"},
                                 {"id": "order_whatsapp", "title": "Order in WhatsApp"},
                                 {"id": "get_more_info", "title": "Get More Info"},
                             ],

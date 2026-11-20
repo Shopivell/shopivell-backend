@@ -125,7 +125,7 @@ class MultiTenantSalesBot:
                     "address": getattr(store, 'address', ''),
                     "voice": getattr(store, 'store_voice', 'professional'),
                     "tone": getattr(store, 'store_tone', 'friendly'),
-                    "order_form_url": f"{storefront_url}/store/{store.id}/order"
+                    "order_form_url": f"{storefront_url.rstrip('/')}/store/{store.id}"
                 }
         except Exception as e:
             logger.warning(f"Could not get store info: {e}")
