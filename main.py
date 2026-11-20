@@ -43,6 +43,7 @@ from modules.users.user_router import user_router
 from modules.users.auth_router import auth_router
 from modules.users.unsubscribe_router import unsubscribe_router
 from modules.stores.router import store_router
+from modules.storefront.router import storefront_router
 #from modules.automation.router import automation_router
 from modules.content.template.router import image_generation_router
 from modules.content.content.router import content_router
@@ -149,6 +150,7 @@ app.include_router(user_router, prefix="/v1")
 app.include_router(auth_router, prefix="/v1")
 app.include_router(unsubscribe_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
+app.include_router(storefront_router, prefix="/v1")  # Public shopper storefront API
 app.include_router(image_generation_router, prefix="/v1")
 # app.include_router(automation_router, prefix="/v1")
 app.include_router(content_router, prefix="/v1")
