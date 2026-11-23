@@ -1568,7 +1568,7 @@ class CampaignService:
         """Have a vision model check campaign artwork against its brand contract.
 
         If the draft invents or duplicates the business wordmark, or drifts from
-        the locked palette, ask the image model for up to two revisions and have
+        the locked palette, ask the image model for up to three revisions and have
         the reviewer check each one before the exact uploaded logo is overlaid.
         """
         if not self.openai:
@@ -1605,19 +1605,22 @@ class CampaignService:
             "(second image, when present) and visual brand contract. The exact logo will be "
             "composited once by the application after review, so the draft itself must not "
             "contain a business logo, wordmark, watermark, or the business name as rendered "
-            "image text. Preserve ordinary ad copy, products, and layout. Check whether the "
-            "dominant colours follow the primary and secondary brand palette. Do not flag "
+            "image text. Preserve ordinary ad copy, products, and layout, but remove any "
+            "occurrence of the exact store name from the generated pixels. The primary brand "
+            "colour should be a clear, prominent accent; it does not need to cover the full "
+            "background. Supporting colours should be compatible with the supplied palette. "
+            "Reject only when an unrelated hue dominates or the primary colour is absent. Do not flag "
             "manufacturer names printed on real products. Return JSON only with keys "
             '"approved" (boolean), "issues" (short array), and "revision_instructions" '
             "(a specific image-edit instruction; empty when approved). Approve only when the "
             "brand palette is coherent and the store name/logo is not duplicated or fabricated.\n"
             f"Brand contract: {json.dumps(contract, ensure_ascii=False, default=str)[:3500]}\n"
-            f"Business name to keep out of rendered image text: {brand_name}.\n"
+            f"Exact business name that must not appear in rendered image text: {brand_name}.\n"
             f"Primary colour: {primary}; secondary colours: {json.dumps(secondary, ensure_ascii=False)}."
         )
 
         current = image_data
-        for review_round in range(3):
+        for review_round in range(4):
             draft_url = as_png_data_url(current)
             image_parts[0] = {"type": "image_url", "image_url": {"url": draft_url}}
             response = self.openai.chat.completions.create(
@@ -1638,18 +1641,22 @@ class CampaignService:
                 return current
             issues = review.get("issues") or ["brand consistency review requested a revision"]
             instructions = str(review.get("revision_instructions") or "; ".join(map(str, issues)))[:1200]
-            if review_round == 2:
+            if review_round == 3:
                 raise RuntimeError(
-                    "Generated image did not pass brand review after two revisions: "
+                    "Generated image did not pass brand review after three revisions: "
                     + "; ".join(map(str, issues))[:500]
                 )
 
             edit_prompt = (
                 "Revise the first supplied campaign image according to this visual review: "
                 f"{instructions}. Preserve the useful scene, products, composition, and ordinary "
-                "ad copy. Remove any fabricated or repeated business wordmark/name. Bring the "
-                f"dominant palette into line with primary {primary or 'the supplied brand palette'} "
-                f"and secondary {json.dumps(secondary, ensure_ascii=False)}. The second image, "
+                f"ad copy, except remove every rendered occurrence of the exact business name "
+                f"'{brand_name}' and any faded or duplicate wordmark. Do not replace it with a "
+                "different business name. Use the primary brand colour "
+                f"{primary or 'from the supplied brand palette'} as a clear, prominent accent "
+                f"and secondary colours {json.dumps(secondary, ensure_ascii=False)} as supporting "
+                "colours. If an unrelated hue dominates, replace that area with a neutral or a "
+                "colour from the supplied palette; do not make the whole background the primary colour. The second image, "
                 "when supplied, is the official logo for reference only: do not redraw or paste it; "
                 "the application will composite the exact logo once after review. Do not add new "
                 "brand text, logo marks, or watermarks."
