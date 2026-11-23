@@ -23,6 +23,8 @@ ACTIVE_PRODUCT_STATUS = "Active"
 
 
 def _store_payload(store: Store, product_count: Optional[int] = None) -> Dict[str, Any]:
+    enabled_features = store.enabled_features or {}
+    design_config = enabled_features.get("design_config") or {}
     return {
         "id": str(store.id),
         "name": store.store_name,
@@ -37,6 +39,10 @@ def _store_payload(store: Store, product_count: Optional[int] = None) -> Dict[st
         "category": store.store_category or store.business_type,
         "currency": store.currency or "USD",
         "color_theme": store.color_theme,
+        "design": design_config,
+        "delivery_enabled": bool(store.delivery_enabled),
+        "pickup_enabled": bool(store.pickup_enabled),
+        "delivery_fee": store.delivery_fee,
         "product_count": product_count if product_count is not None else 0,
     }
 
