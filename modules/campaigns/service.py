@@ -1532,6 +1532,13 @@ class CampaignService:
             url = store_logo if store_logo.startswith("http") and not store_logo.lower().endswith(".svg") else ""
         if not url:
             return None
+        return CampaignService._fetch_logo_url(url)
+
+    @staticmethod
+    def _fetch_logo_url(url: str) -> Optional[bytes]:
+        """Download a raster logo, including the WAF-safe fallback used by campaigns."""
+        if not (url.startswith("http") and not url.lower().endswith(".svg")):
+            return None
         # A bare "Mozilla/5.0" User-Agent with no other browser-like headers is exactly what
         # WAFs (Cloudflare etc.) fingerprint and block from datacenter IPs - confirmed live:
         # reliabletech.co.zw 403'd this from the production server while an ordinary browser
@@ -1576,9 +1583,9 @@ class CampaignService:
             return None
 
     @staticmethod
-    def _overlay_logo(image_data: bytes, logo_data: Optional[bytes]) -> bytes:
-        """Place the real logo bottom-right on a white plate. Image models garble logos
-        (a test put an unreadable sticker on the box), so the logo is composited in code."""
+    def _overlay_logo(image_data: bytes, logo_data: Optional[bytes], position: str = "bottom-right") -> bytes:
+        """Place the real logo on a white plate. Image models garble logos, so the
+        exact saved asset is composited in code after generation."""
         if not logo_data:
             return image_data
         try:
@@ -1590,10 +1597,15 @@ class CampaignService:
             scale = min(w * 0.20 / logo.width, h * 0.10 / logo.height)
             logo = logo.resize((max(1, int(logo.width * scale)), max(1, int(logo.height * scale))), Image.LANCZOS)
             pad, margin = int(w * 0.015), int(w * 0.03)
-            x1, y1 = w - margin - logo.width - 2 * pad, h - margin - logo.height - 2 * pad
+            if position == "top-left":
+                x1, y1 = margin, margin
+                x2, y2 = x1 + logo.width + 2 * pad, y1 + logo.height + 2 * pad
+            else:
+                x2, y2 = w - margin, h - margin
+                x1, y1 = x2 - logo.width - 2 * pad, y2 - logo.height - 2 * pad
             plate = Image.new("RGBA", image.size, (0, 0, 0, 0))
             ImageDraw.Draw(plate).rounded_rectangle(
-                (x1, y1, w - margin, h - margin), radius=pad, fill=(255, 255, 255, 235))
+                (x1, y1, x2, y2), radius=pad, fill=(255, 255, 255, 235))
             image = Image.alpha_composite(image, plate)
             image.alpha_composite(logo, (x1 + pad, y1 + pad))
             out = io.BytesIO()

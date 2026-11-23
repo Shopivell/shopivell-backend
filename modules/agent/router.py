@@ -77,12 +77,10 @@ def generate_image(request: ImageGenerationRequest,
 
     references = [reference] if reference else []
     if request.store_id:
-        from modules.stores.models import Store
         from modules.openclaw.brand_context import build_visual_brand_contract, load_brand_context
+        from modules.users.access import require_store_capability
 
-        store = db.query(Store).filter(Store.id == request.store_id).first()
-        if not store or str(store.owner_id) != str(current_user.id):
-            raise HTTPException(status_code=403, detail="Store access denied.")
+        store = require_store_capability(db, current_user, request.store_id, "ads")
         brand = load_brand_context(str(store.id))
         if not brand:
             brand = {"store_name": store.store_name, "business_type": store.business_type,
@@ -94,12 +92,12 @@ def generate_image(request: ImageGenerationRequest,
         prompt = (
             "Create an image that follows this store's visual identity. "
             "Use the saved palette, typography, style, and real product references consistently. "
-            "Preserve the supplied logo and real products; do not invent a different brand. "
+            "Keep the top-left area visually clear for the exact logo that will be added after generation. "
+            "Do not draw, imitate, or invent a logo or different brand. Preserve real products. "
             f"Brand contract: {json.dumps(contract, ensure_ascii=False, default=str)[:6000]}. "
             f"User request: {prompt}"
         )
-        for url in [brand.get("logo_url"), *(brand.get("real_asset_urls") or []),
-                    brand.get("screenshot_url")]:
+        for url in [*(brand.get("real_asset_urls") or []), brand.get("screenshot_url")]:
             if url and url not in references:
                 references.append(url)
             if len(references) >= 4:
@@ -110,6 +108,10 @@ def generate_image(request: ImageGenerationRequest,
     )
     if error or not image_data:
         raise HTTPException(status_code=502, detail=error or "The image model returned no image.")
+    if request.store_id and brand.get("logo_url"):
+        from modules.campaigns.service import CampaignService
+        logo_data = CampaignService._fetch_logo_url(str(brand["logo_url"]))
+        image_data = CampaignService._overlay_logo(image_data, logo_data, position="top-left")
     return {"image_url": "data:image/png;base64," + base64.b64encode(image_data).decode("ascii")}
 
 
