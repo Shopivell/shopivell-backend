@@ -1512,7 +1512,13 @@ class CampaignService:
             references = list(direction["photo_urls"])
             if screenshot and direction["use_screenshot"]:
                 references.append(screenshot)
-            jobs.append((content, direction["prompt"], references))
+            prompt = (
+                "Do not draw, typeset, imitate, recolour, or invent any logo or brand mark. "
+                "Keep the top-left area visually quiet and clear; the exact official logo will be "
+                "composited there after generation. "
+                + direction["prompt"]
+            )
+            jobs.append((content, prompt, references))
         return jobs
 
     @staticmethod
@@ -1590,11 +1596,24 @@ class CampaignService:
             return image_data
         try:
             import io
-            from PIL import Image, ImageDraw
+            from PIL import Image, ImageChops, ImageDraw
             image = Image.open(io.BytesIO(image_data)).convert("RGBA")
             logo = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+            # Screenshot-based logo fallbacks can contain a tiny logo centred on a large
+            # black/white browser canvas. Trim that uniform canvas before sizing the logo.
+            background = Image.new("RGBA", logo.size, logo.getpixel((0, 0)))
+            difference = ImageChops.difference(logo, background).convert("L")
+            bounds = difference.point(lambda value: 255 if value > 12 else 0).getbbox()
+            if bounds:
+                left, top, right, bottom = bounds
+                trim_pad = max(2, int(max(right - left, bottom - top) * 0.04))
+                bounds = (
+                    max(0, left - trim_pad), max(0, top - trim_pad),
+                    min(logo.width, right + trim_pad), min(logo.height, bottom + trim_pad),
+                )
+                logo = logo.crop(bounds)
             w, h = image.size
-            scale = min(w * 0.20 / logo.width, h * 0.10 / logo.height)
+            scale = min(w * 0.22 / logo.width, h * 0.13 / logo.height)
             logo = logo.resize((max(1, int(logo.width * scale)), max(1, int(logo.height * scale))), Image.LANCZOS)
             pad, margin = int(w * 0.015), int(w * 0.03)
             if position == "top-left":
@@ -1653,7 +1672,7 @@ class CampaignService:
             if error or not image_data:
                 logger.warning(f"[CampaignService] Ad image failed for '{content.headline}': {error}")
                 continue
-            image_data = self._overlay_logo(image_data, logo_data)
+            image_data = self._overlay_logo(image_data, logo_data, position="top-left")
             asset, error = assets.save_generated_image(
                 campaign.store_id, image_data, content.headline or business,
                 description=content.primary_text, call_to_action=content.call_to_action, campaign_id=campaign.id,
