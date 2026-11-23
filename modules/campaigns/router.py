@@ -406,7 +406,8 @@ async def scrape_url_stream(
     store_id: uuid.UUID,
     campaign_name: Optional[str] = None,
     target: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Stream scraping progress via Server-Sent Events (SSE).
 
@@ -428,6 +429,7 @@ async def scrape_url_stream(
         market_research, ad_angles = None, []
 
         try:
+            require_store_capability(db, current_user, store_id, "ads")
             # Stage 1: Start scraping
             yield f"data: {json.dumps({'event': 'progress', 'stage': 'scraping', 'message': 'Connecting to website...', 'percentage': 5})}\n\n"
             await asyncio.sleep(0.1)
@@ -442,6 +444,36 @@ async def scrape_url_stream(
             if scraped_data.get("error"):
                 yield f"data: {json.dumps({'event': 'error', 'message': scraped_data.get('error', 'Failed to scrape URL')})}\n\n"
                 return
+
+            # A public Shopivell storefront is a JavaScript shell and may be unreadable
+            # to the website scraper. Use the store's saved profile as source material
+            # when the submitted URL has no useful text.
+            content = str(scraped_data.get("content") or "").strip()
+            if len(content) < 80:
+                from urllib.parse import urlparse
+                from modules.stores.models import Store
+                parsed = urlparse(url)
+                store = db.query(Store).filter(Store.id == store_id).first()
+                store_site = str(getattr(store, "store_link", "") or "").strip() if store else ""
+                store_host = urlparse(store_site if "://" in store_site else f"https://{store_site}").netloc.lower()
+                requested_host = parsed.netloc.lower()
+                if store and requested_host in {"shopivell.com", "www.shopivell.com"} and store_host not in {"shopivell.com", "www.shopivell.com"}:
+                    scraped_data = {
+                        "url": url,
+                        "domain": store_host or "shopivell.com",
+                        "content": "\n".join(filter(None, [
+                            f"Business name: {store.store_name}",
+                            f"Business type: {store.business_type or ''}",
+                            store.brand_description or store.store_description or store.store_voice or "",
+                            f"Products and services: {', '.join(store.products_or_services or [])}",
+                            f"Location: {', '.join(filter(None, [store.store_city, store.store_country]))}",
+                        ])),
+                        "pages_extracted": 0,
+                        "logo_url": store.logo_url,
+                        "brand_color": store.color_theme,
+                        "screenshot_url": store.screenshot_url,
+                        "store_profile_fallback": True,
+                    }
 
             scraped_data = service._apply_store_profile(scraped_data, store_id)
 
@@ -937,7 +969,7 @@ async def scrape_url_stream(
             yield f"data: {json.dumps({'event': 'complete', 'campaign_id': str(campaign.id), 'status': campaign.status.value})}\n\n"
 
         except Exception as e:
-            logger.error(f"SSE stream error: {e}")
+            logger.exception("Campaign URL analysis failed for store %s and URL %s", store_id, url)
             yield f"data: {json.dumps({'event': 'error', 'message': str(e)})}\n\n"
 
     return StreamingResponse(
