@@ -276,7 +276,9 @@ class CampaignService:
                 logger.warning(f"[CampaignService] Failed to initialize OpenAI: {e}")
 
     def scrape_url_for_campaign(self, url: str, store_id: uuid.UUID, campaign_name: Optional[str] = None, asset_ids: Optional[List[uuid.UUID]] = None, num_copies: int = 1, num_images: int = 1,
-                                market_research: Optional[Dict[str, Any]] = None, ad_angles: Optional[List[Dict[str, Any]]] = None) -> Tuple[Campaign, Optional[str]]:
+                                market_research: Optional[Dict[str, Any]] = None, ad_angles: Optional[List[Dict[str, Any]]] = None,
+                                pre_scraped_data: Optional[Dict[str, Any]] = None,
+                                pre_generated_ad_content: Optional[Dict[str, Any]] = None) -> Tuple[Campaign, Optional[str]]:
         """
         Scrape a URL and create a campaign with the extracted data.
         Returns (campaign, error_message)
@@ -308,10 +310,19 @@ class CampaignService:
             self.db.commit()
             self.db.refresh(campaign)
 
-            # Scrape the URL
-            scraped_data = self._scrape_website(url)
+            # The SSE analysis route has already scraped and analyzed this URL.
+            # Reuse those results instead of making a second set of Tavily and LLM
+            # calls, which can exceed the stream timeout and drive the API container
+            # into its memory limit.
+            reused_scrape = pre_scraped_data is not None
+            if reused_scrape:
+                import copy
+                scraped_data = copy.deepcopy(pre_scraped_data)
+            else:
+                scraped_data = self._scrape_website(url)
             if scraped_data and not scraped_data.get("error"):
-                scraped_data = self._apply_store_profile(scraped_data, store_id)
+                if not reused_scrape:
+                    scraped_data = self._apply_store_profile(scraped_data, store_id)
                 scraped_data["visual_brand_contract"] = self._build_campaign_visual_contract(
                     scraped_data, store_id=store_id, source_url=url
                 )
@@ -348,7 +359,11 @@ class CampaignService:
             logger.info(f"[CampaignService] Using NO store context - all data will be derived from scraped URL content")
 
             # Generate ad content with store context
-            ad_content = self._generate_ad_content(scraped_data, url, store_context, ad_angles=ad_angles)
+            ad_content = (
+                pre_generated_ad_content
+                if pre_generated_ad_content is not None
+                else self._generate_ad_content(scraped_data, url, store_context, ad_angles=ad_angles)
+            )
             if ad_content:
                 campaign.generated_headlines = ad_content.get("headlines", [])
                 campaign.generated_descriptions = ad_content.get("descriptions", [])

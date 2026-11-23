@@ -929,6 +929,8 @@ async def scrape_url_stream(
                 campaign_name=campaign_name,
                 market_research=market_research,
                 ad_angles=ad_angles,
+                pre_scraped_data=scraped_data,
+                pre_generated_ad_content=ad_content,
             )
 
             if error and not campaign:
