@@ -1507,12 +1507,17 @@ class CampaignService:
         )
 
         jobs: List[Tuple[Any, str, List[str]]] = []
+        locked_contract = json.dumps(
+            visual_brand_contract, ensure_ascii=False, sort_keys=True, default=str
+        )[:6000]
         for content, variation in zip(contents, variations):
             direction = directions[variation["index"]]
             references = list(direction["photo_urls"])
             if screenshot and direction["use_screenshot"]:
                 references.append(screenshot)
             prompt = (
+                "LOCKED VISUAL BRAND CONTRACT — follow every populated value exactly and keep it "
+                f"identical across this campaign: {locked_contract}. "
                 "Do not draw, typeset, imitate, recolour, or invent any logo or brand mark. "
                 "Keep the top-left area visually quiet and clear; the exact official logo will be "
                 "composited there after generation. "
