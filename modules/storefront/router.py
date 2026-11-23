@@ -24,7 +24,34 @@ ACTIVE_PRODUCT_STATUS = "Active"
 
 def _store_payload(store: Store, product_count: Optional[int] = None) -> Dict[str, Any]:
     enabled_features = store.enabled_features or {}
-    design_config = enabled_features.get("design_config") or {}
+    saved_design = enabled_features.get("design_config") or {}
+    saved_appearance = saved_design.get("appearance") or {}
+    secondary_colors = store.secondary_colors if isinstance(store.secondary_colors, list) else []
+    primary = store.color_theme or "#111827"
+    # The Design tab is the preferred source. Store-level brand fields are the
+    # canonical fallback so older stores never render as an unrelated generic brand.
+    appearance = {
+        "template": "modern",
+        "primaryColor": primary,
+        "secondaryColor": secondary_colors[0] if secondary_colors else "#1F2937",
+        "accentColor": secondary_colors[1] if len(secondary_colors) > 1 else primary,
+        "fontFamily": store.font_heading or store.font_body or "Inter",
+        "logoUrl": store.logo_url or "",
+        "bannerUrl": store.banner_url or "",
+        "borderRadius": "md",
+        **saved_appearance,
+    }
+    # Empty Design values should not erase existing store branding.
+    appearance["primaryColor"] = appearance.get("primaryColor") or primary
+    appearance["logoUrl"] = appearance.get("logoUrl") or store.logo_url or ""
+    appearance["bannerUrl"] = appearance.get("bannerUrl") or store.banner_url or ""
+    appearance["fontFamily"] = appearance.get("fontFamily") or store.font_heading or store.font_body or "Inter"
+    design_config = {
+        **saved_design,
+        "storefrontCards": saved_design.get("storefrontCards") or [],
+        "appearance": appearance,
+        "settings": saved_design.get("settings") or {},
+    }
     return {
         "id": str(store.id),
         "name": store.store_name,
