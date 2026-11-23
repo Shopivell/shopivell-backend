@@ -1533,9 +1533,12 @@ class CampaignService:
             prompt = (
                 "LOCKED VISUAL BRAND CONTRACT — follow every populated value exactly and keep it "
                 f"identical across this campaign: {locked_contract}. "
-                "Do not draw, typeset, imitate, recolour, or invent any logo or brand mark. "
-                "Keep the top-left area visually quiet and clear; the exact official logo will be "
-                "composited there after generation. "
+                "Do not draw, typeset, imitate, recolour, or invent the business logo, wordmark, "
+                "business name, or watermark anywhere in the image. Do not repeat the business "
+                "name in ad copy rendered inside the image; the exact official logo, including "
+                "its name, will be composited once after generation. Keep the primary and "
+                "secondary brand colours dominant; do not introduce an unrelated dominant hue. "
+                "Keep the top-left area visually quiet and clear. "
                 + direction["prompt"]
             )
             jobs.append((content, prompt, references))
@@ -1559,6 +1562,109 @@ class CampaignService:
         if not url:
             return None
         return CampaignService._fetch_logo_url(url)
+
+    def _review_and_revise_brand_image(self, image_data: bytes, campaign: Campaign,
+                                       logo_data: Optional[bytes]) -> bytes:
+        """Have a vision model check campaign artwork against its brand contract.
+
+        If the draft invents or duplicates the business wordmark, or drifts from
+        the locked palette, ask the image model for up to two revisions and have
+        the reviewer check each one before the exact uploaded logo is overlaid.
+        """
+        if not self.openai:
+            raise RuntimeError("Brand image review is unavailable: configure OPENAI_API_KEY")
+
+        import base64
+        import io
+        from modules.assets.service import generate_image_bytes
+        from PIL import Image
+
+        def as_png_data_url(data: bytes, max_size: int = 1200) -> str:
+            image = Image.open(io.BytesIO(data)).convert("RGBA")
+            image.thumbnail((max_size, max_size))
+            buf = io.BytesIO()
+            image.save(buf, format="PNG", optimize=True)
+            return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+        sd = campaign.scraped_data if isinstance(campaign.scraped_data, dict) else {}
+        contract = sd.get("visual_brand_contract") if isinstance(sd.get("visual_brand_contract"), dict) else {}
+        palette = contract.get("palette") if isinstance(contract.get("palette"), dict) else {}
+        primary = palette.get("primary") or ""
+        secondary = palette.get("secondary") or []
+        brand_name = contract.get("brand_name") or campaign.name or "the business"
+        draft_url = as_png_data_url(image_data)
+        logo_url = as_png_data_url(logo_data, 640) if logo_data else None
+        image_parts = [
+            {"type": "image_url", "image_url": {"url": draft_url}},
+        ]
+        if logo_url:
+            image_parts.append({"type": "image_url", "image_url": {"url": logo_url}})
+
+        review_instructions = (
+            "Review the first image as a campaign creative against the supplied official logo "
+            "(second image, when present) and visual brand contract. The exact logo will be "
+            "composited once by the application after review, so the draft itself must not "
+            "contain a business logo, wordmark, watermark, or the business name as rendered "
+            "image text. Preserve ordinary ad copy, products, and layout. Check whether the "
+            "dominant colours follow the primary and secondary brand palette. Do not flag "
+            "manufacturer names printed on real products. Return JSON only with keys "
+            '"approved" (boolean), "issues" (short array), and "revision_instructions" '
+            "(a specific image-edit instruction; empty when approved). Approve only when the "
+            "brand palette is coherent and the store name/logo is not duplicated or fabricated.\n"
+            f"Brand contract: {json.dumps(contract, ensure_ascii=False, default=str)[:3500]}\n"
+            f"Business name to keep out of rendered image text: {brand_name}.\n"
+            f"Primary colour: {primary}; secondary colours: {json.dumps(secondary, ensure_ascii=False)}."
+        )
+
+        current = image_data
+        for review_round in range(3):
+            draft_url = as_png_data_url(current)
+            image_parts[0] = {"type": "image_url", "image_url": {"url": draft_url}}
+            response = self.openai.chat.completions.create(
+                model=os.getenv("AD_IMAGE_REVIEW_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {"role": "system", "content": "You are a strict visual brand quality reviewer. Inspect the image itself, not just its prompt."},
+                    {"role": "user", "content": [{"type": "text", "text": review_instructions}, *image_parts]},
+                ],
+                temperature=0,
+                max_tokens=500,
+                response_format={"type": "json_object"},
+            )
+            review_text = response.choices[0].message.content or "{}"
+            review = json.loads(review_text)
+            if review.get("approved") is True:
+                logger.info("[CampaignService] Brand image review approved for %s on pass %s",
+                            campaign.id, review_round + 1)
+                return current
+            issues = review.get("issues") or ["brand consistency review requested a revision"]
+            instructions = str(review.get("revision_instructions") or "; ".join(map(str, issues)))[:1200]
+            if review_round == 2:
+                raise RuntimeError(
+                    "Generated image did not pass brand review after two revisions: "
+                    + "; ".join(map(str, issues))[:500]
+                )
+
+            edit_prompt = (
+                "Revise the first supplied campaign image according to this visual review: "
+                f"{instructions}. Preserve the useful scene, products, composition, and ordinary "
+                "ad copy. Remove any fabricated or repeated business wordmark/name. Bring the "
+                f"dominant palette into line with primary {primary or 'the supplied brand palette'} "
+                f"and secondary {json.dumps(secondary, ensure_ascii=False)}. The second image, "
+                "when supplied, is the official logo for reference only: do not redraw or paste it; "
+                "the application will composite the exact logo once after review. Do not add new "
+                "brand text, logo marks, or watermarks."
+            )
+            references = [draft_url]
+            if logo_url:
+                references.append(logo_url)
+            revised, error = generate_image_bytes(
+                edit_prompt, references, require_reference=True
+            )
+            if error or not revised:
+                raise RuntimeError(f"Brand image revision failed: {error or 'no revised image returned'}")
+            current = revised
+
+        return current
 
     @staticmethod
     def _fetch_logo_url(url: str) -> Optional[bytes]:
@@ -1692,6 +1798,7 @@ class CampaignService:
             if error or not image_data:
                 logger.warning(f"[CampaignService] Ad image failed for '{content.headline}': {error}")
                 continue
+            image_data = self._review_and_revise_brand_image(image_data, campaign, logo_data)
             image_data = self._overlay_logo(image_data, logo_data, position="top-left")
             asset, error = assets.save_generated_image(
                 campaign.store_id, image_data, content.headline or business,
