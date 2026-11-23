@@ -1525,6 +1525,7 @@ class CampaignService:
         locked_contract = json.dumps(
             visual_brand_contract, ensure_ascii=False, sort_keys=True, default=str
         )[:6000]
+        contract_brand_name = str(visual_brand_contract.get("brand_name") or business)
         for content, variation in zip(contents, variations):
             direction = directions[variation["index"]]
             references = list(direction["photo_urls"])
@@ -1534,10 +1535,11 @@ class CampaignService:
                 "LOCKED VISUAL BRAND CONTRACT — follow every populated value exactly and keep it "
                 f"identical across this campaign: {locked_contract}. "
                 "Do not draw, typeset, imitate, recolour, or invent the business logo, wordmark, "
-                "business name, or watermark anywhere in the image. Do not repeat the business "
-                "name in ad copy rendered inside the image; the exact official logo, including "
-                "its name, will be composited once after generation. Keep the primary and "
-                "secondary brand colours dominant; do not introduce an unrelated dominant hue. "
+                "or watermark. The exact official logo will be composited once after generation. "
+                f"The exact business name is {contract_brand_name!r}; if used in ordinary ad copy, "
+                "spell it exactly and use it at most once, never as a separate logo-like wordmark. "
+                "Use the primary brand colour as a clear accent with compatible secondary and "
+                "neutral colours; do not introduce an unrelated saturated colour as a large field. "
                 "Keep the top-left area visually quiet and clear. "
                 + direction["prompt"]
             )
@@ -1604,18 +1606,18 @@ class CampaignService:
             "Review the first image as a campaign creative against the supplied official logo "
             "(second image, when present) and visual brand contract. The exact logo will be "
             "composited once by the application after review, so the draft itself must not "
-            "contain a business logo, wordmark, watermark, or the business name as rendered "
-            "image text. Preserve ordinary ad copy, products, and layout, but remove any "
-            "occurrence of the exact store name from the generated pixels. The primary brand "
-            "colour should be a clear, prominent accent; it does not need to cover the full "
-            "background. Supporting colours should be compatible with the supplied palette. "
-            "Reject only when an unrelated hue dominates or the primary colour is absent. Do not flag "
+            "contain a business logo, wordmark, watermark, or separate logo-like use of the "
+            "business name. A single correctly spelled mention in ordinary ad copy is allowed. "
+            "Preserve ordinary ad copy, products, and layout. The primary brand colour should "
+            "be a clear accent, not necessarily the full background; compatible black, white, "
+            "grey, and other supplied palette colours may support it. Reject if the primary is "
+            "absent, the name is misspelled/repeated, or an unrelated saturated hue dominates. Do not flag "
             "manufacturer names printed on real products. Return JSON only with keys "
             '"approved" (boolean), "issues" (short array), and "revision_instructions" '
             "(a specific image-edit instruction; empty when approved). Approve only when the "
             "brand palette is coherent and the store name/logo is not duplicated or fabricated.\n"
             f"Brand contract: {json.dumps(contract, ensure_ascii=False, default=str)[:3500]}\n"
-            f"Exact business name that must not appear in rendered image text: {brand_name}.\n"
+            f"Exact business name for spelling and duplicate-wordmark checks: {brand_name}.\n"
             f"Primary colour: {primary}; secondary colours: {json.dumps(secondary, ensure_ascii=False)}."
         )
 
@@ -1650,13 +1652,14 @@ class CampaignService:
             edit_prompt = (
                 "Revise the first supplied campaign image according to this visual review: "
                 f"{instructions}. Preserve the useful scene, products, composition, and ordinary "
-                f"ad copy, except remove every rendered occurrence of the exact business name "
-                f"'{brand_name}' and any faded or duplicate wordmark. Do not replace it with a "
-                "different business name. Use the primary brand colour "
-                f"{primary or 'from the supplied brand palette'} as a clear, prominent accent "
+                f"ad copy. Remove any standalone, faint, or duplicate logo-like wordmark for "
+                f"'{brand_name}', but a single correctly spelled mention in ordinary ad copy may "
+                "remain. Do not replace it with a different business name. Use the primary brand "
+                f"colour {primary or 'from the supplied brand palette'} as a clear accent "
                 f"and secondary colours {json.dumps(secondary, ensure_ascii=False)} as supporting "
-                "colours. If an unrelated hue dominates, replace that area with a neutral or a "
-                "colour from the supplied palette; do not make the whole background the primary colour. The second image, "
+                "colours. If an unrelated saturated hue dominates, replace its large background "
+                "area with a neutral or colour from the supplied palette; do not make the whole "
+                "background the primary colour. The second image, "
                 "when supplied, is the official logo for reference only: do not redraw or paste it; "
                 "the application will composite the exact logo once after review. Do not add new "
                 "brand text, logo marks, or watermarks."
