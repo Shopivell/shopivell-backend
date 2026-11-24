@@ -23,7 +23,7 @@ The Website Builder extends Shopivell's existing authenticated store experience.
 - `GET /v1/api/website-builder/public/sites/{id}?page=/`
 - `POST /v1/api/website-builder/public/sites/{id}/messages`
 
-Administrator-only template management uses POST/PUT/DELETE `/templates` and POST/PUT `/templates/{id}/pages`.
+Administrators can manage templates in the builder's **Manage templates** screen or through POST/PUT/DELETE `/templates` and POST/PUT `/templates/{id}/pages`. The UI accepts imported GrapesJS project JSON, previews pages, and controls draft/published visibility.
 
 ## Configuration and persistence
 

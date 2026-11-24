@@ -28,7 +28,7 @@ from .schemas import (
 from .schemas import WebsiteTemplateResponse, WebsiteTemplatePageResponse, WebsiteProjectPageResponse, WebsiteProjectPageUpdate, WebsiteVersionCreate, WebsiteTemplateInput, WebsiteTemplatePageInput, WebsitePageOrder
 from .schemas import WebsiteChatMessageCreate
 from .generation_service import website_generation_service
-from .template_catalog import ensure_starter_templates
+from .template_catalog import CATALOG, ensure_starter_templates
 
 router = APIRouter(prefix="/api/website-builder", tags=["Website Builder"])
 logger = logging.getLogger(__name__)
@@ -79,6 +79,18 @@ async def list_templates(db: Session = Depends(get_db)):
     return db.query(WebsiteTemplate).filter(WebsiteTemplate.is_published.is_(True)).order_by(WebsiteTemplate.category, WebsiteTemplate.name).all()
 
 
+def _require_admin(user: CurrentUser) -> None:
+    if user.role.upper() not in {"ADMIN", "SUPER_ADMIN"}:
+        raise HTTPException(status_code=403, detail="Administrator access required")
+
+
+@router.get("/templates/admin", response_model=List[WebsiteTemplateResponse])
+async def list_admin_templates(current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    _require_admin(current_user)
+    ensure_starter_templates(db)
+    return db.query(WebsiteTemplate).order_by(WebsiteTemplate.category, WebsiteTemplate.name).all()
+
+
 @router.get("/templates/{template_id}", response_model=WebsiteTemplateResponse)
 async def get_template(template_id: UUID, db: Session = Depends(get_db)):
     ensure_starter_templates(db)
@@ -86,11 +98,6 @@ async def get_template(template_id: UUID, db: Session = Depends(get_db)):
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
-
-
-def _require_admin(user: CurrentUser) -> None:
-    if user.role.upper() not in {"ADMIN", "SUPER_ADMIN"}:
-        raise HTTPException(status_code=403, detail="Administrator access required")
 
 
 @router.post("/templates", response_model=WebsiteTemplateResponse, status_code=201)
@@ -130,15 +137,21 @@ async def update_template(template_id: UUID, body: WebsiteTemplateInput, current
     return template
 
 
-@router.delete("/templates/{template_id}", status_code=204)
+@router.delete("/templates/{template_id}")
 async def delete_template(template_id: UUID, current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
     _require_admin(current_user)
     template = db.query(WebsiteTemplate).filter(WebsiteTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if template.slug in {item["slug"] for item in CATALOG}:
+        # Keep the seed row as a tombstone so ensure_starter_templates does not
+        # recreate an administrator-unpublished starter on the next gallery load.
+        template.is_published = False
+        db.commit()
+        return {"message": "Starter template unpublished"}
     db.delete(template)
     db.commit()
-    return None
+    return {"message": "Template deleted"}
 
 
 @router.post("/templates/{template_id}/pages", response_model=WebsiteTemplatePageResponse, status_code=201)

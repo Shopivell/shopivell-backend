@@ -26,3 +26,4 @@ def test_website_builder_routes_cover_owner_and_public_chat_flows():
     assert "/api/website-builder/websites/{website_id}/media" in paths
     assert "/api/website-builder/websites/{website_id}/inbox" in paths
     assert "/api/website-builder/public/sites/{website_id}/messages" in paths
+    assert "/api/website-builder/templates/admin" in paths
