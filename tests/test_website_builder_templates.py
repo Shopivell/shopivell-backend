@@ -1,7 +1,9 @@
-from modules.website_builder.template_catalog import CATALOG, _project
+from modules.website_builder.template_catalog import CATALOG, _project, _has_untouched_legacy_markup
 from modules.website_builder.router import router
 from modules.website_builder.chat_widget import render_chat_widget
 from uuid import UUID
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 
 def test_starter_catalog_has_five_distinct_responsive_site_types():
@@ -34,6 +36,15 @@ def test_starter_templates_have_distinct_art_direction_and_real_navigation():
     assert "Plan your first visit" in markup["church-ministry"]
     assert "Shop the collection" in markup["online-store"]
     assert "href" in markup["business-landing"]
+
+
+def test_legacy_seed_upgrade_skips_admin_modified_templates():
+    created = datetime.now() - timedelta(days=2)
+    page = SimpleNamespace(grapesjs_project_json={"content": "YOUR BRAND / Made for your next chapter"})
+    untouched = SimpleNamespace(pages=[page], created_at=created, updated_at=created, created_by=None)
+    edited = SimpleNamespace(pages=[page], created_at=created, updated_at=created + timedelta(seconds=15), created_by=None)
+    assert _has_untouched_legacy_markup(untouched)
+    assert not _has_untouched_legacy_markup(edited)
 
 
 def test_website_builder_routes_cover_owner_and_public_chat_flows():

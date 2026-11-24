@@ -233,6 +233,14 @@ def _has_untouched_legacy_markup(template: WebsiteTemplate) -> bool:
     pages = list(template.pages or [])
     if not pages:
         return False
+    # SQLAlchemy stamps updated_at when an admin changes the starter's content
+    # or metadata. Original seeds set created_at and updated_at together.
+    created_at = getattr(template, "created_at", None)
+    updated_at = getattr(template, "updated_at", None)
+    if created_at and updated_at and (updated_at - created_at).total_seconds() > 5:
+        return False
+    if template.created_by not in (None, "shopivell-starter"):
+        return False
     serialized = str([page.grapesjs_project_json for page in pages])
     return "YOUR BRAND" in serialized and "Made for your next chapter" in serialized
 
