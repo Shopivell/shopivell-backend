@@ -5,11 +5,12 @@ researcher, image art director) is a dedicated OpenClaw agent on the gateway.
 Each role has its own agent id and its own session key, so the goal agent's
 memory does not leak into the planner's and both stay scoped to one store.
 
-There is deliberately no direct-OpenAI path and no in-code fallback: if the
-gateway is not configured, is unreachable, or answers with something that is
-not the JSON the agent contract requires, the caller gets an HTTP error. The
-advertising agents are not allowed to invent a goal, a plan or an assessment
-when the model behind them could not be reached.
+The gateway client itself has no direct-OpenAI path or fallback: if the gateway
+is not configured, is unreachable, or answers with something that is not the
+JSON the agent contract requires, the caller gets an HTTP error. The image
+art-direction caller may retry a Codex usage-limit failure through a configured
+model API; other roles keep the gateway-only behavior. No local goal, plan, or
+assessment is invented when a model cannot be reached.
 
 Environment:
 

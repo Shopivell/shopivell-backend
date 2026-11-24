@@ -21,8 +21,11 @@ from __future__ import annotations
 import json
 from modules.openclaw.marketing_skill_library import marketing_system
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+from fastapi import HTTPException
 
 from modules.openclaw import gateway
 
@@ -571,6 +574,119 @@ def _validate_image_direction(raw: Any, references: List[Dict[str, Any]]) -> Dic
     }
 
 
+def _is_codex_rate_limit(exc: HTTPException) -> bool:
+    """Only reroute image direction when the gateway's Codex account is exhausted."""
+    detail = str(exc.detail or "").lower()
+    return exc.status_code in (429, 502) and (
+        "rate_limit_error" in detail
+        or "subscription usage limit" in detail
+        or ("codex" in detail and "limit" in detail)
+    )
+
+
+def _direct_image_agent_json(system_prompt: str, user_text: str, expect: str,
+                             images: Optional[List[str]] = None) -> Any:
+    """Run the same model-authored image-agent brief through a configured API key.
+
+    This is deliberately limited to exhausted Codex gateway sessions. The normal
+    OpenClaw ads-image agent remains primary, and the alternate provider receives
+    the same system and business prompts rather than a hardcoded art direction.
+    """
+    openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    openrouter_key = (os.getenv("OPENROUTER_API_KEY") or "").strip()
+    if not openai_key and not openrouter_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenClaw ads-image hit its Codex usage limit, and no direct OpenAI or OpenRouter key is configured.",
+        )
+
+    content: Any = [{"type": "text", "text": user_text}]
+    content.extend(
+        {"type": "image_url", "image_url": {"url": url}}
+        for url in (images or []) if url
+    )
+    model = (os.getenv("AD_IMAGE_DIRECTION_FALLBACK_MODEL") or "gpt-4o-mini").strip()
+    try:
+        if openai_key:
+            from openai import OpenAI
+            response = OpenAI(api_key=openai_key).chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=1600,
+            )
+            text = response.choices[0].message.content or ""
+        else:
+            import requests
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openrouter_key}",
+                    "HTTP-Referer": "https://shopivell.com",
+                    "X-Title": "Shopivell Ads Image Direction",
+                },
+                json={
+                    "model": os.getenv("OPENROUTER_AD_DIRECTION_MODEL", "openai/gpt-4o-mini"),
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": content},
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.2,
+                    "max_tokens": 1600,
+                },
+                timeout=180,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(f"OpenRouter returned {response.status_code}: {response.text[:240]}")
+            text = (response.json().get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        logger.warning("[OpenClaw][image] Codex limit reached; art direction used configured direct model fallback")
+        return gateway._parse_json(text, "image", expect)
+    except HTTPException:
+        raise
+    except Exception as fallback_exc:
+        logger.exception("[OpenClaw][image] direct model fallback failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenClaw ads-image reached its Codex usage limit; configured model fallback failed ({type(fallback_exc).__name__}).",
+        ) from fallback_exc
+
+
+async def _ask_image_json(session_key: str, system_prompt: str, user_text: str,
+                          expect: str, timeout: float,
+                          images: Optional[List[str]] = None) -> Any:
+    try:
+        return await gateway.ask_json(
+            "image", session_key, system_prompt, user_text,
+            expect=expect, timeout=timeout, images=images,
+        )
+    except HTTPException as exc:
+        if not _is_codex_rate_limit(exc):
+            raise
+        import asyncio
+        return await asyncio.to_thread(
+            _direct_image_agent_json, system_prompt, user_text, expect, images
+        )
+
+
+def _ask_image_json_sync(system_prompt: str, user_text: str, expect: str,
+                         timeout: float, images: Optional[List[str]] = None,
+                         store_id: str = "") -> Any:
+    try:
+        return gateway.ask_json_sync(
+            "image", _session_key("image", store_id), system_prompt, user_text,
+            expect=expect, timeout=timeout, images=images,
+        )
+    except HTTPException as exc:
+        if not _is_codex_rate_limit(exc):
+            raise
+        return _direct_image_agent_json(system_prompt, user_text, expect, images)
+
+
 async def art_direct_image(
     context: Dict[str, Any],
     references: Optional[List[Dict[str, Any]]] = None,
@@ -580,13 +696,14 @@ async def art_direct_image(
 
     `references` are the business's real images, in order: [{"url", "kind"}, ...].
     Returns {"prompt": str, "reference_indices": [1-based ints], "reasoning": str}.
-    Raises 503/502 when the gateway cannot give a real prompt - there is no
-    hardcoded template to fall back to.
+    If the gateway's Codex subscription is rate-limited, the same model prompt is
+    sent to a configured direct provider; no local prompt template is substituted.
     """
     references = _clean_references(references)
-    raw = await gateway.ask_json(
-        "image", _session_key("image", store_id), IMAGE_AGENT_PROMPT,
+    raw = await _ask_image_json(
+        _session_key("image", store_id), IMAGE_AGENT_PROMPT,
         _image_direction_prompt(context, references), expect="object", timeout=180.0,
+        images=[ref["url"] for ref in references],
     )
     return _validate_image_direction(raw, references)
 
@@ -598,9 +715,9 @@ def art_direct_image_sync(
 ) -> Dict[str, Any]:
     """Blocking art direction for callers outside the event loop (assets/campaigns)."""
     references = _clean_references(references)
-    raw = gateway.ask_json_sync(
-        "image", _session_key("image", store_id), IMAGE_AGENT_PROMPT,
-        _image_direction_prompt(context, references), expect="object", timeout=180.0,
+    raw = _ask_image_json_sync(
+        IMAGE_AGENT_PROMPT, _image_direction_prompt(context, references), "object",
+        timeout=180.0, images=[ref["url"] for ref in references], store_id=store_id,
     )
     return _validate_image_direction(raw, references)
 
@@ -686,8 +803,8 @@ async def art_direct_image_set(
     a creative is worse than a visible error.
     """
     variations, photos, thumbnails = _image_set_inputs(variations, photos, thumbnails)
-    raw = await gateway.ask_json(
-        "image", _session_key("image", store_id), IMAGE_SET_AGENT_PROMPT,
+    raw = await _ask_image_json(
+        _session_key("image", store_id), IMAGE_SET_AGENT_PROMPT,
         _image_set_prompt(context, variations, photos), expect="object",
         timeout=240.0, images=thumbnails or None,
     )
@@ -703,9 +820,8 @@ def art_direct_image_set_sync(
 ) -> Dict[int, Dict[str, Any]]:
     """Blocking variant for the campaign creative builder."""
     variations, photos, thumbnails = _image_set_inputs(variations, photos, thumbnails)
-    raw = gateway.ask_json_sync(
-        "image", _session_key("image", store_id), IMAGE_SET_AGENT_PROMPT,
-        _image_set_prompt(context, variations, photos), expect="object",
-        timeout=240.0, images=thumbnails or None,
+    raw = _ask_image_json_sync(
+        IMAGE_SET_AGENT_PROMPT, _image_set_prompt(context, variations, photos), "object",
+        timeout=240.0, images=thumbnails or None, store_id=store_id,
     )
     return _validate_image_set(raw, variations, photos)
