@@ -128,6 +128,7 @@ async def update_template(template_id: UUID, body: WebsiteTemplateInput, current
         raise HTTPException(status_code=409, detail="A template with this slug already exists")
     for key, value in body.model_dump(exclude={"pages"}).items():
         setattr(template, key, value)
+    template.created_by = str(current_user.id)
     if body.pages is not None:
         template.pages.clear()
         db.flush()
@@ -161,6 +162,7 @@ async def add_template_page(template_id: UUID, body: WebsiteTemplatePageInput, c
     template = db.query(WebsiteTemplate).filter(WebsiteTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    template.created_by = str(current_user.id)
     page = WebsiteTemplatePage(template_id=template.id, **body.model_dump())
     db.add(page); db.commit(); db.refresh(page)
     return page
@@ -172,6 +174,9 @@ async def update_template_page(template_id: UUID, page_id: UUID, body: WebsiteTe
     page = db.query(WebsiteTemplatePage).filter(WebsiteTemplatePage.id == page_id, WebsiteTemplatePage.template_id == template_id).first()
     if not page:
         raise HTTPException(status_code=404, detail="Template page not found")
+    template = db.query(WebsiteTemplate).filter(WebsiteTemplate.id == template_id).first()
+    if template:
+        template.created_by = str(current_user.id)
     for key, value in body.model_dump().items(): setattr(page, key, value)
     db.commit(); db.refresh(page)
     return page

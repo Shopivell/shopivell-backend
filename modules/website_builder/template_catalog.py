@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from .models import WebsiteTemplate, WebsiteTemplatePage
@@ -40,8 +42,8 @@ def _text(text: str, *, color: str = "#52606d", size: str = "16px", **styles: st
     return _el("p", text, styles={"color": color, "font_size": size, "line_height": "1.75", **styles})
 
 
-def _section(children: list[dict[str, Any]], *, background: str, color: str = "#17212b", padding: str = "72px 8%", **styles: str) -> dict[str, Any]:
-    return _el("section", styles={"background": background, "color": color, "padding": padding, **styles}, children=children)
+def _section(children: list[dict[str, Any]], *, background: str, color: str = "#17212b", padding: str = "72px 8%", section_id: str | None = None, **styles: str) -> dict[str, Any]:
+    return _el("section", attrs={"id": section_id} if section_id else None, styles={"background": background, "color": color, "padding": padding, **styles}, children=children)
 
 
 def _header(name: str, *, background: str, color: str, accent: str, links: list[str]) -> dict[str, Any]:
@@ -54,11 +56,45 @@ def _header(name: str, *, background: str, color: str, accent: str, links: list[
     ])
 
 
-def _footer(name: str, *, background: str, color: str, accent: str, note: str) -> dict[str, Any]:
-    return _el("footer", styles={"background": background, "color": color, "padding": "32px 8%", "display": "flex", "justify_content": "space-between", "align_items": "center", "gap": "14px", "flex_wrap": "wrap", "border_top": f"1px solid {accent}55"}, children=[
-        _el("strong", name, styles={"font_size": "17px"}),
-        _el("span", note, styles={"font_size": "13px", "opacity": "0.8"}),
+def _footer(name: str, *, background: str, color: str, accent: str, note: str, links: list[tuple[str, str]] | None = None, contact: str = "Add your email and phone") -> dict[str, Any]:
+    footer_links = links or [("Home", "/"), ("About us", "/about"), ("Contact", "/contact")]
+    return _el("footer", styles={"background": background, "color": color, "padding": "54px 8% 22px", "border_top": f"1px solid {accent}66"}, children=[
+        _el("div", styles={"display": "grid", "grid_template_columns": "repeat(auto-fit,minmax(190px,1fr))", "gap": "30px", "padding_bottom": "34px"}, children=[
+            _el("div", children=[
+                _el("strong", name, styles={"display": "block", "font_size": "21px", "letter_spacing": "-.03em"}),
+                _el("p", note, styles={"font_size": "14px", "line_height": "1.7", "opacity": ".78", "max_width": "300px", "margin_top": "12px"}),
+            ]),
+            _el("div", children=[
+                _el("strong", "Explore", styles={"display": "block", "font_size": "12px", "letter_spacing": ".12em", "text_transform": "uppercase", "margin_bottom": "12px"}),
+                *[_el("a", label, attrs={"href": href}, styles={"display": "block", "color": color, "opacity": ".82", "font_size": "14px", "line_height": "2", "text_decoration": "none"}) for label, href in footer_links],
+            ]),
+            _el("div", children=[
+                _el("strong", "Get in touch", styles={"display": "block", "font_size": "12px", "letter_spacing": ".12em", "text_transform": "uppercase", "margin_bottom": "12px"}),
+                _el("p", contact, styles={"font_size": "14px", "line_height": "1.8", "opacity": ".82"}),
+                _el("a", "Contact us  →", attrs={"href": "/contact"}, styles={"display": "inline-block", "margin_top": "6px", "color": accent, "font_size": "14px", "font_weight": "700", "text_decoration": "none"}),
+            ]),
+        ]),
+        _el("div", styles={"border_top": f"1px solid {color}2e", "padding_top": "18px", "display": "flex", "justify_content": "space-between", "gap": "10px", "flex_wrap": "wrap", "font_size": "12px", "opacity": ".68"}, children=[
+            _el("span", f"© 2026 {name}. All rights reserved."),
+            _el("span", "Privacy  ·  Terms  ·  Built with Shopivell"),
+        ]),
     ])
+
+
+def _about_block(*, eyebrow: str, title: str, story: str, values: list[tuple[str, str]], background: str, heading_color: str, accent: str) -> dict[str, Any]:
+    return _section([
+        _el("p", eyebrow.upper(), styles={"color": accent, "font_size": "11px", "letter_spacing": ".17em", "font_weight": "800"}),
+        _el("div", styles={"display": "grid", "grid_template_columns": "repeat(auto-fit,minmax(250px,1fr))", "gap": "30px", "align_items": "start"}, children=[
+            _el("h2", title, styles={"color": heading_color, "font_family": "Georgia,serif", "font_size": "clamp(32px,5vw,52px)", "line_height": "1.08", "letter_spacing": "-.035em", "margin": "8px 0"}),
+            _el("div", children=[
+                _text(story, size="16px"),
+                _el("div", styles={"display": "grid", "grid_template_columns": "repeat(auto-fit,minmax(150px,1fr))", "gap": "12px", "margin_top": "20px"}, children=[
+                    _el("article", styles={"padding": "16px", "border_left": f"3px solid {accent}", "background": "#ffffffaa"}, children=[_el("strong", label, styles={"display": "block", "color": heading_color, "font_size": "15px"}), _el("span", detail, styles={"display": "block", "margin_top": "5px", "color": "#667085", "font_size": "12px", "line_height": "1.6"})])
+                    for label, detail in values
+                ]),
+            ]),
+        ]),
+    ], background=background)
 
 
 def _business(page: str, name: str) -> dict[str, Any]:
@@ -91,7 +127,9 @@ def _business(page: str, name: str) -> dict[str, Any]:
             ]) for number, title, copy in [("01", "Strategy", "Find the clearest path from your challenge to a useful outcome."), ("02", "Expert delivery", "Bring the right skills together and keep the work moving."), ("03", "Ongoing support", "Build a dependable relationship beyond the first milestone.")]
         ]),
     ], background="#ffffff")
-    return {"type": "wrapper", "components": [header, hero, services, _footer(name, background=ink, color="#ffffff", accent=blue, note="Thoughtful work. Built on trust.")]}
+    about = _about_block(eyebrow="About the practice", title="A clear plan. A considered partnership.", story="We bring experience, curiosity, and care to the challenges our clients are solving. Every engagement starts with listening, gets shaped around your goals, and is delivered with open communication from start to finish.", values=[("People first", "Work grounded in real needs."), ("Clear thinking", "Practical decisions and honest advice."), ("Built to last", "Progress you can keep building on.")], background=paper, heading_color=ink, accent=blue)
+    content = [about, services] if page == "About" else [services, about] if page == "Home" else [services]
+    return {"type": "wrapper", "components": [header, hero, *content, _footer(name, background=ink, color="#ffffff", accent=blue, note="Thoughtful work. Built on trust.", links=[("Home", "/"), ("About us", "/about"), ("Services", "/services"), ("Contact", "/contact")], contact="Add your business email, phone, and office address.")]}
 
 
 def _portfolio(page: str, name: str) -> dict[str, Any]:
@@ -117,7 +155,9 @@ def _portfolio(page: str, name: str) -> dict[str, Any]:
             for backdrop, category, title in [("linear-gradient(135deg,#d2b899,#697769 52%,#25342c)", "IDENTITY · 2025", "Field Notes"), ("linear-gradient(135deg,#d8e3db,#7a9387 50%,#e4b772)", "DIGITAL · 2024", "Common Ground"), ("linear-gradient(135deg,#b8b4a7,#393d35 52%,#d1c091)", "ART DIRECTION · 2024", "Studio Objects")]
         ]),
     ], background=paper, padding="68px 8%")
-    return {"type": "wrapper", "components": [header, hero, work, _footer(name, background=ink, color="#ffffff", accent=lime, note="Available for select collaborations.")]}
+    about = _about_block(eyebrow="A little about me", title="Independent by choice. Collaborative by nature.", story="I partner with ambitious people to turn early ideas into thoughtful identities and digital experiences. My process stays open and collaborative, with craft and clarity guiding every decision.", values=[("Approach", "Curious, thoughtful, hands-on."), ("Practice", "Small teams and close partnerships."), ("Focus", "Work with meaning and longevity.")], background=paper, heading_color=ink, accent="#778b5a")
+    content = [about, work] if page == "About" else [work, about] if page == "Home" else [work]
+    return {"type": "wrapper", "components": [header, hero, *content, _footer(name, background=ink, color="#ffffff", accent=lime, note="Available for select collaborations.", links=[("Home", "/"), ("About", "/about"), ("Projects", "/projects"), ("Contact", "/contact")], contact="Add your studio email, location, and social links.")]}
 
 
 def _restaurant(page: str, name: str) -> dict[str, Any]:
@@ -147,7 +187,9 @@ def _restaurant(page: str, name: str) -> dict[str, Any]:
         ]),
         _el("div", styles={"margin_top": "30px", "padding": "24px", "background": forest, "color": cream, "border_radius": "12px", "display": "flex", "justify_content": "space-between", "align_items": "center", "gap": "14px", "flex_wrap": "wrap"}, children=[_el("div", children=[_el("strong", "Come as you are.", styles={"font_family": "Georgia,serif", "font_size": "23px"}), _text("Walk-ins welcome · Groups by arrangement", color="#d8ded3", size="13px")]), _button("Plan your visit", "/contact", background=orange)]),
     ], background=cream, padding="64px 8%")
-    return {"type": "wrapper", "components": [header, hero, menu, _footer(name, background="#102c25", color=cream, accent=orange, note="Good things are better shared.")]}
+    about = _about_block(eyebrow="Our kitchen", title="Season-led cooking. Neighbourhood spirit.", story="We cook with the seasons and work with growers and makers who care about what they produce. Our menu changes as ingredients do, while the welcome stays the same: generous, relaxed, and made for sharing.", values=[("Seasonal", "Ingredients at their best."), ("Local", "Made with our community."), ("Together", "A table with room for everyone.")], background="#fffaf2", heading_color=forest, accent=orange)
+    content = [about, menu] if page == "About" else [menu, about] if page == "Home" else [menu]
+    return {"type": "wrapper", "components": [header, hero, *content, _footer(name, background="#102c25", color=cream, accent=orange, note="Good things are better shared.", links=[("Home", "/"), ("Our story", "/about"), ("Menu", "/menu"), ("Visit us", "/contact")], contact="Add your address, opening hours, booking phone, and email.")]}
 
 
 def _community(page: str, name: str) -> dict[str, Any]:
@@ -175,7 +217,9 @@ def _community(page: str, name: str) -> dict[str, Any]:
             _el("div", styles={"padding": "28px", "border_radius": "16px", "background": "#ffffff", "border": "1px solid #e8e2f0", "box_shadow": "0 20px 50px #35285f0b"}, children=[_el("p", "THIS WEEK", styles={"color": "#806f9c", "font_size": "11px", "letter_spacing": ".16em", "font_weight": "800"}), _el("h3", "Gather with us", styles={"font_family": "Georgia,serif", "font_size": "25px", "color": purple}), _text("Sunday gathering · 10:00 am", size="14px"), _text("Community groups · Throughout the week", size="14px"), _text("Everyone is welcome. We’ll help you find your way.", size="14px")]),
         ]),
     ], background=pale, padding="70px 9%")
-    return {"type": "wrapper", "components": [header, hero, gathering, _footer(name, background="#281f49", color="#ffffff", accent=gold, note="Growing together, serving our neighbours.")]}
+    about = _about_block(eyebrow="Who we are", title="Faith that welcomes. Care that reaches beyond our doors.", story="We are a community seeking to follow Jesus, grow together, and serve our neighbours with compassion. Wherever you are on your journey, you are welcome to join us, ask questions, and find a place to belong.", values=[("Welcome", "Every person has a place here."), ("Grow", "Learn and worship together."), ("Serve", "Put care into action locally.")], background="#ffffff", heading_color=purple, accent=gold)
+    content = [about, gathering] if page == "About" else [gathering, about] if page == "Home" else [gathering]
+    return {"type": "wrapper", "components": [header, hero, *content, _footer(name, background="#281f49", color="#ffffff", accent=gold, note="Growing together, serving our neighbours.", links=[("Welcome", "/"), ("About us", "/about"), ("Messages", "/sermons"), ("Visit", "/contact")], contact="Add your meeting address, service times, phone, and email.")]}
 
 
 def _shop(page: str, name: str) -> dict[str, Any]:
@@ -204,12 +248,66 @@ def _shop(page: str, name: str) -> dict[str, Any]:
     return {"type": "wrapper", "components": [header, hero, products, _footer(name, background=ink, color="#ffffff", accent=green, note="Objects for the way you live.")]}
 
 
+def _shop_v2(page: str, name: str) -> dict[str, Any]:
+    """Full storefront layout with a substantial story page and product catalogue."""
+    ink, green, sand, line = "#193c32", "#597a58", "#f5f3eb", "#e5e9e1"
+    heading, intro = {
+        "Home": ("Everyday pieces,\nchosen with care.", "A considered collection of useful things, made to be loved and lived with."),
+        "About": ("Less, but\nbetter chosen.", "Useful objects can bring a little more beauty, comfort, and ease to everyday life."),
+        "Shop": ("Find your\nnew favourite.", "Browse the collection, compare details, and find the right piece for your home and routine."),
+        "Contact": ("We’re happy\nto help.", "Questions about an item, delivery, or an order? Our team is here to help you choose well."),
+    }.get(page, (page, "Well-made essentials for everyday living."))
+    header = _header(name, background="#ffffff", color=ink, accent=green, links=["Shop all", "Our story", "Contact", "Bag (0)"])
+    hero = _section([
+        _el("div", styles={"display": "grid", "grid_template_columns": "repeat(auto-fit,minmax(260px,1fr))", "gap": "32px", "align_items": "center"}, children=[
+            _el("div", children=[
+                _el("p", "A MORE THOUGHTFUL EVERYDAY", styles={"color": green, "font_size": "11px", "letter_spacing": ".18em", "font_weight": "800"}),
+                _el("h1", heading, styles={"color": ink, "font_family": "Georgia,serif", "font_size": "clamp(46px,7vw,82px)", "line_height": ".98", "white_space": "pre-line", "letter_spacing": "-.05em", "margin": "18px 0"}),
+                _text(intro, size="17px", max_width="470px"),
+                _button("Shop the collection  →", "#products", background=ink),
+            ]),
+            _el("div", styles={"min_height": "360px", "border_radius": "46% 46% 10px 10px", "background": "radial-gradient(ellipse at 50% 34%,#e1c79b 0 20%,transparent 21%),linear-gradient(135deg,#d9dfce,#91a384 48%,#e9d8b7 49%,#b8875c)", "box_shadow": "inset 0 0 0 12px #ffffff55", "display": "flex", "align_items": "end", "justify_content": "center"}, children=[_el("span", "YOUR COLLECTION · YOUR BRAND", styles={"padding": "0 0 24px", "color": "#ffffff", "font_size": "10px", "letter_spacing": ".2em", "font_weight": "800"})]),
+        ]),
+    ], background=sand, padding="58px 8%")
+    product_data = [
+        ("linear-gradient(145deg,#d5c09e,#7a8a6d)", "HOME", "Sculpted ceramic vase", "$42"),
+        ("linear-gradient(145deg,#d8b9a3,#9d755c)", "ACCESSORIES", "Everyday market tote", "$28"),
+        ("linear-gradient(145deg,#a7b6a1,#506b59)", "LIVING", "Soft linen cushion", "$36"),
+        ("linear-gradient(145deg,#c4b89f,#80705c)", "HOME", "Stoneware serving bowl", "$32"),
+        ("linear-gradient(145deg,#b6c3ae,#6a7760)", "LIVING", "Hand-finished table lamp", "$86"),
+        ("linear-gradient(145deg,#d1b89d,#7e5944)", "ACCESSORIES", "Weekend carry pouch", "$24"),
+    ]
+    products = _section([
+        _el("div", styles={"display": "flex", "justify_content": "space-between", "align_items": "end", "gap": "12px", "flex_wrap": "wrap"}, children=[
+            _el("div", children=[_el("p", "THE COLLECTION", styles={"color": green, "font_size": "11px", "letter_spacing": ".18em", "font_weight": "800"}), _el("h2", "Thoughtful things for everyday.", styles={"color": ink, "font_family": "Georgia,serif", "font_size": "clamp(30px,4vw,44px)", "margin": "7px 0"})]),
+            _el("span", "Sample products · Replace with your catalogue", styles={"color": "#738075", "font_size": "12px"}),
+        ]),
+        _el("nav", styles={"display": "flex", "gap": "9px", "flex_wrap": "wrap", "margin": "22px 0 8px"}, children=[
+            _el("a", category, attrs={"href": "#products"}, styles={"border": f"1px solid {line}", "border_radius": "999px", "padding": "8px 14px", "color": ink, "font_size": "12px", "text_decoration": "none"}) for category in ["All products", "Home", "Accessories", "Living"]
+        ]),
+        _el("div", styles={"display": "grid", "grid_template_columns": "repeat(auto-fit,minmax(210px,1fr))", "gap": "18px", "margin_top": "20px"}, children=[
+            _el("article", styles={"background": "#ffffff", "border": f"1px solid {line}", "border_radius": "14px", "overflow": "hidden"}, children=[
+                _el("div", styles={"height": "220px", "background": color, "position": "relative"}, children=[_el("span", "SAMPLE", styles={"position": "absolute", "top": "12px", "left": "12px", "background": "#ffffffdf", "color": ink, "padding": "6px 9px", "border_radius": "999px", "font_size": "9px", "letter_spacing": ".12em", "font_weight": "800"})]),
+                _el("div", styles={"padding": "16px"}, children=[
+                    _el("span", category, styles={"color": green, "font_size": "10px", "letter_spacing": ".14em", "font_weight": "700"}),
+                    _el("h3", title, styles={"font_size": "16px", "color": ink, "line_height": "1.4", "margin": "8px 0 12px"}),
+                    _el("div", styles={"display": "flex", "justify_content": "space-between", "align_items": "center", "gap": "8px"}, children=[_el("strong", price, styles={"color": ink, "font_size": "16px"}), _el("a", "View item  →", attrs={"href": "#products"}, styles={"color": green, "font_size": "12px", "font_weight": "700", "text_decoration": "none"})]),
+                ]),
+            ]) for color, category, title, price in product_data
+        ]),
+        _el("div", styles={"margin_top": "36px", "padding": "24px", "border_top": f"1px solid {line}", "border_bottom": f"1px solid {line}", "display": "flex", "justify_content": "space-around", "gap": "12px", "flex_wrap": "wrap"}, children=[_el("span", text, styles={"color": ink, "font_size": "13px", "font_weight": "600"}) for text in ["Thoughtfully selected", "Helpful human support", "Delivery that works for you"]]),
+    ], background="#ffffff", padding="64px 8%", section_id="products")
+    about = _about_block(eyebrow="Our point of view", title="Useful objects. Better everyday rituals.", story="We bring together well-made essentials from makers who care about materials, function, and finish. Each piece is selected to earn its place in your home and to be used for years, not just a season.", values=[("Considered", "A focused, useful collection."), ("Well made", "Materials chosen to last."), ("Here to help", "Friendly support from real people.")], background=sand, heading_color=ink, accent=green)
+    content = [about, products] if page == "About" else [products, about] if page == "Home" else [products]
+    return {"type": "wrapper", "components": [header, hero, *content, _footer(name, background=ink, color="#ffffff", accent=green, note="Objects for the way you live.", links=[("Shop all", "/shop"), ("Our story", "/about"), ("Delivery & returns", "/contact"), ("Contact", "/contact")], contact="Add your support email, phone, delivery details, and return policy.")]}
+
+
 LAYOUTS = {
     "business-landing": _business,
     "personal-portfolio": _portfolio,
     "restaurant-cafe": _restaurant,
     "church-ministry": _community,
-    "online-store": _shop,
+    "online-store": _shop_v2,
 }
 
 
@@ -250,6 +348,7 @@ def _write_catalog_pages(db: Session, template: WebsiteTemplate, item: dict[str,
     template.description = item["description"]
     template.category = item["category"]
     template.is_published = True
+    template.created_by = "shopivell-starter:v2"
     template.pages.clear()
     db.flush()
     for order, page_name in enumerate(item["pages"]):
@@ -277,8 +376,24 @@ def ensure_starter_templates(db: Session) -> None:
             db.flush()
             _write_catalog_pages(db, template, item)
             changed = True
-        elif _has_untouched_legacy_markup(template):
+        elif _has_untouched_legacy_markup(template) or _is_v1_starter_snapshot(template):
             _write_catalog_pages(db, template, item)
             changed = True
     if changed:
         db.commit()
+
+
+def _is_v1_starter_snapshot(template: WebsiteTemplate) -> bool:
+    """Upgrade the exact built-in V1 rollout once, without replacing later edits."""
+    if template.created_by is not None or template.slug not in {item["slug"] for item in CATALOG}:
+        return False
+    updated_at = getattr(template, "updated_at", None)
+    if updated_at is None:
+        return False
+    # V1 was rolled out at 2026-11-24 16:11:58 UTC. Admin edits alter this
+    # timestamp, so only the untouched rollout rows can be migrated to V2.
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    start = datetime(2026, 11, 24, 16, 11, 58, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 24, 16, 12, 1, tzinfo=timezone.utc)
+    return start <= updated_at <= end
