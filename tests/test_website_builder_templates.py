@@ -12,14 +12,28 @@ def test_starter_catalog_has_five_distinct_responsive_site_types():
 
 
 def test_template_page_is_valid_grapesjs_project_json():
-    project = _project("Sample Business", ("#172554", "#38bdf8", "#f8fafc"), "Home")
+    project = _project("Northline Studio", ("#10253f", "#4f8cff", "#f4f7fb"), "Home", "business-landing")
     assert set(project) >= {"assets", "styles", "pages"}
     assert len(project["pages"]) == 1
     root = project["pages"][0]["component"]
     assert root["type"] == "wrapper"
     tags = [child["tagName"] for child in root["components"]]
     assert tags == ["header", "section", "section", "footer"]
-    assert "#172554" in str(root)
+    assert "#10253f" in str(root)
+
+
+def test_starter_templates_have_distinct_art_direction_and_real_navigation():
+    projects = {
+        item["slug"]: _project(item["name"], item["colors"], "Home", item["slug"])
+        for item in CATALOG
+    }
+    markup = {slug: str(project["pages"][0]["component"]) for slug, project in projects.items()}
+    assert len(set(markup.values())) == 5
+    assert "font-family: Georgia,serif" in markup["personal-portfolio"]
+    assert "Seasonal" in markup["restaurant-cafe"]
+    assert "Plan your first visit" in markup["church-ministry"]
+    assert "Shop the collection" in markup["online-store"]
+    assert "href" in markup["business-landing"]
 
 
 def test_website_builder_routes_cover_owner_and_public_chat_flows():
