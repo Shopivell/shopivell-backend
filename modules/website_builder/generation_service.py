@@ -15,7 +15,7 @@ from modules.stores.models import Store
 from modules.products.models import Product
 from modules.whatsapp.models import FAQ
 
-from .models import Website, WebsiteGeneration, WebsiteStatus, GenerationStatus
+from .models import Website, WebsiteGeneration, WebsiteStatus, GenerationStatus, WebsiteTemplate, WebsiteProjectPage
 from .prompts import PROMPTS, INTEGRATION_SNIPPETS, CHAT_REFINEMENT_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,10 @@ class WebsiteGenerationService:
             "color_theme": store.color_theme or DEFAULT_THEME["primary_color"],
             "tone": store.store_tone or "professional",
             "voice": store.store_voice or "",
+            "brand_description": store.brand_description or "",
+            "secondary_colors": store.secondary_colors or [],
+            "font_heading": store.font_heading or "",
+            "font_body": store.font_body or "",
         }
 
     def _get_products_data(self, db: Session, store_id: UUID, limit: int = 20) -> List[Dict[str, Any]]:
@@ -112,6 +116,10 @@ STORE INFORMATION:
 - Address: {store_data['address']}, {store_data['city']}, {store_data['country']}
 - Currency: {store_data['currency']}
 - Brand Tone: {store_data['tone']}
+- Brand Description: {store_data['brand_description']}
+- Supporting Brand Colors: {store_data['secondary_colors']}
+- Heading Font: {store_data['font_heading']}
+- Body Font: {store_data['font_body']}
 
 BRANDING:
 - Primary Color: {store_data['color_theme']}
@@ -284,14 +292,29 @@ PRODUCTS ({len(products)} items):
             # Build theme from store data
             theme = {
                 "primary_color": store_data.get("color_theme", DEFAULT_THEME["primary_color"]),
-                "secondary_color": DEFAULT_THEME["secondary_color"],
-                "accent_color": DEFAULT_THEME["accent_color"],
-                "font_family": DEFAULT_THEME["font_family"],
+                "secondary_color": (store_data.get("secondary_colors") or [DEFAULT_THEME["secondary_color"]])[0],
+                "accent_color": (store_data.get("secondary_colors") or [None, DEFAULT_THEME["accent_color"]])[1] or DEFAULT_THEME["accent_color"],
+                "font_family": store_data.get("font_body") or DEFAULT_THEME["font_family"],
+                "font_heading": store_data.get("font_heading") or "",
                 "logo_url": store_data.get("logo_url", ""),
             }
 
             # Build context
             context = self._build_generation_context(store_data, products, faqs, prompt)
+
+            # Include the selected immutable starter structure as design context so
+            # generated copy follows the chosen template rather than being generic.
+            template_id = (website.theme or {}).get("template_id")
+            if template_id:
+                try:
+                    template_uuid = UUID(str(template_id))
+                except ValueError:
+                    template_uuid = None
+                template = db.query(WebsiteTemplate).filter(WebsiteTemplate.id == template_uuid).first() if template_uuid else None
+                if template:
+                    reference = db.query(WebsiteProjectPage).filter(WebsiteProjectPage.website_id == website.id).order_by(WebsiteProjectPage.sort_order).first()
+                    structure = json.dumps((reference.grapesjs_project_json or {}).get("pages", []), ensure_ascii=False)[:7000] if reference else ""
+                    context += f"\n\nSELECTED STARTER DESIGN: {template.name} ({template.category}). Keep its layout intent, responsive structure, and visual direction while replacing placeholder copy with the real store details. Use the store's logo and brand palette. Do not reproduce placeholder business claims.\nSTARTER STRUCTURE JSON (design reference):\n{structure}"
 
             # Generate each page
             pages = {}
@@ -320,6 +343,8 @@ PRODUCTS ({len(products)} items):
 
             # Update website
             website.pages = pages
+            template_metadata = {key: value for key, value in (website.theme or {}).items() if key.startswith("template_")}
+            theme.update(template_metadata)
             website.theme = theme
             website.preview_html = preview_html
             website.status = WebsiteStatus.READY
@@ -331,6 +356,24 @@ PRODUCTS ({len(products)} items):
             generation.current_step = "Complete!"
             generation.generated_pages = pages
             generation.completed_at = datetime.utcnow()
+
+            # Keep the edited project copy in sync with the AI-filled pages. The
+            # source template rows are never changed.
+            screen_for_page = {
+                "home": "homepage", "homepage": "homepage", "about": "about",
+                "contact": "contact", "services": "services", "shop": "products",
+                "products": "products", "projects": "products", "menu": "products",
+                "sermons": "faq", "faq": "faq",
+            }
+            project_pages = db.query(WebsiteProjectPage).filter(WebsiteProjectPage.website_id == website.id).all()
+            for project_page in project_pages:
+                generated = pages.get(screen_for_page.get(project_page.page_name.lower(), project_page.page_name.lower()))
+                if not generated:
+                    continue
+                project_data = dict(project_page.grapesjs_project_json or {})
+                project_data["rendered_html"] = generated
+                project_data["pages"] = [{"name": project_page.page_name, "component": generated}]
+                project_page.grapesjs_project_json = project_data
 
             db.commit()
 

@@ -33,6 +33,8 @@ class WebsiteCreate(BaseModel):
     store_id: UUID
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    template_id: Optional[UUID] = None
+    theme: Optional[Dict[str, Any]] = None
 
 
 class WebsiteUpdate(BaseModel):
@@ -40,6 +42,87 @@ class WebsiteUpdate(BaseModel):
     description: Optional[str] = None
     theme: Optional[Dict[str, Any]] = None
     integrations: Optional[Dict[str, Any]] = None
+    preview_html: Optional[str] = None
+
+
+class WebsiteTemplatePageResponse(BaseModel):
+    id: UUID
+    page_name: str
+    route_path: str
+    sort_order: float
+    grapesjs_project_json: Dict[str, Any]
+
+    class Config:
+        from_attributes = True
+
+
+class WebsiteTemplateResponse(BaseModel):
+    id: UUID
+    name: str
+    slug: str
+    description: str
+    category: str
+    thumbnail_url: Optional[str] = None
+    preview_url: Optional[str] = None
+    is_published: bool
+    pages: List[WebsiteTemplatePageResponse] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
+
+
+class WebsiteTemplatePageInput(BaseModel):
+    page_name: str = Field(..., min_length=1, max_length=120)
+    route_path: str = Field(..., min_length=1, max_length=255)
+    sort_order: float = 0
+    grapesjs_project_json: Dict[str, Any]
+
+
+class WebsiteTemplateInput(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    slug: str = Field(..., min_length=1, max_length=180, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    description: str = Field("", max_length=5000)
+    category: str = Field(..., min_length=1, max_length=80)
+    thumbnail_url: Optional[str] = Field(None, max_length=1000)
+    preview_url: Optional[str] = Field(None, max_length=1000)
+    is_published: bool = True
+    pages: Optional[List[WebsiteTemplatePageInput]] = None
+
+
+class WebsiteProjectPageResponse(BaseModel):
+    id: UUID
+    website_id: UUID
+    template_page_id: Optional[UUID] = None
+    page_name: str
+    route_path: str
+    sort_order: float
+    grapesjs_project_json: Dict[str, Any]
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WebsiteProjectPageUpdate(BaseModel):
+    page_name: Optional[str] = Field(None, min_length=1, max_length=120)
+    route_path: Optional[str] = Field(None, min_length=1, max_length=255)
+    sort_order: Optional[float] = None
+    grapesjs_project_json: Optional[Dict[str, Any]] = None
+
+
+class WebsitePageOrder(BaseModel):
+    page_ids: List[UUID] = Field(..., min_length=1)
+
+
+class WebsiteVersionCreate(BaseModel):
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+class WebsiteChatMessageCreate(BaseModel):
+    conversation_id: str = Field(..., min_length=8, max_length=80)
+    sender_name: Optional[str] = Field(None, max_length=160)
+    sender_email: Optional[str] = Field(None, max_length=255)
+    message: str = Field(..., min_length=1, max_length=5000)
 
 
 class WebsiteResponse(BaseModel):
