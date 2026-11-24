@@ -29,6 +29,7 @@ from .schemas import WebsiteTemplateResponse, WebsiteTemplatePageResponse, Websi
 from .schemas import WebsiteChatMessageCreate
 from .generation_service import website_generation_service
 from .template_catalog import CATALOG, ensure_starter_templates
+from .chat_widget import render_chat_widget
 
 router = APIRouter(prefix="/api/website-builder", tags=["Website Builder"])
 logger = logging.getLogger(__name__)
@@ -700,7 +701,7 @@ async def render_published_site(website_id: UUID, page: str = Query("/"), db: Se
         raise HTTPException(status_code=404, detail="Published site not found")
     page_row = db.query(WebsiteProjectPage).filter(WebsiteProjectPage.website_id == website.id, WebsiteProjectPage.route_path == page).first()
     html = ((page_row.grapesjs_project_json or {}).get("rendered_html") if page_row else None) or website.preview_html or "<main><h1>Site content is being prepared</h1></main>"
-    widget = f'''<style>#sf-chat-button{{position:fixed;right:24px;bottom:24px;z-index:2147483000;border:0;border-radius:999px;background:#111827;color:#fff;padding:14px 20px;font:600 15px system-ui;box-shadow:0 8px 24px #0003;cursor:pointer}}#sf-chat-box{{display:none;position:fixed;right:24px;bottom:84px;z-index:2147483000;width:min(350px,calc(100vw - 32px));height:420px;background:white;border:1px solid #ddd;border-radius:16px;box-shadow:0 12px 36px #0003;font:14px system-ui;overflow:hidden}}#sf-chat-head{{background:#111827;color:#fff;padding:14px;font-weight:700}}#sf-chat-log{{height:280px;overflow:auto;padding:12px;color:#222;white-space:pre-wrap}}#sf-chat-form{{padding:10px;display:grid;gap:8px}}#sf-chat-form input,#sf-chat-form textarea{{box-sizing:border-box;width:100%;padding:9px;border:1px solid #ddd;border-radius:8px;font:14px system-ui}}#sf-chat-form textarea{{resize:vertical}}#sf-chat-form button{{background:#111827;color:white;border:0;border-radius:8px;padding:10px;cursor:pointer}}</style><button id="sf-chat-button" type="button">Chat with us</button><section id="sf-chat-box" aria-label="Chat with the store"><header id="sf-chat-head">Message {website.name}</header><div id="sf-chat-log">Send a message to the store. The owner will receive it in Shopivell and by email.</div><form id="sf-chat-form"><input name="name" placeholder="Your name" maxlength="160"><input name="email" type="email" placeholder="Your email (optional)" maxlength="255"><textarea name="message" placeholder="Write your message" required maxlength="5000"></textarea><button>Send message</button></form></section><script>(()=>{{const b=document.getElementById('sf-chat-button'),box=document.getElementById('sf-chat-box'),form=document.getElementById('sf-chat-form'),log=document.getElementById('sf-chat-log');let cid=localStorage.getItem('sf-chat-{website.id}')||crypto.randomUUID();localStorage.setItem('sf-chat-{website.id}',cid);b.onclick=()=>box.style.display=box.style.display==='block'?'none':'block';form.onsubmit=async e=>{{e.preventDefault();const d=new FormData(form),message=String(d.get('message')||'');if(!message.trim())return;log.textContent='Sending…';try{{const r=await fetch('/v1/api/website-builder/public/sites/{website.id}/messages',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{conversation_id:cid,sender_name:d.get('name')||null,sender_email:d.get('email')||null,message}})}});if(!r.ok)throw new Error();const result=await r.json();log.textContent='You: '+message+'\\n\\nShopivell assistant: '+(result.reply||'Thanks. The store will follow up soon.');form.elements.message.value=''}}catch{{log.textContent='Could not send your message. Please try again.'}}}}}})()</script>'''
+    widget = render_chat_widget(website.id, website.name)
     if "</body>" in html.lower():
         index = html.lower().rfind("</body>")
         html = html[:index] + widget + html[index:]
@@ -734,24 +735,42 @@ async def receive_visitor_message(website_id: UUID, body: WebsiteChatMessageCrea
         logger.exception("Website assistant failed to answer visitor message for website %s", website.id)
     if not reply_text:
         reply_text = "Thanks for your message. I’ve shared it with the store team, and they’ll follow up with you."
-    db.add(WebsiteInboxMessage(
+    assistant_message = WebsiteInboxMessage(
         website_id=website.id, conversation_id=body.conversation_id,
         sender_type="assistant", message=reply_text,
-    ))
+    )
+    db.add(assistant_message)
     db.commit()
     from modules.stores.models import Store
     store = db.query(Store).filter(Store.id == website.store_id).first()
     recipient = (store.store_email or (store.owner.email if store.owner else None)) if store else None
     if recipient:
-        background_tasks.add_task(_email_visitor_message, recipient, website.name, body.sender_name, body.sender_email, body.message.strip())
+        background_tasks.add_task(_email_visitor_message, recipient, website.name, body.sender_name, body.sender_email, body.message.strip(), reply_text)
     return {"id": str(message.id), "received": True, "email_notified": bool(recipient), "reply": reply_text}
 
 
-def _email_visitor_message(recipient: str, site_name: str, sender_name: str | None, sender_email: str | None, content: str) -> None:
+@router.get("/public/sites/{website_id}/messages/{conversation_id}")
+async def get_visitor_conversation(website_id: UUID, conversation_id: str, db: Session = Depends(get_db)):
+    """Return a visitor's own conversation so the embedded chat can resume."""
+    website = db.query(Website).filter(Website.id == website_id, Website.status == WebsiteStatus.DEPLOYED).first()
+    if not website:
+        raise HTTPException(status_code=404, detail="Published site not found")
+    if not 8 <= len(conversation_id) <= 80:
+        raise HTTPException(status_code=422, detail="Invalid conversation id")
+    rows = db.query(WebsiteInboxMessage).filter(
+        WebsiteInboxMessage.website_id == website.id,
+        WebsiteInboxMessage.conversation_id == conversation_id,
+    ).order_by(WebsiteInboxMessage.created_at.asc()).limit(100).all()
+    return [{"sender_type": row.sender_type, "message": row.message, "created_at": row.created_at} for row in rows]
+
+
+def _email_visitor_message(recipient: str, site_name: str, sender_name: str | None, sender_email: str | None, content: str, reply: str) -> None:
     from utils.Verification_Codes_Services import VerificationCodeService
     subject = f"New website enquiry: {site_name}"
-    text = f"Website: {site_name}\nFrom: {sender_name or 'Visitor'}\nEmail: {sender_email or 'Not provided'}\n\n{content}"
-    VerificationCodeService.send_email(recipient, subject, text)
+    text = f"Website: {site_name}\nFrom: {sender_name or 'Visitor'}\nEmail: {sender_email or 'Not provided'}\n\nVisitor message:\n{content}\n\nShopivell assistant reply:\n{reply}"
+    sent = VerificationCodeService.send_email(recipient, subject, text)
+    if not sent:
+        logger.warning("Email notification for website message to %s was not delivered", recipient)
 
 
 @router.get("/websites/{website_id}/media")

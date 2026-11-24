@@ -1,5 +1,7 @@
 from modules.website_builder.template_catalog import CATALOG, _project
 from modules.website_builder.router import router
+from modules.website_builder.chat_widget import render_chat_widget
+from uuid import UUID
 
 
 def test_starter_catalog_has_five_distinct_responsive_site_types():
@@ -26,4 +28,12 @@ def test_website_builder_routes_cover_owner_and_public_chat_flows():
     assert "/api/website-builder/websites/{website_id}/media" in paths
     assert "/api/website-builder/websites/{website_id}/inbox" in paths
     assert "/api/website-builder/public/sites/{website_id}/messages" in paths
+    assert "/api/website-builder/public/sites/{website_id}/messages/{conversation_id}" in paths
     assert "/api/website-builder/templates/admin" in paths
+
+
+def test_published_site_chat_widget_escapes_store_name_and_loads_conversation_history():
+    widget = render_chat_widget(UUID("00000000-0000-0000-0000-000000000001"), "<script>bad</script>")
+    assert "&lt;script&gt;bad&lt;/script&gt;" in widget
+    assert "messages/'+encodeURIComponent(conversationId)" in widget
+    assert "messages',{" in widget
