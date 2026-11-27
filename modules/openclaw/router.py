@@ -74,7 +74,7 @@ async def _authorize_openclaw_request(request: Request, db: Session = Depends(ge
     """Require store-scoped access for staff-facing OpenClaw routes."""
     path = request.url.path
     # These endpoints have their own webhook or MCP authentication.
-    if '/mcp/pharmacy' in path or path.endswith('/zernio-webhook'):
+    if '/mcp/pharmacy' in path or '/mcp/zernio' in path or path.endswith('/zernio-webhook'):
         return
     if not current_user:
         raise HTTPException(status_code=401, detail='Not authenticated')
@@ -4588,6 +4588,7 @@ MCP_SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 # behaviour); set MCP_PHARMACY_TOKEN on the backend and send the same value as
 # "Authorization: Bearer <token>" from OpenClaw's mcp.servers headers.
 MCP_PHARMACY_TOKEN = os.getenv("MCP_PHARMACY_TOKEN", "")
+MCP_ZERNIO_TOKEN = os.getenv("MCP_ZERNIO_TOKEN", "")
 
 
 def _mcp_authorised(authorization: Optional[str], token_header: Optional[str]) -> bool:
@@ -4598,6 +4599,125 @@ def _mcp_authorised(authorization: Optional[str], token_header: Optional[str]) -
         supplied = authorization[7:].strip()
     import hmac
     return hmac.compare_digest(supplied, MCP_PHARMACY_TOKEN)
+
+
+def _mcp_zernio_authorized(authorization: Optional[str], token_header: Optional[str]) -> bool:
+    """Zernio MCP is closed unless a dedicated caller token is configured."""
+    if not MCP_ZERNIO_TOKEN:
+        return False
+    supplied = token_header or ""
+    if authorization and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    import hmac
+    return hmac.compare_digest(supplied, MCP_ZERNIO_TOKEN)
+
+
+MCP_ZERNIO_TOOLS = [
+    {"name": "list_campaigns", "description": "List campaigns for a Shopivell store's connected Meta ad account.", "inputSchema": {"type": "object", "properties": {"store_id": {"type": "string"}}, "required": ["store_id"]}, "annotations": {"readOnlyHint": True, "destructiveHint": False}},
+    {"name": "get_insights", "description": "Get campaign performance insights for a connected store.", "inputSchema": {"type": "object", "properties": {"store_id": {"type": "string"}, "campaign_id": {"type": "string"}, "ad_id": {"type": "string"}, "date_preset": {"type": "string", "enum": ["today", "yesterday", "last_7d", "last_14d", "last_30d", "this_month", "last_month"]}}, "required": ["store_id"]}, "annotations": {"readOnlyHint": True, "destructiveHint": False}},
+    {"name": "get_conversion_stats", "description": "Get conversion and lead statistics for a connected store.", "inputSchema": {"type": "object", "properties": {"store_id": {"type": "string"}}, "required": ["store_id"]}, "annotations": {"readOnlyHint": True, "destructiveHint": False}},
+    {"name": "create_campaign", "description": "Create a Meta ad campaign for the connected store. Campaigns are created paused by default. Requires name, goal, budget, headline, body, link_url, and image_url.", "inputSchema": {"type": "object", "properties": {"store_id": {"type": "string"}, "name": {"type": "string"}, "goal": {"type": "string"}, "budget": {"type": "number"}, "headline": {"type": "string"}, "body": {"type": "string"}, "link_url": {"type": "string"}, "image_url": {"type": "string"}, "countries": {"type": "array", "items": {"type": "string"}}, "budget_type": {"type": "string", "enum": ["daily", "lifetime"]}}, "required": ["store_id", "name", "goal", "budget", "headline", "body", "link_url", "image_url"]}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
+    {"name": "pause_campaign", "description": "Pause one campaign that belongs to the connected store.", "inputSchema": {"type": "object", "properties": {"store_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["store_id", "campaign_id"]}, "annotations": {"readOnlyHint": False, "destructiveHint": True}},
+]
+
+
+@router.options("/mcp/zernio")
+async def mcp_zernio_options():
+    return Response(status_code=204, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-MCP-Token, MCP-Protocol-Version",
+    })
+
+
+@router.post("/mcp/zernio")
+async def mcp_zernio_endpoint(
+    request: MCPRequest,
+    authorization: Optional[str] = Header(None),
+    x_mcp_token: Optional[str] = Header(None, alias="X-MCP-Token"),
+    db: Session = Depends(get_db),
+):
+    """Stateless Streamable HTTP MCP gateway for Shopivell's server-side Zernio integration."""
+    def response(result=None, error=None, status_code=200):
+        payload = {"jsonrpc": "2.0", "id": request.id}
+        payload["error" if error is not None else "result"] = error if error is not None else result
+        return FastAPIJSONResponse(status_code=status_code, content=payload, media_type="application/json", headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-MCP-Token, MCP-Protocol-Version",
+        })
+
+    if request.id is None and (request.method or "").startswith("notifications/"):
+        return Response(status_code=202, headers={"Access-Control-Allow-Origin": "*"})
+    if not _mcp_zernio_authorized(authorization, x_mcp_token):
+        code = -32002 if not MCP_ZERNIO_TOKEN else -32001
+        message = "MCP authentication is not configured" if not MCP_ZERNIO_TOKEN else "Unauthorized: invalid MCP token"
+        return response(error={"code": code, "message": message}, status_code=503 if not MCP_ZERNIO_TOKEN else 401)
+
+    if request.method == "initialize":
+        requested = ((request.params or {}).get("protocolVersion") or "").strip()
+        negotiated = requested if requested in MCP_SUPPORTED_PROTOCOL_VERSIONS else MCP_SUPPORTED_PROTOCOL_VERSIONS[0]
+        return response({"protocolVersion": negotiated, "serverInfo": {"name": "shopivell-zernio", "version": "1.0.0"}, "capabilities": {"tools": {"listChanged": False}}, "instructions": "Shopivell Zernio Ads MCP. Every tool requires store_id. Account and page identifiers are resolved from that store's own connected Zernio profile; do not supply account identifiers."})
+    if request.method == "ping":
+        return response({})
+    if request.method == "tools/list":
+        return response({"tools": MCP_ZERNIO_TOOLS})
+    if request.method != "tools/call":
+        if request.method in ("resources/list", "resources/templates/list"):
+            return response({"resources": []})
+        if request.method == "prompts/list":
+            return response({"prompts": []})
+        if request.method == "logging/setLevel":
+            return response({})
+        return response(error={"code": -32601, "message": f"Unknown method: {request.method}"})
+
+    params = request.params or {}
+    name = params.get("name")
+    args = dict(params.get("arguments") or {})
+    tool = next((item for item in MCP_ZERNIO_TOOLS if item["name"] == name), None)
+    if not tool:
+        return response(error={"code": -32602, "message": "Unknown tool"})
+    store_id = args.pop("store_id", None)
+    if not store_id:
+        return response(error={"code": -32602, "message": "store_id is required"})
+    try:
+        import uuid
+        store_uuid = uuid.UUID(str(store_id))
+    except (TypeError, ValueError):
+        return response(error={"code": -32602, "message": "store_id must be a UUID"})
+    store = db.query(Store).filter(Store.id == store_uuid).first()
+    if not store:
+        return response(error={"code": -32602, "message": "Store not found"})
+    if not store.zernio_profile_id:
+        return response(error={"code": -32004, "message": "This store has no connected Zernio profile"})
+    try:
+        targets = await resolve_meta_targets(store)
+        profile_args = {"account_id": targets["account_id"], "ad_account_id": targets["ad_account_id"], "page_id": targets["page_id"]}
+        if name == "list_campaigns":
+            result = await _dispatch_zernio("list_campaigns", {**profile_args})
+        elif name == "get_insights":
+            query = {"adAccountId": targets["ad_account_id"]}
+            query.update({key: args[source] for source, key in (("campaign_id", "campaignId"), ("ad_id", "adId"), ("date_preset", "datePreset")) if args.get(source)})
+            result = await _zernio("GET", "/ads/tree", params=query)
+        elif name == "get_conversion_stats":
+            result = await _zernio("GET", "/ads/tree", params={"adAccountId": targets["ad_account_id"], "fields": "conversions,leads"})
+        elif name == "create_campaign":
+            result = await _dispatch_zernio("create_campaign", {**args, **profile_args})
+        elif name == "pause_campaign":
+            campaign_id = args.get("campaign_id")
+            tree = await _zernio("GET", "/ads/tree", params={"adAccountId": targets["ad_account_id"]})
+            campaigns = _first(tree, "campaigns", "data", "tree", default=[])
+            if not any(str(_first(c, "platformCampaignId", "id", "_id")) == str(campaign_id) for c in campaigns):
+                return response(error={"code": -32004, "message": "Campaign not found in this store's connected ad account"})
+            result = await _dispatch_zernio("pause_ad", {"campaign_id": campaign_id})
+        else:
+            return response(error={"code": -32602, "message": "Unsupported tool"})
+        return response({"content": [{"type": "text", "text": __import__("json").dumps(result, default=str)}], "isError": False})
+    except HTTPException as exc:
+        return response(error={"code": -32000, "message": str(exc.detail)}, status_code=exc.status_code if exc.status_code < 500 else 200)
+    except Exception as exc:
+        logger.exception("Zernio MCP tool failed")
+        return response(error={"code": -32603, "message": "Zernio tool execution failed"})
 
 
 @router.post("/mcp/pharmacy")
