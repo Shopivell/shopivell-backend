@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import Optional
 import uuid
+import re
 
 from database import get_db
 from dependencies import get_current_user, get_current_user_optional, CurrentUser
@@ -13,6 +14,7 @@ from modules.orders.schemas import (
     CustomerOrderUpdate
 )
 from modules.stores.models import Store
+from modules.products.models import Product
 
 from pydantic import BaseModel, Field
 import logging
@@ -565,17 +567,59 @@ async def create_public_order(
 ):
     """Create an order from the public order form (no auth required)."""
     try:
-        # Build concatenated product name and total
-        product_names = ", ".join(
-            f"{item.product_name} x{item.quantity}" for item in order_data.items
-        )
-        items_total = sum(item.price * item.quantity for item in order_data.items)
-        total_amount = items_total + order_data.delivery_fee - order_data.discount_amount
+        store = db.query(Store).filter(Store.id == order_data.store_id).first()
+        if not store or not store.is_setup_completed:
+            raise HTTPException(status_code=404, detail="Store not found")
+        if not order_data.items:
+            raise HTTPException(status_code=400, detail="Add at least one product before placing your order")
+        if order_data.delivery_method not in ("delivery", "pickup"):
+            raise HTTPException(status_code=400, detail="Choose delivery or pickup")
+        if order_data.delivery_method == "delivery":
+            if not store.delivery_enabled:
+                raise HTTPException(status_code=400, detail="This store does not offer delivery")
+            if not (order_data.delivery_address or "").strip():
+                raise HTTPException(status_code=400, detail="Enter a delivery address")
+        elif not store.pickup_enabled:
+            raise HTTPException(status_code=400, detail="This store does not offer pickup")
+
+        # Product titles, availability, images, and prices come from the store's
+        # catalog. Never trust prices submitted by a public browser checkout.
+        verified_items = []
+        for item in order_data.items:
+            product = (
+                db.query(Product)
+                .filter(
+                    Product.id == item.product_id,
+                    Product.store_id == store.id,
+                    Product.status == "Active",
+                )
+                .first()
+            )
+            if not product:
+                raise HTTPException(status_code=400, detail=f"{item.product_name} is no longer available")
+            if product.in_stock is False:
+                raise HTTPException(status_code=409, detail=f"{product.title} is out of stock")
+            if product.inventory_tracked and (product.available or 0) < item.quantity:
+                raise HTTPException(status_code=409, detail=f"There is not enough stock for {product.title}")
+            verified_items.append((product, item.quantity))
+
+        product_names = ", ".join(f"{product.title} x{quantity}" for product, quantity in verified_items)
+        items_total = sum(float(product.price or 0) * quantity for product, quantity in verified_items)
+        if order_data.delivery_method == "delivery":
+            fee_text = re.sub(r"[^0-9.]", "", store.delivery_fee or "0")
+            delivery_fee = float(fee_text or 0)
+        else:
+            delivery_fee = 0.0
+        # Public checkout does not apply browser-supplied discounts. Coupon
+        # redemption must be validated against the store's coupon records first.
+        discount_amount = 0.0
+        total_amount = round(items_total + delivery_fee - discount_amount, 2)
 
         order_number = generate_order_number(db, order_data.store_id)
 
         # Build notes from special request + delivery info
         notes_parts = []
+        notes_parts.append(f"Items: {product_names}")
         if order_data.delivery_method == "pickup":
             notes_parts.append("Delivery: Pickup")
         else:
@@ -586,18 +630,19 @@ async def create_public_order(
                 notes_parts.append(f"City: {order_data.delivery_city}")
         if order_data.email:
             notes_parts.append(f"Email: {order_data.email}")
-        if order_data.discount_code:
-            notes_parts.append(f"Discount code: {order_data.discount_code} (-{order_data.discount_amount})")
         if order_data.special_request:
             notes_parts.append(f"Special request: {order_data.special_request}")
+        if order_data.delivery_fee != delivery_fee:
+            notes_parts.append(f"Delivery fee: {delivery_fee}")
 
         db_order = CustomerOrder(
             store_id=order_data.store_id,
             order_number=order_number,
             customer_name=order_data.customer_name,
             phone=order_data.phone,
-            product_name=product_names,
-            quantity=sum(item.quantity for item in order_data.items),
+            product_name=product_names[:255],
+            product_image=next((product.image_url for product, _ in verified_items if product.image_url), None),
+            quantity=sum(quantity for _, quantity in verified_items),
             total_amount=total_amount,
             status="pending",
             payment_status="unpaid",
@@ -616,6 +661,9 @@ async def create_public_order(
 
         return db_order
 
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(
