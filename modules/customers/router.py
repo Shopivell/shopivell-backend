@@ -11,7 +11,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 from database import get_db
 from utils.cache import cache, CacheConfig, generate_cache_key
-from .models import Customer, CustomerSegment, CustomerSegmentMembership, CustomerRequest
+from .models import Customer, CustomerSegment, CustomerSegmentMembership, CustomerRequest, StorefrontCustomerActivity
 from .schemas import (
     CustomerResponse, CustomerCreate, CustomerUpdate, BulkCustomerCreate, BulkCustomerResponse,
     CustomerListResponse, SuccessMessage, CustomerSegmentResponse, CustomerSegmentCreate,
@@ -373,6 +373,19 @@ def get_customer(customer_id: uuid.UUID, db: Session = Depends(get_db)):
             detail="Customer not found"
         )
     return customer
+
+@customer_router.get("/{customer_id}/activity")
+def get_customer_activity(customer_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Return recent storefront events for this store-scoped customer profile."""
+    activities = (db.query(StorefrontCustomerActivity)
+        .filter(StorefrontCustomerActivity.customer_id == customer_id)
+        .order_by(StorefrontCustomerActivity.occurred_at.desc())
+        .limit(100)
+        .all())
+    return {"activities": [
+        {"type": item.activity_type, "occurred_at": item.occurred_at.isoformat()}
+        for item in activities
+    ]}
 
 @customer_router.post("/", response_model=CustomerResponse)
 def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)):

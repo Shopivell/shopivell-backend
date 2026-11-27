@@ -100,3 +100,14 @@ class CustomerRequest(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     
     customer = relationship("Customer", back_populates="requests")
+
+
+class StorefrontCustomerActivity(Base):
+    """Store-specific history for shoppers using the shared Shopivell account."""
+    __tablename__ = "storefront_customer_activities"
+
+    id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    store_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True)
+    activity_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
