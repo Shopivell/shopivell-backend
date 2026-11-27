@@ -1,7 +1,7 @@
 # modules/users/schemas.py
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 import uuid
 from .models import UserRole
 
@@ -46,6 +46,8 @@ class UserResponse(UserBase):
 
 class LoginRequest(BaseModel):
     email: EmailStr
+    account_type: Literal["store", "shopper"] = "store"
+    name: Optional[str] = Field(default=None, max_length=120)
 
 class LoginVerifyRequest(BaseModel):
     email: EmailStr

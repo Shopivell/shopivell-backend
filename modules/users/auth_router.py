@@ -484,12 +484,13 @@ async def send_login_code(login_data: LoginRequest, db: Session = Depends(get_db
 
         is_new_user = False
         if not user:
-            # Create new user for email signup
+            # Storefront registrations are customer accounts; existing callers
+            # continue to create merchant accounts by default.
             user = User(
-                name="",  # Will be updated during onboarding
+                name=(login_data.name or "").strip(),
                 email=login_data.email,
                 phone_number=None,
-                role=UserRole.OWNER,
+                role=UserRole.CUSTOMER if login_data.account_type == "shopper" else UserRole.OWNER,
                 is_verified=False,
                 is_active=True
             )
@@ -498,6 +499,9 @@ async def send_login_code(login_data: LoginRequest, db: Session = Depends(get_db
             db.refresh(user)
             is_new_user = True
             print(f"[OK] New user created via email: {login_data.email}")
+        elif login_data.account_type == "shopper" and login_data.name and not user.name:
+            user.name = login_data.name.strip()
+            db.commit()
 
         # Send verification code
         try:
@@ -581,38 +585,39 @@ async def verify_login(verify_data: LoginVerifyRequest, db: Session = Depends(ge
         import uuid as uuid_module
 
         agency_id = None
-        try:
-            agency_result = db.execute(
-                text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
-                {"owner_id": str(user.id)}
-            ).fetchone()
+        if user.role != UserRole.CUSTOMER:
+            try:
+                agency_result = db.execute(
+                    text("SELECT id FROM agencies WHERE owner_id = :owner_id"),
+                    {"owner_id": str(user.id)}
+                ).fetchone()
 
-            if not agency_result:
-                agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
-                agency_slug = generate_unique_slug(db, agency_name)
-                agency_id = str(uuid_module.uuid4())
+                if not agency_result:
+                    agency_name = f"{user.name}'s Agency" if user.name else "My Agency"
+                    agency_slug = generate_unique_slug(db, agency_name)
+                    agency_id = str(uuid_module.uuid4())
 
-                db.execute(
-                    text("""
-                        INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
-                        VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """),
-                    {
-                        "id": agency_id,
-                        "owner_id": str(user.id),
-                        "name": agency_name,
-                        "slug": agency_slug,
-                        "email": user.email
-                    }
-                )
-                db.commit()
-                print(f"[OK] Agency created: {agency_name}")
-            else:
-                agency_id = agency_result[0]
-        except Exception as agency_error:
-            print(f"[WARN] Agency creation/lookup failed: {agency_error}")
-            db.rollback()
-            agency_id = None
+                    db.execute(
+                        text("""
+                            INSERT INTO agencies (id, owner_id, name, slug, email, status, settings, created_at, updated_at)
+                            VALUES (:id, :owner_id, :name, :slug, :email, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """),
+                        {
+                            "id": agency_id,
+                            "owner_id": str(user.id),
+                            "name": agency_name,
+                            "slug": agency_slug,
+                            "email": user.email
+                        }
+                    )
+                    db.commit()
+                    print(f"[OK] Agency created: {agency_name}")
+                else:
+                    agency_id = agency_result[0]
+            except Exception as agency_error:
+                print(f"[WARN] Agency creation/lookup failed: {agency_error}")
+                db.rollback()
+                agency_id = None
 
         # Check if user has an active setup session
         setup_session = db.query(StoreSetupSession).filter(

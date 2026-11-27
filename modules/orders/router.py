@@ -15,6 +15,10 @@ from modules.orders.schemas import (
 )
 from modules.stores.models import Store
 from modules.products.models import Product
+from modules.customers.models import Customer
+from sqlalchemy import func
+from datetime import datetime
+from utils.cache import cache
 
 from pydantic import BaseModel, Field
 import logging
@@ -24,7 +28,7 @@ logger = logging.getLogger(__name__)
 async def _authorize_order_request(request: Request, db: Session = Depends(get_db),
                                    current_user=Depends(get_current_user_optional)):
     # The customer checkout form must be able to create an unpaid order.
-    if request.method == 'POST' and request.url.path.rstrip('/').endswith('/orders/public'):
+    if request.method == 'POST' and request.url.path.rstrip('/').endswith(('/orders/public', '/orders/public-activity')):
         return
     if not current_user:
         raise HTTPException(status_code=401, detail='Not authenticated')
@@ -130,6 +134,50 @@ class PublicOrderCreate(BaseModel):
     discount_code: Optional[str] = None
     discount_amount: float = 0
     special_request: Optional[str] = None
+
+class PublicCustomerActivity(BaseModel):
+    store_id: uuid.UUID
+    event: str = Field(pattern='^(checkout_started|cart_abandoned)$')
+    email: str = Field(min_length=3, max_length=255)
+    customer_name: Optional[str] = Field(default=None, max_length=255)
+    phone: Optional[str] = Field(default=None, max_length=50)
+
+
+def _upsert_storefront_customer(db: Session, store_id: uuid.UUID, name: str, email: Optional[str], phone: Optional[str], customer_type: str):
+    """Attach public storefront activity to a customer scoped to the same store."""
+    normalized_email = email.strip().lower() if email and email.strip() else None
+    if not normalized_email:
+        return None
+    customer = db.query(Customer).filter(
+        Customer.store_id == store_id,
+        func.lower(Customer.email) == normalized_email,
+    ).first()
+    first, _, last = (name or normalized_email.split('@')[0]).strip().partition(' ')
+    if not customer:
+        customer = Customer(
+            store_id=store_id,
+            first_name=first[:100] or 'Shopper',
+            last_name=last[:100] or 'Shopper',
+            email=normalized_email,
+            phone=phone,
+            customer_type=customer_type,
+            status='active',
+            last_activity=datetime.utcnow(),
+        )
+        db.add(customer)
+    else:
+        if phone and not customer.phone:
+            customer.phone = phone
+        if name and first:
+            customer.first_name = first[:100]
+            if last:
+                customer.last_name = last[:100]
+        customer.customer_type = customer_type
+        customer.last_activity = datetime.utcnow()
+        customer.updated_at = datetime.utcnow()
+    db.flush()
+    cache.invalidate_pattern("cust:*")
+    return customer
 
 
 def generate_order_number(db: Session, store_id: uuid.UUID) -> str:
@@ -560,6 +608,26 @@ async def get_public_order(
     return order
 
 
+@order_router.post("/public-activity", status_code=status.HTTP_202_ACCEPTED)
+async def record_public_customer_activity(
+    activity: PublicCustomerActivity,
+    db: Session = Depends(get_db),
+):
+    """Record opted-in checkout contact details as store-scoped customer activity."""
+    store = db.query(Store).filter(Store.id == activity.store_id, Store.is_setup_completed.is_(True)).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+    customer_type = "abandoned_cart" if activity.event == "cart_abandoned" else "checkout_started"
+    try:
+        _upsert_storefront_customer(db, activity.store_id, activity.customer_name or "", activity.email, activity.phone, customer_type)
+        db.commit()
+        return {"recorded": True}
+    except Exception:
+        db.rollback()
+        logger.exception("Unable to record storefront customer activity")
+        raise HTTPException(status_code=500, detail="Could not record customer activity")
+
+
 @order_router.post("/public", response_model=CustomerOrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_public_order(
     order_data: PublicOrderCreate,
@@ -635,8 +703,12 @@ async def create_public_order(
         if order_data.delivery_fee != delivery_fee:
             notes_parts.append(f"Delivery fee: {delivery_fee}")
 
+        customer = _upsert_storefront_customer(
+            db, store.id, order_data.customer_name, order_data.email, order_data.phone, "purchaser"
+        )
         db_order = CustomerOrder(
             store_id=order_data.store_id,
+            customer_id=customer.id if customer else None,
             order_number=order_number,
             customer_name=order_data.customer_name,
             phone=order_data.phone,
