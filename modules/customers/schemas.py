@@ -149,6 +149,14 @@ class CustomerSegmentListResponse(BaseModel):
     page_size: int
     total_pages: int
 
+class CustomerSegmentCustomersResponse(BaseModel):
+    segment: CustomerSegmentResponse
+    customers: List[CustomerResponse]
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
+
 # Success message
 class SuccessMessage(BaseModel):
     message: str

@@ -16,7 +16,8 @@ from .schemas import (
     CustomerResponse, CustomerCreate, CustomerUpdate, BulkCustomerCreate, BulkCustomerResponse,
     CustomerListResponse, SuccessMessage, CustomerSegmentResponse, CustomerSegmentCreate,
     CustomerSegmentUpdate, CustomerSegmentListResponse, SegmentMembership, BulkSegmentMembership,
-    CustomerOrderResponse, CustomerOrderCreate, CustomerRequestResponse, CustomerRequestCreate
+    CustomerOrderResponse, CustomerOrderCreate, CustomerRequestResponse, CustomerRequestCreate,
+    CustomerSegmentCustomersResponse,
 )
 from utils.jwt_auth import get_current_user
 from modules.users.access import require_store_capability
@@ -791,15 +792,62 @@ def get_segments(
     )
 
 @customer_router.get("/segments/{segment_id}", response_model=CustomerSegmentResponse)
-def get_segment(segment_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_segment(segment_id: uuid.UUID, store_id: uuid.UUID = Query(...), db: Session = Depends(get_db)):
     """Get a specific segment by ID"""
-    segment = db.query(CustomerSegment).filter(CustomerSegment.id == segment_id).first()
+    segment = db.query(CustomerSegment).filter(
+        CustomerSegment.id == segment_id,
+        CustomerSegment.store_id == store_id,
+    ).first()
     if not segment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Segment not found"
         )
     return segment
+
+@customer_router.get("/segments/{segment_id}/customers", response_model=CustomerSegmentCustomersResponse)
+def get_segment_customers(
+    segment_id: uuid.UUID,
+    store_id: uuid.UUID = Query(...),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """List only the selected store's customers who belong to this segment."""
+    segment = db.query(CustomerSegment).filter(
+        CustomerSegment.id == segment_id,
+        CustomerSegment.store_id == store_id,
+    ).first()
+    if not segment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Segment not found")
+
+    query = (
+        db.query(Customer)
+        .join(CustomerSegmentMembership, CustomerSegmentMembership.customer_id == Customer.id)
+        .filter(
+            CustomerSegmentMembership.segment_id == segment_id,
+            Customer.store_id == store_id,
+        )
+    )
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            (Customer.first_name.ilike(term))
+            | (Customer.last_name.ilike(term))
+            | (Customer.email.ilike(term))
+            | (Customer.phone.ilike(term))
+        )
+    total_count = query.count()
+    customers = query.order_by(Customer.last_activity.desc(), Customer.created_at.desc()).offset(skip).limit(limit).all()
+    return CustomerSegmentCustomersResponse(
+        segment=segment,
+        customers=customers,
+        total_count=total_count,
+        page=skip // limit + 1,
+        page_size=limit,
+        total_pages=(total_count + limit - 1) // limit,
+    )
 
 @customer_router.post("/segments/", response_model=CustomerSegmentResponse)
 def create_segment(segment_data: CustomerSegmentCreate, db: Session = Depends(get_db)):
