@@ -15,7 +15,7 @@ from modules.orders.schemas import (
 )
 from modules.stores.models import Store
 from modules.products.models import Product
-from modules.customers.models import Customer, StorefrontCustomerActivity
+from modules.customers.models import Customer, CustomerSegment, CustomerSegmentMembership, StorefrontCustomerActivity
 from sqlalchemy import func
 from datetime import datetime
 from utils.cache import cache
@@ -24,6 +24,65 @@ from pydantic import BaseModel, Field
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _assign_storefront_segment(db: Session, store_id: uuid.UUID, customer: Customer, name: str, segment_type: str, description: str):
+    """Create a store-owned behavioral segment on demand and idempotently add a shopper."""
+    segment = db.query(CustomerSegment).filter(
+        CustomerSegment.store_id == store_id,
+        CustomerSegment.name == name,
+    ).first()
+    if not segment:
+        segment = CustomerSegment(
+            store_id=store_id, name=name, type=segment_type, description=description,
+            criteria=description, created_by="storefront", is_active=True,
+        )
+        db.add(segment)
+        db.flush()
+        if name in {"Customers who have purchased at least once", "Repeat Buyers"}:
+            from sqlalchemy import func as sql_func
+            history = db.query(
+                CustomerOrder.customer_id,
+                sql_func.count(CustomerOrder.id).label("order_count"),
+            ).filter(
+                CustomerOrder.store_id == store_id,
+                CustomerOrder.customer_id.isnot(None),
+            ).group_by(CustomerOrder.customer_id)
+            if name == "Repeat Buyers":
+                history = history.having(sql_func.count(CustomerOrder.id) >= 2)
+            for (past_customer_id, _) in history.all():
+                db.add(CustomerSegmentMembership(customer_id=past_customer_id, segment_id=segment.id))
+            db.flush()
+    membership = db.query(CustomerSegmentMembership).filter(
+        CustomerSegmentMembership.customer_id == customer.id,
+        CustomerSegmentMembership.segment_id == segment.id,
+    ).first()
+    if not membership:
+        db.add(CustomerSegmentMembership(customer_id=customer.id, segment_id=segment.id))
+    segment.customer_count = db.query(CustomerSegmentMembership).filter(
+        CustomerSegmentMembership.segment_id == segment.id,
+    ).count()
+    segment.last_activity = datetime.utcnow()
+    segment.updated_at = datetime.utcnow()
+    return segment
+
+
+def _remove_storefront_segment_membership(db: Session, store_id: uuid.UUID, customer: Customer, name: str):
+    segment = db.query(CustomerSegment).filter(
+        CustomerSegment.store_id == store_id,
+        CustomerSegment.name == name,
+    ).first()
+    if not segment:
+        return
+    db.query(CustomerSegmentMembership).filter(
+        CustomerSegmentMembership.customer_id == customer.id,
+        CustomerSegmentMembership.segment_id == segment.id,
+    ).delete(synchronize_session=False)
+    segment.customer_count = db.query(CustomerSegmentMembership).filter(
+        CustomerSegmentMembership.segment_id == segment.id,
+    ).count()
+    segment.last_activity = datetime.utcnow()
+    segment.updated_at = datetime.utcnow()
 
 async def _authorize_order_request(request: Request, db: Session = Depends(get_db),
                                    current_user=Depends(get_current_user_optional)):
@@ -146,28 +205,33 @@ class PublicCustomerActivity(BaseModel):
 def _upsert_storefront_customer(db: Session, store_id: uuid.UUID, name: str, email: Optional[str], phone: Optional[str], customer_type: str, update_customer_type: bool = True):
     """Attach public storefront activity to a customer scoped to the same store."""
     normalized_email = email.strip().lower() if email and email.strip() else None
-    if not normalized_email:
+    normalized_phone = phone.strip() if phone and phone.strip() else None
+    if not normalized_email and not normalized_phone:
         return None
-    customer = db.query(Customer).filter(
-        Customer.store_id == store_id,
-        func.lower(Customer.email) == normalized_email,
-    ).first()
-    first, _, last = (name or normalized_email.split('@')[0]).strip().partition(' ')
+    customer_query = db.query(Customer).filter(Customer.store_id == store_id)
+    if normalized_email:
+        customer_query = customer_query.filter(func.lower(Customer.email) == normalized_email)
+    else:
+        customer_query = customer_query.filter(Customer.phone == normalized_phone)
+    customer = customer_query.first()
+    first, _, last = (name or (normalized_email or normalized_phone or "Shopper").split('@')[0]).strip().partition(' ')
     if not customer:
         customer = Customer(
             store_id=store_id,
             first_name=first[:100] or 'Shopper',
             last_name=last[:100] or 'Shopper',
             email=normalized_email,
-            phone=phone,
+            phone=normalized_phone,
             customer_type=customer_type,
             status='active',
             last_activity=datetime.utcnow(),
         )
         db.add(customer)
     else:
-        if phone and not customer.phone:
-            customer.phone = phone
+        if normalized_phone and not customer.phone:
+            customer.phone = normalized_phone
+        if normalized_email and not customer.email:
+            customer.email = normalized_email
         if name and first:
             customer.first_name = first[:100]
             if last:
@@ -641,6 +705,16 @@ async def record_public_customer_activity(
                 customer_id=customer.id,
                 activity_type=activity.event,
             ))
+            if activity.event == "cart_abandoned":
+                _assign_storefront_segment(
+                    db, store.id, customer, "Cart Abandoners", "cart_behavior",
+                    "Shoppers who began checkout but did not complete an order.",
+                )
+            elif activity.event in {"signup", "signin"}:
+                _assign_storefront_segment(
+                    db, store.id, customer, "Registered Shoppers", "engagement",
+                    "Shoppers who created an account or signed in at this store.",
+                )
         db.commit()
         return {"recorded": True}
     except Exception:
@@ -729,6 +803,20 @@ async def create_public_order(
         )
         if customer:
             db.add(StorefrontCustomerActivity(store_id=store.id, customer_id=customer.id, activity_type="purchase"))
+            _assign_storefront_segment(
+                db, store.id, customer, "Customers who have purchased at least once", "purchase_behavior",
+                "Customers with at least one completed storefront order.",
+            )
+            _remove_storefront_segment_membership(db, store.id, customer, "Cart Abandoners")
+            previous_orders = db.query(CustomerOrder).filter(
+                CustomerOrder.store_id == store.id,
+                CustomerOrder.customer_id == customer.id,
+            ).count()
+            if previous_orders >= 1:
+                _assign_storefront_segment(
+                    db, store.id, customer, "Repeat Buyers", "purchase_behavior",
+                    "Customers with more than one storefront order.",
+                )
         db_order = CustomerOrder(
             store_id=order_data.store_id,
             customer_id=customer.id if customer else None,

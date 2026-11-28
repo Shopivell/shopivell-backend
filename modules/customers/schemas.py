@@ -22,6 +22,7 @@ class CustomerBase(BaseModel):
     notes: Optional[str] = None
 
 class CustomerSegmentBase(BaseModel):
+    store_id: Optional[UUID] = None
     name: str
     description: Optional[str] = None
     criteria: Optional[str] = None

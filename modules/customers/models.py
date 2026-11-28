@@ -61,7 +61,9 @@ class CustomerSegment(Base):
     __tablename__ = "customer_segments"
 
     id: Mapped[PG_UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    # Null is retained for legacy global segments; storefront-created segments are store scoped.
+    store_id: Mapped[Optional[PG_UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("stores.id", ondelete="CASCADE"), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     criteria: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     percentage: Mapped[str] = mapped_column(String(10), default="0%", nullable=False)

@@ -756,6 +756,7 @@ async def bulk_upload_customers(
 # Customer Segments Operations
 @customer_router.get("/segments/", response_model=CustomerSegmentListResponse)
 def get_segments(
+    store_id: Optional[uuid.UUID] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     is_active: Optional[bool] = None,
@@ -765,6 +766,9 @@ def get_segments(
 ):
     """Get paginated list of customer segments"""
     query = db.query(CustomerSegment)
+    if store_id:
+        # Never combine behavioral memberships from different storefronts.
+        query = query.filter(CustomerSegment.store_id == store_id)
     
     # Apply filters
     if is_active is not None:
@@ -801,7 +805,10 @@ def get_segment(segment_id: uuid.UUID, db: Session = Depends(get_db)):
 def create_segment(segment_data: CustomerSegmentCreate, db: Session = Depends(get_db)):
     """Create a new customer segment"""
     # Check if segment name already exists
-    existing_segment = db.query(CustomerSegment).filter(CustomerSegment.name == segment_data.name).first()
+    existing_segment = db.query(CustomerSegment).filter(
+        CustomerSegment.name == segment_data.name,
+        CustomerSegment.store_id == segment_data.store_id,
+    ).first()
     if existing_segment:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -832,7 +839,10 @@ def update_segment(segment_id: uuid.UUID, segment_data: CustomerSegmentUpdate, d
     
     # Check if segment name already exists (if being updated)
     if segment_data.name and segment_data.name != segment.name:
-        existing_segment = db.query(CustomerSegment).filter(CustomerSegment.name == segment_data.name).first()
+        existing_segment = db.query(CustomerSegment).filter(
+            CustomerSegment.name == segment_data.name,
+            CustomerSegment.store_id == segment.store_id,
+        ).first()
         if existing_segment:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1006,8 +1016,7 @@ async def calculate_lead_scores(
     """Calculate and update lead scores for all customers."""
     query = db.query(Customer)
     if store_id:
-        # Filter by store if your customers have store_id - adjust if needed
-        pass
+        query = query.filter(Customer.store_id == store_id)
 
     customers = query.all()
     updated = 0
@@ -1035,6 +1044,7 @@ async def calculate_lead_scores(
 
 @customer_router.post("/segments/auto-create-lead-segments")
 async def auto_create_lead_segments(
+    store_id: Optional[uuid.UUID] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Auto-create segments based on lead scores: Hot, Warm, Cold, New leads."""
@@ -1076,11 +1086,15 @@ async def auto_create_lead_segments(
     created = []
     for seg_data in lead_segments:
         # Check if segment already exists
-        existing = db.query(CustomerSegment).filter(CustomerSegment.name == seg_data["name"]).first()
+        existing = db.query(CustomerSegment).filter(
+            CustomerSegment.name == seg_data["name"],
+            CustomerSegment.store_id == store_id,
+        ).first()
         if existing:
             segment = existing
         else:
             segment = CustomerSegment(
+                store_id=store_id,
                 name=seg_data["name"],
                 description=seg_data["description"],
                 type=seg_data["type"],
@@ -1093,10 +1107,13 @@ async def auto_create_lead_segments(
 
         # Assign customers to segment based on score
         min_s, max_s = seg_data["min_score"], seg_data["max_score"]
-        matching = db.query(Customer).filter(
+        matching_query = db.query(Customer).filter(
             Customer.lead_score >= min_s,
             Customer.lead_score <= max_s
-        ).all()
+        )
+        if store_id:
+            matching_query = matching_query.filter(Customer.store_id == store_id)
+        matching = matching_query.all()
 
         # Clear existing memberships for this segment
         db.query(CustomerSegmentMembership).filter(
@@ -1112,7 +1129,10 @@ async def auto_create_lead_segments(
             db.add(membership)
 
         segment.customer_count = len(matching)
-        total_customers = db.query(Customer).count()
+        total_query = db.query(Customer)
+        if store_id:
+            total_query = total_query.filter(Customer.store_id == store_id)
+        total_customers = total_query.count()
         segment.percentage = f"{round(len(matching) / max(total_customers, 1) * 100)}%" if total_customers > 0 else "0%"
 
         created.append({
