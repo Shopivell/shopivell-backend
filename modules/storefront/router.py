@@ -8,8 +8,10 @@ is Active.
 """
 from typing import Any, Dict, List, Optional
 import uuid
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -18,8 +20,27 @@ from modules.products.models import Product
 from modules.stores.models import Store
 
 storefront_router = APIRouter(prefix="/api/storefront", tags=["storefront"])
+logger = logging.getLogger(__name__)
 
 ACTIVE_PRODUCT_STATUS = "Active"
+
+
+class StorefrontChatRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=3000)
+    sender_email: Optional[EmailStr] = None
+
+
+def _email_storefront_chat(recipient: str, store_name: str, sender_email: Optional[str], message: str, reply: str) -> None:
+    from utils.Verification_Codes_Services import VerificationCodeService
+    text = (
+        f"Store: {store_name}\n"
+        f"Shopper email: {sender_email or 'Not provided'}\n\n"
+        f"Shopper message:\n{message}\n\n"
+        f"Shopivell assistant reply:\n{reply}"
+    )
+    if not VerificationCodeService.send_email(recipient, f"New storefront chat: {store_name}", text):
+        logger.warning("Storefront chat email notification to %s was not delivered", recipient)
 
 
 def _store_payload(store: Store, product_count: Optional[int] = None) -> Dict[str, Any]:
@@ -162,6 +183,44 @@ async def get_store(store_id: uuid.UUID, db: Session = Depends(get_db)):
     """Public store profile: branding and contact details."""
     store = _get_store_or_404(db, store_id)
     return _store_payload(store, _active_product_count(db, store.id))
+
+
+@storefront_router.post("/stores/{store_id}/chat")
+async def chat_with_store_assistant(
+    store_id: uuid.UUID,
+    body: StorefrontChatRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Answer a shopper using the store's sales bot and email the store the enquiry."""
+    store = _get_store_or_404(db, store_id)
+    if not store.is_setup_completed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Enter a message")
+
+    reply = None
+    try:
+        from modules.whatsapp.chatbot_engine import MultiTenantSalesBot
+        bot = MultiTenantSalesBot(store_id=store.id, db=db)
+        reply = await bot.generate_response(message, f"storefront:{body.conversation_id}")
+    except Exception:
+        logger.exception("Storefront assistant failed for store %s", store.id)
+    if not reply:
+        reply = f"Thanks for contacting {store.store_name}. I’ve sent your message to the store team so they can follow up."
+
+    recipient = store.store_email or (store.owner.email if store.owner else None)
+    if recipient:
+        background_tasks.add_task(
+            _email_storefront_chat,
+            recipient,
+            store.store_name,
+            str(body.sender_email) if body.sender_email else None,
+            message,
+            reply,
+        )
+    return {"reply": reply, "email_notified": bool(recipient)}
 
 
 @storefront_router.get("/stores/{store_id}/products")
