@@ -801,22 +801,6 @@ async def create_public_order(
         customer = _upsert_storefront_customer(
             db, store.id, order_data.customer_name, order_data.email, order_data.phone, "purchaser"
         )
-        if customer:
-            db.add(StorefrontCustomerActivity(store_id=store.id, customer_id=customer.id, activity_type="purchase"))
-            _assign_storefront_segment(
-                db, store.id, customer, "Customers who have purchased at least once", "purchase_behavior",
-                "Customers with at least one completed storefront order.",
-            )
-            _remove_storefront_segment_membership(db, store.id, customer, "Cart Abandoners")
-            previous_orders = db.query(CustomerOrder).filter(
-                CustomerOrder.store_id == store.id,
-                CustomerOrder.customer_id == customer.id,
-            ).count()
-            if previous_orders >= 1:
-                _assign_storefront_segment(
-                    db, store.id, customer, "Repeat Buyers", "purchase_behavior",
-                    "Customers with more than one storefront order.",
-                )
         db_order = CustomerOrder(
             store_id=order_data.store_id,
             customer_id=customer.id if customer else None,
@@ -836,6 +820,9 @@ async def create_public_order(
         db.add(db_order)
         db.commit()
         db.refresh(db_order)
+
+        # A pending/unpaid checkout is not a purchase. Purchase segments are
+        # populated when payment is confirmed by the paid-order flow.
 
         # Auto-create delivery if delivery method is "delivery" and address provided
         if order_data.delivery_method == "delivery" and order_data.delivery_address:

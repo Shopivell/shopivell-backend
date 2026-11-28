@@ -782,6 +782,43 @@ def get_segments(
     
     total_count = query.count()
     segments = query.offset(skip).limit(limit).all()
+    # Counts for behavioral groups come from real order/activity records, not
+    # static estimates or stale membership counters.
+    from modules.orders.models import CustomerOrder
+    from sqlalchemy import func
+    for segment in segments:
+        name = segment.name.strip().lower()
+        if name in {"customers who have purchased at least once", "repeat buyers", "customers who have purchased more than once"}:
+            order_counts = db.query(CustomerOrder.customer_id).filter(
+                CustomerOrder.store_id == segment.store_id,
+                CustomerOrder.customer_id.isnot(None),
+                CustomerOrder.payment_status == "paid",
+            ).group_by(CustomerOrder.customer_id)
+            if name != "customers who have purchased at least once":
+                order_counts = order_counts.having(func.count(CustomerOrder.id) >= 2)
+            segment.customer_count = order_counts.count()
+        elif name in {"cart abandoners", "abandoned checkouts in the last 30 days"}:
+            from datetime import timedelta
+            segment.customer_count = db.query(func.count(func.distinct(StorefrontCustomerActivity.customer_id))).filter(
+                StorefrontCustomerActivity.store_id == segment.store_id,
+                StorefrontCustomerActivity.activity_type == "cart_abandoned",
+                StorefrontCustomerActivity.occurred_at >= datetime.utcnow() - timedelta(days=30),
+            ).scalar() or 0
+        elif name == "registered shoppers":
+            segment.customer_count = db.query(func.count(func.distinct(StorefrontCustomerActivity.customer_id))).filter(
+                StorefrontCustomerActivity.store_id == segment.store_id,
+                StorefrontCustomerActivity.activity_type.in_(["signup", "signin"]),
+            ).scalar() or 0
+        elif name in {"customers who haven't purchased", "customers who have not purchased"}:
+            paid_customer_ids = db.query(CustomerOrder.customer_id).filter(
+                CustomerOrder.store_id == segment.store_id,
+                CustomerOrder.customer_id.isnot(None),
+                CustomerOrder.payment_status == "paid",
+            )
+            segment.customer_count = db.query(Customer).filter(
+                Customer.store_id == segment.store_id,
+                ~Customer.id.in_(paid_customer_ids),
+            ).count()
     
     return CustomerSegmentListResponse(
         segments=segments,
@@ -822,14 +859,60 @@ def get_segment_customers(
     if not segment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Segment not found")
 
-    query = (
-        db.query(Customer)
-        .join(CustomerSegmentMembership, CustomerSegmentMembership.customer_id == Customer.id)
-        .filter(
-            CustomerSegmentMembership.segment_id == segment_id,
-            Customer.store_id == store_id,
+    from modules.orders.models import CustomerOrder
+    from sqlalchemy import func
+    segment_name = segment.name.strip().lower()
+    if segment_name in {"customers who haven't purchased", "customers who have not purchased"}:
+        paid_customer_ids = db.query(CustomerOrder.customer_id).filter(
+            CustomerOrder.store_id == store_id,
+            CustomerOrder.customer_id.isnot(None),
+            CustomerOrder.payment_status == "paid",
         )
-    )
+        query = db.query(Customer).filter(Customer.store_id == store_id, ~Customer.id.in_(paid_customer_ids))
+    elif segment_name == "registered shoppers":
+        query = db.query(Customer).join(
+            StorefrontCustomerActivity, StorefrontCustomerActivity.customer_id == Customer.id
+        ).filter(
+            Customer.store_id == store_id,
+            StorefrontCustomerActivity.store_id == store_id,
+            StorefrontCustomerActivity.activity_type.in_(["signup", "signin"]),
+        ).distinct()
+    # Resolve behavioral groups from their source records so the page shows
+    # real store customers even when older memberships were not maintained.
+    segment_name = segment.name.strip().lower()
+    if segment_name in {"customers who have purchased at least once", "repeat buyers", "customers who have purchased more than once"}:
+        order_counts = (
+            db.query(CustomerOrder.customer_id)
+            .filter(
+                CustomerOrder.store_id == store_id,
+                CustomerOrder.customer_id.isnot(None),
+                CustomerOrder.payment_status == "paid",
+            )
+            .group_by(CustomerOrder.customer_id)
+        )
+        if segment_name != "customers who have purchased at least once":
+            order_counts = order_counts.having(func.count(CustomerOrder.id) >= 2)
+        customer_ids = order_counts.subquery()
+        query = db.query(Customer).filter(Customer.store_id == store_id, Customer.id.in_(customer_ids))
+    elif segment_name in {"cart abandoners", "abandoned checkouts in the last 30 days"}:
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        query = (
+            db.query(Customer)
+            .join(StorefrontCustomerActivity, StorefrontCustomerActivity.customer_id == Customer.id)
+            .filter(
+                Customer.store_id == store_id,
+                StorefrontCustomerActivity.store_id == store_id,
+                StorefrontCustomerActivity.activity_type == "cart_abandoned",
+                StorefrontCustomerActivity.occurred_at >= cutoff,
+            )
+        )
+    elif segment_name not in {"customers who haven't purchased", "customers who have not purchased", "registered shoppers"}:
+        query = (
+            db.query(Customer)
+            .join(CustomerSegmentMembership, CustomerSegmentMembership.customer_id == Customer.id)
+            .filter(CustomerSegmentMembership.segment_id == segment_id, Customer.store_id == store_id)
+        )
     if search:
         term = f"%{search.strip()}%"
         query = query.filter(
