@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
 from typing import List, Optional
 import uuid
 import csv
@@ -799,11 +800,20 @@ def get_segments(
             segment.customer_count = order_counts.count()
         elif name in {"cart abandoners", "abandoned checkouts in the last 30 days"}:
             from datetime import timedelta
-            segment.customer_count = db.query(func.count(func.distinct(StorefrontCustomerActivity.customer_id))).filter(
-                StorefrontCustomerActivity.store_id == segment.store_id,
-                StorefrontCustomerActivity.activity_type == "cart_abandoned",
-                StorefrontCustomerActivity.occurred_at >= datetime.utcnow() - timedelta(days=30),
-            ).scalar() or 0
+            segment.customer_count = db.query(Customer).outerjoin(
+                StorefrontCustomerActivity, StorefrontCustomerActivity.customer_id == Customer.id
+            ).filter(
+                Customer.store_id == segment.store_id,
+                Customer.customer_type != "purchaser",
+                or_(
+                    Customer.customer_type == "abandoned_cart",
+                    and_(
+                        StorefrontCustomerActivity.store_id == segment.store_id,
+                        StorefrontCustomerActivity.activity_type == "cart_abandoned",
+                        StorefrontCustomerActivity.occurred_at >= datetime.utcnow() - timedelta(days=30),
+                    ),
+                ),
+            ).distinct().count()
         elif name == "registered shoppers":
             segment.customer_count = db.query(func.count(func.distinct(StorefrontCustomerActivity.customer_id))).filter(
                 StorefrontCustomerActivity.store_id == segment.store_id,
@@ -899,14 +909,20 @@ def get_segment_customers(
         cutoff = datetime.utcnow() - timedelta(days=30)
         query = (
             db.query(Customer)
-            .join(StorefrontCustomerActivity, StorefrontCustomerActivity.customer_id == Customer.id)
+            .outerjoin(StorefrontCustomerActivity, StorefrontCustomerActivity.customer_id == Customer.id)
             .filter(
                 Customer.store_id == store_id,
-                StorefrontCustomerActivity.store_id == store_id,
-                StorefrontCustomerActivity.activity_type == "cart_abandoned",
-                StorefrontCustomerActivity.occurred_at >= cutoff,
+                Customer.customer_type != "purchaser",
+                or_(
+                    Customer.customer_type == "abandoned_cart",
+                    and_(
+                        StorefrontCustomerActivity.store_id == store_id,
+                        StorefrontCustomerActivity.activity_type == "cart_abandoned",
+                        StorefrontCustomerActivity.occurred_at >= cutoff,
+                    ),
+                ),
             )
-        )
+        ).distinct()
     elif segment_name not in {"customers who haven't purchased", "customers who have not purchased", "registered shoppers"}:
         query = (
             db.query(Customer)

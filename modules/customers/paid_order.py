@@ -3,7 +3,64 @@ import re
 
 from sqlalchemy import func, text
 
-from modules.customers.models import Customer
+from modules.customers.models import (
+    Customer,
+    CustomerSegment,
+    CustomerSegmentMembership,
+)
+
+
+def _sync_paid_customer_segments(db, order, customer):
+    def assign(name, description):
+        segment = db.query(CustomerSegment).filter(
+            CustomerSegment.store_id == order.store_id,
+            CustomerSegment.name == name,
+        ).first()
+        if not segment:
+            segment = CustomerSegment(
+                store_id=order.store_id,
+                name=name,
+                description=description,
+                criteria=description,
+                type="purchase_behavior",
+                created_by="storefront",
+                is_active=True,
+            )
+            db.add(segment)
+            db.flush()
+        exists = db.query(CustomerSegmentMembership.id).filter(
+            CustomerSegmentMembership.customer_id == customer.id,
+            CustomerSegmentMembership.segment_id == segment.id,
+        ).first()
+        if not exists:
+            db.add(CustomerSegmentMembership(customer_id=customer.id, segment_id=segment.id))
+        segment.customer_count = db.query(CustomerSegmentMembership).filter(
+            CustomerSegmentMembership.segment_id == segment.id,
+        ).count()
+
+    assign("Customers who have purchased at least once", "Customers with at least one paid order.")
+    paid_order_count = db.query(order.__class__).filter(
+        order.__class__.store_id == order.store_id,
+        order.__class__.customer_id == customer.id,
+        order.__class__.payment_status == "paid",
+    ).count()
+    if paid_order_count >= 2:
+        assign("Repeat Buyers", "Customers with at least two paid orders.")
+
+    abandoned = db.query(CustomerSegment).filter(
+        CustomerSegment.store_id == order.store_id,
+        CustomerSegment.name.in_(["Cart Abandoners", "Abandoned checkouts in the last 30 days"]),
+    ).all()
+    for segment in abandoned:
+        db.query(CustomerSegmentMembership).filter(
+            CustomerSegmentMembership.customer_id == customer.id,
+            CustomerSegmentMembership.segment_id == segment.id,
+        ).delete(synchronize_session=False)
+        segment.customer_count = db.query(CustomerSegmentMembership).filter(
+            CustomerSegmentMembership.segment_id == segment.id,
+        ).count()
+    if customer.customer_type == "abandoned_cart":
+        customer.customer_type = "purchaser"
 
 
 def normalize_customer_phone(phone):
@@ -17,8 +74,16 @@ def normalize_customer_phone(phone):
 
 def link_paid_order_customer(db, order):
     """Link a paid order to a customer, leaving the caller to commit the transaction."""
-    if (order.payment_status or '').lower() != 'paid' or order.customer_id:
+    if (order.payment_status or '').lower() != 'paid':
         return None
+    if order.customer_id:
+        customer = db.query(Customer).filter(
+            Customer.id == order.customer_id,
+            Customer.store_id == order.store_id,
+        ).first()
+        if customer:
+            _sync_paid_customer_segments(db, order, customer)
+        return customer
     phone = normalize_customer_phone(order.phone)
     if not phone:
         return None  # No reliable identity to match or create.
@@ -47,4 +112,5 @@ def link_paid_order_customer(db, order):
         db.add(customer)
         db.flush()
     order.customer_id = customer.id
+    _sync_paid_customer_segments(db, order, customer)
     return customer
