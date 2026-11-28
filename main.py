@@ -123,6 +123,8 @@ app.add_middleware(
         "http://127.0.0.1:5179",
         "https://shopivell.com",
         "https://www.shopivell.com",
+        "https://storefront.shopivell.com",
+        "https://store.shopivell.com",
         "https://admin.shopivell.com",
         "https://shopivell-frontend.onrender.com",
         "https://shopivell-admin.onrender.com",
